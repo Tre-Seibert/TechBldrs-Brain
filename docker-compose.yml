@@ -1,0 +1,33 @@
+# Open WebUI only. Talks to Ollama on the host. Does not install OpenClaw.
+#
+# Runtime data uses a named Docker volume (tb-brain-open-webui), not a bind
+# mount into this OneDrive repo.
+#
+# Prerequisites:
+#   1. Ollama listening on the host at http://127.0.0.1:11434
+#   2. A local instruct model pulled (see README). Do not store models in this repo.
+#
+#   docker compose up -d
+#   http://127.0.0.1:3000
+
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: tb-brain-open-webui
+    ports:
+      - "${OPEN_WEBUI_PORT:-3000}:8080"
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      WEBUI_NAME: tb-brain lab
+      # Optional: route chat through the Python tool loop instead of Ollama natively.
+      # OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL:-http://host.docker.internal:8765/v1}
+      # OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-tb-brain-lab}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui-data:/app/backend/data
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
+    name: tb-brain-open-webui

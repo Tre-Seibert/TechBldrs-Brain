@@ -1,0 +1,188 @@
+"""OpenAI-compatible tool loop against LLM_BASE_URL (local Ollama or any upgrade)."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import AsyncIterator
+from typing import Any
+
+import httpx
+
+from app.agent.system import SYSTEM_PROMPT
+from app.config import Settings
+from app.flow.source import FlowSource
+from app.tools import openai_tools, run_tool
+
+_log = logging.getLogger("tb_brain.agent")
+
+
+class AgentError(RuntimeError):
+    pass
+
+
+def _merge_tools(client_tools: list[Any] | None) -> list[dict[str, Any]]:
+    ours = openai_tools()
+    by_name = {
+        t["function"]["name"]: t
+        for t in ours
+        if t.get("type") == "function" and "function" in t
+    }
+    for tool in client_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function") if tool.get("type") == "function" else None
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if name and name not in by_name:
+            by_name[name] = tool
+    return list(by_name.values())
+
+
+def _ensure_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if messages and messages[0].get("role") == "system":
+        first = dict(messages[0])
+        content = str(first.get("content") or "")
+        if "tb-brain" not in content:
+            first["content"] = SYSTEM_PROMPT + "\n\n" + content
+        return [first, *messages[1:]]
+    return [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+
+
+def _parse_arguments(raw: Any) -> dict[str, Any]:
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"_raw": raw}
+        return parsed if isinstance(parsed, dict) else {"_raw": parsed}
+    return {"_raw": raw}
+
+
+async def _resolve_model(client: httpx.AsyncClient, settings: Settings, requested: str | None) -> str:
+    if (requested or "").strip() and requested not in ("tb-brain", "auto"):
+        return requested.strip()
+    if settings.llm_model.strip():
+        return settings.llm_model.strip()
+    response = await client.get("/models")
+    response.raise_for_status()
+    payload = response.json()
+    models = payload.get("data") if isinstance(payload, dict) else None
+    if not models:
+        raise AgentError("LLM returned no models. Set LLM_MODEL or pull an Ollama instruct model.")
+    first = models[0]
+    name = first.get("id") if isinstance(first, dict) else None
+    if not name:
+        raise AgentError("LLM /models response had no id. Set LLM_MODEL.")
+    return str(name)
+
+
+async def run_tool_loop(
+    *,
+    settings: Settings,
+    source: FlowSource,
+    messages: list[dict[str, Any]],
+    model: str | None,
+    actor: str,
+    client_tools: list[Any] | None = None,
+    extra_body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    tools = _merge_tools(client_tools)
+    chat = _ensure_system(list(messages))
+    headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
+    timeout = httpx.Timeout(settings.llm_timeout_seconds)
+    async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
+        resolved_model = await _resolve_model(client, settings, model)
+        last_payload: dict[str, Any] | None = None
+        for iteration in range(settings.agent_max_tool_iters):
+            body: dict[str, Any] = {
+                "model": resolved_model,
+                "messages": chat,
+                "tools": tools,
+                "stream": False,
+            }
+            if extra_body:
+                for key, value in extra_body.items():
+                    if key in ("messages", "tools", "stream"):
+                        continue
+                    if key == "model" and value in (None, "", "tb-brain", "auto"):
+                        continue
+                    body[key] = value
+            try:
+                response = await client.post("/chat/completions", json=body)
+            except httpx.HTTPError as exc:
+                raise AgentError(f"LLM unreachable at {settings.llm_base_url}: {exc}") from exc
+            if response.status_code >= 400:
+                raise AgentError(f"LLM error {response.status_code}: {response.text[:800]}")
+            payload = response.json()
+            last_payload = payload
+            choice = (payload.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            tool_calls = message.get("tool_calls") or []
+            if not tool_calls:
+                payload["model"] = resolved_model
+                return payload
+            chat.append(message)
+            _log.info(
+                "agent tool_calls iteration=%s count=%s",
+                iteration,
+                len(tool_calls),
+                extra={"event": "agent.tool_calls", "iteration": iteration},
+            )
+            for call in tool_calls:
+                fn = call.get("function") or {}
+                name = str(fn.get("name") or "")
+                arguments = _parse_arguments(fn.get("arguments"))
+                result = run_tool(
+                    source=source,
+                    name=name,
+                    arguments=arguments,
+                    actor=actor,
+                    settings=settings,
+                )
+                chat.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.get("id") or name,
+                        "name": name,
+                        "content": result.model_dump_json(),
+                    }
+                )
+        raise AgentError(
+            f"Tool loop exceeded AGENT_MAX_TOOL_ITERS={settings.agent_max_tool_iters}. "
+            f"Last model payload keys={list((last_payload or {}).keys())}"
+        )
+
+
+async def stream_final_message(payload: dict[str, Any]) -> AsyncIterator[bytes]:
+    """Run the full tool loop first, then SSE-stream the final assistant text."""
+    choice = (payload.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content = message.get("content") or ""
+    model = payload.get("model") or "tb-brain"
+    chunk = {
+        "id": payload.get("id") or "tb-brain",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "content": content},
+                "finish_reason": None,
+            }
+        ],
+    }
+    yield f"data: {json.dumps(chunk)}\n\n".encode()
+    done = {
+        "id": payload.get("id") or "tb-brain",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    yield f"data: {json.dumps(done)}\n\n".encode()
+    yield b"data: [DONE]\n\n"

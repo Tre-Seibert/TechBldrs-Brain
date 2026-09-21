@@ -1,0 +1,198 @@
+"""Synthetic lab fixtures shaped like Flow models.
+
+Real client_code WDON is used so the documented example questions work.
+Names, addresses, and mail are fake — not production PHI.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from app.flow.schemas import ClientRecord, ContactRecord, MailRecord, TicketRecord
+
+# Naive datetimes match Flow's DateTime columns (no timezone in MariaDB models).
+_DT = datetime
+
+CLIENTS: list[ClientRecord] = [
+    ClientRecord(
+        id=41,
+        client_code="WDON",
+        name="Western Dental",
+        full_company_name="Western Dental of New Jersey (lab fixture)",
+        status="Active",
+        m365_default_domain="westerndental.example",
+    ),
+    ClientRecord(
+        id=7,
+        client_code="ACME",
+        name="Acme Labs",
+        full_company_name="Acme Laboratories (lab fixture)",
+        status="Active",
+        m365_default_domain="acme.example",
+    ),
+]
+
+CONTACTS: list[ContactRecord] = [
+    ContactRecord(
+        id=101,
+        client_id=41,
+        client_code="WDON",
+        contact_type="client",
+        full_name="Debe Hernandez",
+        file_as="Hernandez, Debe",
+        company_name="Western Dental",
+        job_title="Office Manager",
+        email_1="debe@westerndental.example",
+        email_2="dhernandez@westerndental.example",
+        business_phone="555-0101",
+        mobile_phone="555-0102",
+        is_active=True,
+    ),
+    ContactRecord(
+        id=102,
+        client_id=41,
+        client_code="WDON",
+        contact_type="client",
+        full_name="Chris Patel",
+        file_as="Patel, Chris",
+        company_name="Western Dental",
+        job_title="Front Desk",
+        email_1="cpatel@westerndental.example",
+        is_active=True,
+    ),
+    ContactRecord(
+        id=201,
+        client_id=7,
+        client_code="ACME",
+        contact_type="client",
+        full_name="Riley Chen",
+        file_as="Chen, Riley",
+        company_name="Acme Labs",
+        email_1="riley@acme.example",
+        is_active=True,
+    ),
+]
+
+TICKETS: list[TicketRecord] = [
+    TicketRecord(
+        id=9001,
+        client_id=41,
+        client_code="WDON",
+        ticket_num="1842",
+        subject="|WDON|1842| {Debe Hernandez} Imaging workstation offline",
+        topic="Imaging workstation offline",
+        status="Open",
+        category="Normal",
+        requestor_text="Debe Hernandez",
+        contact_id=101,
+        machine_name="WDON-IMG-01",
+        assignee_code="TR",
+        complete=False,
+        created_at=_DT(2026, 9, 17, 14, 5, 0),
+        last_activity_at=_DT(2026, 9, 18, 9, 41, 0),
+    ),
+    TicketRecord(
+        id=8990,
+        client_id=41,
+        client_code="WDON",
+        ticket_num="1830",
+        subject="|WDON|1830| {Chris Patel} Password reset",
+        topic="Password reset",
+        status="Closed",
+        category="Normal",
+        requestor_text="Chris Patel",
+        contact_id=102,
+        assignee_code="TR",
+        complete=True,
+        created_at=_DT(2026, 8, 4, 11, 0, 0),
+        last_activity_at=_DT(2026, 8, 4, 11, 22, 0),
+        closed_at=_DT(2026, 8, 4, 11, 22, 0),
+    ),
+    TicketRecord(
+        id=3100,
+        client_id=7,
+        client_code="ACME",
+        ticket_num="0041",
+        subject="|ACME|0041| {Riley Chen} VPN dropouts",
+        topic="VPN dropouts",
+        status="Open",
+        category="Normal",
+        requestor_text="Riley Chen",
+        contact_id=201,
+        created_at=_DT(2026, 9, 10, 8, 0, 0),
+        last_activity_at=_DT(2026, 9, 19, 16, 0, 0),
+    ),
+]
+
+MAIL: list[MailRecord] = [
+    MailRecord(
+        id=50001,
+        ticket_id=9001,
+        client_code="WDON",
+        ticket_num="1842",
+        direction="inbound",
+        from_address="debe@westerndental.example",
+        from_name="Debe Hernandez",
+        to_label="TechBldrs Support <support@techbldrs.example>",
+        subject="Scanner / imaging PC is down again",
+        received_at=_DT(2026, 9, 17, 14, 22, 0),
+        created_at=_DT(2026, 9, 17, 14, 23, 0),
+        snippet="[Parsed Inbound] Imaging workstation WDON-IMG-01 will not boot past the login screen.",
+    ),
+    MailRecord(
+        id=50002,
+        ticket_id=9001,
+        client_code="WDON",
+        ticket_num="1842",
+        direction="outbound",
+        from_address="support@techbldrs.example",
+        from_name="TechBldrs Support",
+        to_label="Debe Hernandez <debe@westerndental.example>",
+        subject="Re: Scanner / imaging PC is down again",
+        received_at=_DT(2026, 9, 17, 15, 10, 0),
+        created_at=_DT(2026, 9, 17, 15, 10, 0),
+        snippet="[Sent via Graph] On-site tech scheduled tomorrow morning.",
+    ),
+    MailRecord(
+        id=50003,
+        ticket_id=9001,
+        client_code="WDON",
+        ticket_num="1842",
+        direction="inbound",
+        from_address="debe@westerndental.example",
+        from_name="Debe Hernandez",
+        to_label="TechBldrs Support <support@techbldrs.example>",
+        subject="Re: Scanner / imaging PC is down again",
+        received_at=_DT(2026, 9, 18, 9, 40, 0),
+        created_at=_DT(2026, 9, 18, 9, 41, 0),
+        snippet="[Parsed Inbound] Machine is back up. Thanks — Debe",
+    ),
+    MailRecord(
+        id=50010,
+        ticket_id=8990,
+        client_code="WDON",
+        ticket_num="1830",
+        direction="inbound",
+        from_address="cpatel@westerndental.example",
+        from_name="Chris Patel",
+        to_label="TechBldrs Support <support@techbldrs.example>",
+        subject="Need a password reset",
+        received_at=_DT(2026, 8, 4, 10, 55, 0),
+        created_at=_DT(2026, 8, 4, 10, 56, 0),
+        snippet="[Parsed Inbound] Locked out of M365.",
+    ),
+    MailRecord(
+        id=50020,
+        ticket_id=3100,
+        client_code="ACME",
+        ticket_num="0041",
+        direction="inbound",
+        from_address="riley@acme.example",
+        from_name="Riley Chen",
+        to_label="TechBldrs Support <support@techbldrs.example>",
+        subject="VPN keeps dropping",
+        received_at=_DT(2026, 9, 10, 8, 5, 0),
+        created_at=_DT(2026, 9, 10, 8, 6, 0),
+        snippet="[Parsed Inbound] Tunnel dies after about 20 minutes.",
+    ),
+]

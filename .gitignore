@@ -1,0 +1,39 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# Never a venv in this OneDrive repo — use %LOCALAPPDATA%\venvs\tb-brain
+.venv/
+venv/
+env/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data must live off OneDrive (models, Qdrant, Docker binds, logs)
+models/
+ollama/
+qdrant/
+data/
+docker-data/
+open-webui/
+*.log
+logs/
+
+# Editor / OS
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
+.claude/
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
