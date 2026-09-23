@@ -1,12 +1,11 @@
-"""HTTP adapter for a future read-only Flow brain API.
-
-Not wired in phase 0. Intended Flow routes (PRIVATE_API_TOKEN / api_key):
+"""HTTP adapter for Flow's read-only brain API (PRIVATE_API_TOKEN).
 
   GET /api/private/brain/contacts?q=&client_code=&limit=
-  GET /api/private/brain/tickets/latest?client_code=&contact_id=&status=
+  GET /api/private/brain/tickets?client_code=&contact_id=&status=&sort=&order=&limit=
   GET /api/private/brain/mail?client_code=&direction=&email=&contact_id=&limit=
 
 The model must never issue SQL. This client is SELECT-equivalent via HTTP.
+latest_ticket is a tool, not a Flow route: it calls /tickets with sort=last_activity_at&limit=1.
 """
 
 from __future__ import annotations
@@ -82,15 +81,21 @@ class HttpFlowSource:
         contact_id: int | None = None,
         status: str | None = None,
     ) -> TicketRecord | None:
-        params: dict[str, Any] = {"client_code": client_code}
+        params: dict[str, Any] = {
+            "client_code": client_code,
+            "sort": "last_activity_at",
+            "order": "desc",
+            "limit": 1,
+        }
         if contact_id is not None:
             params["contact_id"] = contact_id
         if status:
             params["status"] = status
-        data = self._get("/api/private/brain/tickets/latest", params)
-        if not data:
+        data = self._get("/api/private/brain/tickets", params)
+        rows = data if isinstance(data, list) else []
+        if not rows:
             return None
-        return TicketRecord.model_validate(data)
+        return TicketRecord.model_validate(rows[0])
 
     def list_mail(
         self,

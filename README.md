@@ -79,11 +79,11 @@ LLM traffic is OpenAI-compatible (`LLM_BASE_URL`, default `http://127.0.0.1:1143
 
 Flow reuse (later, when asked): Microsoft Graph, Datto RMM (`app/services/datto_rmm.py`), IT Glue (`app/services/itglue.py`), `api_key_required`, `PRIVATE_API_TOKEN` (`/api/private`). Prefer a **read-only Flow brain API** or a **SELECT-only DB user**. The model never sees SQL.
 
-Intended Flow routes (not implemented in Flow yet):
+Flow routes (1.3.14+):
 
 ```text
 GET /api/private/brain/contacts?q=&client_code=&limit=
-GET /api/private/brain/tickets/latest?client_code=
+GET /api/private/brain/tickets?client_code=&sort=last_activity_at&order=desc&limit=1
 GET /api/private/brain/mail?client_code=&direction=inbound
 ```
 
@@ -142,7 +142,7 @@ Read from Flow `app/models/`:
 - **tickets** — `ticket_num` is 4 chars; display label `{client_code}-{ticket_num}`; envelope subject `|{CODE}|{NUM}| {requestor} {topic}`; activity via `last_activity_at`
 - **mail** — always has `ticket_id`; `direction` is `inbound` | `outbound` | `imported`; `from_address` / `received_at` / `subject` / `body`
 
-Phase 0 `FLOW_MODE=stub` uses in-process fixtures with those shapes (fake people, real client_code WDON so the example questions work). Do not put production Flow tokens in git. `FLOW_MODE=http` / `db` stay unwired until asked.
+Phase 0 `FLOW_MODE=stub` uses in-process fixtures with those shapes (fake people, real client_code WDON so the example questions work). Do not put production Flow tokens in git. `FLOW_MODE=http` calls Flow 1.3.14+ `/api/private/brain/*`. Stay on stub until that build is live.
 
 ## Out of scope (this phase)
 
