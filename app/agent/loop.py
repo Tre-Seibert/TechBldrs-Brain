@@ -13,6 +13,7 @@ from app.agent.system import SYSTEM_PROMPT
 from app.config import Settings
 from app.flow.source import FlowSource
 from app.tools import openai_tools, run_tool
+from app.tools.registry import TOOL_NAMES
 
 _log = logging.getLogger("tb_brain.agent")
 
@@ -21,23 +22,19 @@ class AgentError(RuntimeError):
     pass
 
 
-def _merge_tools(client_tools: list[Any] | None) -> list[dict[str, Any]]:
-    ours = openai_tools()
-    by_name = {
-        t["function"]["name"]: t
-        for t in ours
-        if t.get("type") == "function" and "function" in t
-    }
+def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
+    """Open WebUI injects builtin tools (update_task, notes, calendar). Never forward them."""
+    names: list[str] = []
     for tool in client_tools or []:
-        if not isinstance(tool, dict):
+        if not isinstance(tool, dict) or tool.get("type") != "function":
             continue
-        fn = tool.get("function") if tool.get("type") == "function" else None
+        fn = tool.get("function")
         if not isinstance(fn, dict):
             continue
         name = fn.get("name")
-        if name and name not in by_name:
-            by_name[name] = tool
-    return list(by_name.values())
+        if isinstance(name, str) and name and name not in TOOL_NAMES:
+            names.append(name)
+    return names
 
 
 def _ensure_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -92,7 +89,10 @@ async def run_tool_loop(
     client_tools: list[Any] | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    tools = _merge_tools(client_tools)
+    ignored = _ignored_client_tool_names(client_tools)
+    if ignored:
+        _log.info("ignoring client tools: %s", ",".join(ignored))
+    tools = openai_tools()
     chat = _ensure_system(list(messages))
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)

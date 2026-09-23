@@ -18,7 +18,7 @@ Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of tb-
 3. Confirm Ollama: `curl.exe --noproxy "*" http://127.0.0.1:11434/api/tags`
 4. Start tb-brain: `.\scripts\run.ps1` (must stay up; `BRAIN_HOST=0.0.0.0` so the container can reach it).
 5. From the repo: `docker compose up -d`
-6. Open `http://127.0.0.1:3000`. New chat, model **tb-brain**. Admin → Settings → Connections: Ollama off, only `http://host.docker.internal:8765/v1` with key `sk-tb-brain-lab`. Turn off Notes, Calendar, and Automations tools.
+6. Open `http://127.0.0.1:3000`. New chat, model **tb-brain**. Admin → Settings → Connections: Ollama off, only `http://host.docker.internal:8765/v1` with key `sk-tb-brain-lab`. Admin → Settings → Models → tb-brain: turn **Builtin Tools** off (Task Management's `update_task`, Notes, Calendar, Automations). The tool loop ignores those even if Open WebUI still sends them.
 
 ## How chat reaches tools
 
