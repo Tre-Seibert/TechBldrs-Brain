@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -13,6 +13,7 @@ from app.agent.loop import AgentError, run_tool_loop, stream_final_message
 from app.config import Settings, get_settings
 from app.flow.factory import build_flow_source
 from app.flow.source import FlowNotConfigured, FlowSource
+from app.identity import ResolvedActor, current_actor_email, resolve_actor
 from app.tools import openai_tools, run_tool
 from app.tools.handlers import ListMailArgs, LatestTicketArgs, SearchContactArgs
 from app.tools.registry import LATEST_TICKET, LIST_MAIL, SEARCH_CONTACT, TOOL_NAMES
@@ -87,8 +88,28 @@ def _source(request: Request) -> FlowSource:
     return source
 
 
-def _actor(request: Request, x_brain_actor: str | None) -> str:
-    return (x_brain_actor or _settings(request).brain_actor or "lab-local").strip()
+def _resolve_actor(
+    request: Request,
+    *,
+    x_brain_actor: str | None,
+    x_openwebui_user_jwt: str | None,
+    x_openwebui_user_email: str | None,
+) -> ResolvedActor:
+    return resolve_actor(
+        _settings(request),
+        user_jwt=x_openwebui_user_jwt,
+        user_email_header=x_openwebui_user_email,
+        fallback_actor=x_brain_actor,
+    )
+
+
+@contextmanager
+def _actor_scope(resolved: ResolvedActor):
+    token = current_actor_email.set(resolved.email if resolved.verified else None)
+    try:
+        yield
+    finally:
+        current_actor_email.reset(token)
 
 
 class ChatCompletionRequest(BaseModel):
@@ -137,21 +158,31 @@ async def chat_completions(
     request: Request,
     body: ChatCompletionRequest,
     x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ):
     settings = _settings(request)
+    resolved = _resolve_actor(
+        request,
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
     extra = body.model_dump(exclude={"messages", "tools", "stream", "model"}, exclude_none=True)
-    try:
-        payload = await run_tool_loop(
-            settings=settings,
-            source=_source(request),
-            messages=body.messages,
-            model=body.model,
-            actor=_actor(request, x_brain_actor),
-            client_tools=body.tools,
-            extra_body=extra,
-        )
-    except AgentError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    with _actor_scope(resolved):
+        try:
+            payload = await run_tool_loop(
+                settings=settings,
+                source=_source(request),
+                messages=body.messages,
+                model=body.model,
+                actor=resolved.label,
+                actor_verified=resolved.verified,
+                client_tools=body.tools,
+                extra_body=extra,
+            )
+        except AgentError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if body.stream:
         return StreamingResponse(stream_final_message(payload), media_type="text/event-stream")
     return JSONResponse(payload)
@@ -167,14 +198,24 @@ def tool_search_contact(
     request: Request,
     args: SearchContactArgs,
     x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ) -> dict[str, Any]:
-    result = run_tool(
-        source=_source(request),
-        name=SEARCH_CONTACT,
-        arguments=args.model_dump(),
-        actor=_actor(request, x_brain_actor),
-        settings=_settings(request),
+    resolved = _resolve_actor(
+        request,
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
     )
+    with _actor_scope(resolved):
+        result = run_tool(
+            source=_source(request),
+            name=SEARCH_CONTACT,
+            arguments=args.model_dump(),
+            actor=resolved.label,
+            actor_verified=resolved.verified,
+            settings=_settings(request),
+        )
     return result.model_dump()
 
 
@@ -183,14 +224,24 @@ def tool_latest_ticket(
     request: Request,
     args: LatestTicketArgs,
     x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ) -> dict[str, Any]:
-    result = run_tool(
-        source=_source(request),
-        name=LATEST_TICKET,
-        arguments=args.model_dump(),
-        actor=_actor(request, x_brain_actor),
-        settings=_settings(request),
+    resolved = _resolve_actor(
+        request,
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
     )
+    with _actor_scope(resolved):
+        result = run_tool(
+            source=_source(request),
+            name=LATEST_TICKET,
+            arguments=args.model_dump(),
+            actor=resolved.label,
+            actor_verified=resolved.verified,
+            settings=_settings(request),
+        )
     return result.model_dump()
 
 
@@ -199,14 +250,24 @@ def tool_list_mail(
     request: Request,
     args: ListMailArgs,
     x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ) -> dict[str, Any]:
-    result = run_tool(
-        source=_source(request),
-        name=LIST_MAIL,
-        arguments=args.model_dump(),
-        actor=_actor(request, x_brain_actor),
-        settings=_settings(request),
+    resolved = _resolve_actor(
+        request,
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
     )
+    with _actor_scope(resolved):
+        result = run_tool(
+            source=_source(request),
+            name=LIST_MAIL,
+            arguments=args.model_dump(),
+            actor=resolved.label,
+            actor_verified=resolved.verified,
+            settings=_settings(request),
+        )
     return result.model_dump()
 
 

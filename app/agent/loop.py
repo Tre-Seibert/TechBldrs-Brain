@@ -86,6 +86,7 @@ async def run_tool_loop(
     messages: list[dict[str, Any]],
     model: str | None,
     actor: str,
+    actor_verified: bool = False,
     client_tools: list[Any] | None = None,
     extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -143,6 +144,7 @@ async def run_tool_loop(
                     name=name,
                     arguments=arguments,
                     actor=actor,
+                    actor_verified=actor_verified,
                     settings=settings,
                 )
                 chat.append(

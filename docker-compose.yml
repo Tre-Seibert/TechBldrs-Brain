@@ -11,6 +11,11 @@
 #   docker compose up -d
 #   http://127.0.0.1:3000
 #   Pick model tb-brain. /v1/models always advertises that id.
+#
+# Sign-in with Microsoft (lab SSO): MICROSOFT_CLIENT_ID/_SECRET/_TENANT_ID and
+# FORWARD_USER_INFO_HEADER_JWT_SECRET come from the host .env only — see
+# docs/open-webui.md for the Entra app registration checklist. tb-brain
+# verifies that same secret via BRAIN_USER_JWT_SECRET in its own .env.
 
 services:
   open-webui:
@@ -23,6 +28,15 @@ services:
       WEBUI_NAME: tb-brain lab
       OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL:-http://host.docker.internal:8765/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-tb-brain-lab}
+      ENABLE_OAUTH_SIGNUP: "true"
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET}
+      MICROSOFT_CLIENT_TENANT_ID: ${MICROSOFT_CLIENT_TENANT_ID}
+      OPENID_PROVIDER_URL: https://login.microsoftonline.com/${MICROSOFT_CLIENT_TENANT_ID}/v2.0/.well-known/openid-configuration
+      OAUTH_SCOPES: "openid email profile"
+      WEBUI_URL: ${WEBUI_URL:-http://127.0.0.1:3000}
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_USER_INFO_HEADER_JWT_SECRET: ${FORWARD_USER_INFO_HEADER_JWT_SECRET}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

@@ -31,9 +31,66 @@ OPENAI_API_KEY=sk-tb-brain-lab
 
 Those are set in `docker-compose.yml`. `ENABLE_OLLAMA_API=false` so Compose cannot re-inject Ollama `:11434`.
 
+## Sign in with Microsoft (lab SSO)
+
+Techs sign into Open WebUI with the same Microsoft Entra tenant Flow uses. No chat-bubble auth, no IT Glue passwords, no OneDrive for secrets. Open WebUI does **not** create Flow users — a tech must already have an active account from Flow's own Entra login before they can act as anyone in Flow.
+
+### 1. Register a separate Entra app
+
+Do not reuse Flow's production app registration or its redirect URI. In the Azure portal:
+
+1. **Entra ID → App registrations → New registration**
+   - Name: `tb-brain lab (Open WebUI)`
+   - Supported account types: same tenant as Flow (single tenant)
+   - Redirect URI (platform **Web**): `http://127.0.0.1:3000/oauth/microsoft/callback`
+2. **API permissions**: Microsoft Graph → Delegated → `openid`, `email`, `profile` (usually pre-consented; grant admin consent if your tenant requires it).
+3. **Certificates & secrets → New client secret**. Copy the secret *value* immediately — it's the only time it's shown.
+4. **Overview** page: copy
+   - Application (client) ID → `MICROSOFT_CLIENT_ID`
+   - Directory (tenant) ID → `MICROSOFT_CLIENT_TENANT_ID`
+   - Client secret value → `MICROSOFT_CLIENT_SECRET`
+
+Put all three in this repo's host `.env` (never committed — `.env` is gitignored). If the tenant doesn't return an `email` claim, set `OAUTH_EMAIL_CLAIM=preferred_username` in compose and `OAUTH_EMAIL_CLAIM=preferred_username` in tb-brain's own `.env`.
+
+### 2. Sign the identity hop
+
+Open WebUI forwards the signed-in user to tb-brain as a **signed JWT**, not a raw header, so it can't be spoofed by anything else on the LAN reaching `:8765` (`BRAIN_HOST=0.0.0.0`):
+
+```
+openssl rand -hex 32
+```
+
+Put the same value in **two** places:
+- Host `.env` → `FORWARD_USER_INFO_HEADER_JWT_SECRET` (compose reads this into the `open-webui` container)
+- tb-brain's own `.env` → `BRAIN_USER_JWT_SECRET` (tb-brain verifies the JWT with this)
+
+Without this secret, Open WebUI falls back to sending an unsigned `X-OpenWebUI-User-Email` header, which tb-brain treats as an unverified lab-only label — never forwarded to Flow as a trusted identity.
+
+### 3. Recreate the container
+
+```powershell
+docker compose up -d --force-recreate
+```
+
+Open `http://127.0.0.1:3000` — the login screen should now offer "Sign in with Microsoft" alongside the existing password form.
+
+### 4. Disable password sign-ups (without locking out the admin)
+
+Click path, done while signed in as the existing admin — **do not** set `ENABLE_LOGIN_FORM=false` or `ENABLE_PASSWORD_AUTH=false` in compose; that hides the password form entirely and can lock out the admin if their account isn't OAuth-mapped yet:
+
+1. Gear icon (top right) → **Admin Panel**
+2. **Settings → General**
+3. Toggle off **"Enable New Sign Ups"**
+
+This blocks *new* password registrations only. The current admin's password login keeps working as a break-glass path. Verify it still works in a private/incognito window before closing your authenticated session.
+
+Optional: Open WebUI supports `OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true`, which would bind a Microsoft sign-in to the existing password-admin account by matching email. Upstream docs flag an account-takeover caveat if the OAuth provider doesn't reliably verify email — Entra does for this org's own tenant, but it's left off by default here; turn it on only if you've read that tradeoff.
+
 ## What not to enable
 
 - Cloud model connections (OpenAI, Anthropic, Ollama Cloud) for client data
 - Web search / browser tools
 - Write-back to Flow
 - Storing chat exports with PHI in this OneDrive repo
+- `ENABLE_LOGIN_FORM=false` / `ENABLE_PASSWORD_AUTH=false` until Microsoft sign-in is confirmed working for every admin account
+- Sending `X-Brain-Actor-Email` to Flow for anything tb-brain hasn't verified via the signed JWT — `PRIVATE_API_TOKEN` plus that header can act as the matching Flow user, so an unverified email must never reach it

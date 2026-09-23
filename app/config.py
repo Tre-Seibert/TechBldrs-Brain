@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     brain_actor: str = Field(default="lab-local")
     brain_data_dir: Path = Field(default_factory=_default_data_dir)
 
+    # Must match Open WebUI's FORWARD_USER_INFO_HEADER_JWT_SECRET (compose env).
+    # Empty means no signed identity is available — lab/dev only.
+    brain_user_jwt_secret: str = Field(default="")
+    oauth_email_claim: str = Field(default="email")
+
     flow_mode: str = Field(default="stub")
     flow_base_url: str = Field(default="http://127.0.0.1:5000")
     flow_api_token: str = Field(default="")

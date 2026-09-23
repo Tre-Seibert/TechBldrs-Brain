@@ -20,6 +20,7 @@ def run_tool(
     arguments: dict[str, Any],
     actor: str,
     settings: Settings,
+    actor_verified: bool = False,
 ) -> ToolResult:
     client_code = _client_code_from_args(arguments)
     try:
@@ -51,6 +52,7 @@ def run_tool(
 
     log_tool_call(
         actor=actor,
+        actor_verified=actor_verified,
         tool=name,
         client_code=result.client_code or client_code,
         row_ids=result.row_ids,

@@ -24,12 +24,14 @@ def log_tool_call(
     ok: bool,
     error: str | None = None,
     log_dir: Path | None = None,
+    actor_verified: bool = False,
 ) -> None:
     """Append one JSON line per tool call. Bodies and secrets are not logged."""
     payload = {
         "ts": _now_iso(),
         "event": "tool_call",
         "actor": actor,
+        "actor_verified": actor_verified,
         "tool": tool,
         "client_code": (client_code or "").upper() or None,
         "row_ids": list(row_ids or []),

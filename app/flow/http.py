@@ -16,6 +16,7 @@ import httpx
 
 from app.flow.schemas import ContactRecord, MailRecord, TicketRecord
 from app.flow.source import FlowNotConfigured
+from app.identity import current_actor_email
 
 
 class HttpFlowSource:
@@ -36,10 +37,14 @@ class HttpFlowSource:
             )
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Authorization": f"Bearer {self._token}",
             "Accept": "application/json",
         }
+        actor_email = current_actor_email.get()
+        if actor_email:
+            headers["X-Brain-Actor-Email"] = actor_email
+        return headers
 
     def _get(self, path: str, params: dict[str, Any]) -> Any:
         self._require_ready()
