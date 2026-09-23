@@ -1,8 +1,8 @@
 # Open WebUI lab notes
 
-Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of local Ollama. Do not build a custom chat app. Production UI later is inside Flow.
+Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of tb-brain. tb-brain calls local Ollama. Do not build a custom chat app. Production UI later is inside Flow.
 
-`docker-compose.yml` in this repo starts **Open WebUI only**. It talks to Ollama on the host (`http://host.docker.internal:11434`). Named volume `tb-brain-open-webui` lives in Docker's data root, not in this OneDrive repo.
+`docker-compose.yml` in this repo starts **Open WebUI only**. Chat is sent to tb-brain at `http://host.docker.internal:8765/v1` (model id `tb-brain`). Ollama stays on the host for tb-brain; the UI must not talk to `:11434`. Named volume `tb-brain-open-webui` lives in Docker's data root, not in this OneDrive repo.
 
 ## Start
 
@@ -15,29 +15,21 @@ Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of loc
    ollama pull mistral-small:24b-instruct-2501-q4_K_M
    ```
 
-3. Confirm Ollama: `curl http://127.0.0.1:11434/api/tags`
-4. From the repo: `docker compose up -d`
-5. Open `http://127.0.0.1:3000` and create the first admin locally.
+3. Confirm Ollama: `curl.exe --noproxy "*" http://127.0.0.1:11434/api/tags`
+4. Start tb-brain: `.\scripts\run.ps1` (must stay up; `BRAIN_HOST=0.0.0.0` so the container can reach it).
+5. From the repo: `docker compose up -d`
+6. Open `http://127.0.0.1:3000`. New chat, model **tb-brain**. Admin → Settings → Connections: Ollama off, only `http://host.docker.internal:8765/v1` with key `sk-tb-brain-lab`. Turn off Notes, Calendar, and Automations tools.
 
-## Two ways to get tools
+## How chat reaches tools
 
-### A. Open WebUI → Ollama (compose default)
-
-Chat hits Ollama directly. Add tb-brain as an OpenAPI tool server:
-
-- Settings → Tools → URL `http://host.docker.internal:8765/openapi.json`
-- tb-brain must be running (`.\scripts\run.ps1`) and reachable from the container. If the tool server cannot connect, bind tb-brain with `BRAIN_HOST=0.0.0.0` (still Windows Firewall: local only).
-
-### B. Open WebUI → tb-brain `/v1` (Python tool loop)
-
-tb-brain runs the OpenAI-compatible tool loop against `LLM_BASE_URL`. Point Open WebUI at:
+Open WebUI calls tb-brain `POST /v1/chat/completions`. `GET /v1/models` always returns id `tb-brain`. The tool loop maps that id to `LLM_MODEL` (local Ollama). Do not pick `llama3.1:8b` or `qwen2.5:7b-instruct` from an Ollama connection — those skip the tool loop.
 
 ```text
 OPENAI_API_BASE_URL=http://host.docker.internal:8765/v1
 OPENAI_API_KEY=sk-tb-brain-lab
 ```
 
-Uncomment those env vars in `docker-compose.yml` or set them in `.env`. This is the path that actually enforces "answer from tools, not RAG."
+Those are set in `docker-compose.yml`. `ENABLE_OLLAMA_API=false` so Compose cannot re-inject Ollama `:11434`.
 
 ## What not to enable
 

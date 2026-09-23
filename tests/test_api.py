@@ -15,6 +15,12 @@ class ApiTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._cm.__exit__(None, None, None)
 
+    def test_models_advertises_tb_brain(self) -> None:
+        response = self.client.get("/v1/models")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual([item["id"] for item in body["data"]], ["tb-brain"])
+
     def test_health(self) -> None:
         response = self.client.get("/health")
         self.assertEqual(response.status_code, 200)

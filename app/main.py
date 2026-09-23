@@ -118,13 +118,13 @@ def health(request: Request) -> dict[str, Any]:
 
 
 @app.get("/v1/models")
-async def list_models(request: Request) -> dict[str, Any]:
-    settings = _settings(request)
+def list_models() -> dict[str, Any]:
+    # Always advertise tb-brain. run_tool_loop maps tb-brain / auto to settings.llm_model.
     return {
         "object": "list",
         "data": [
             {
-                "id": settings.llm_model.strip() or "tb-brain",
+                "id": "tb-brain",
                 "object": "model",
                 "owned_by": "tb-brain",
             }
