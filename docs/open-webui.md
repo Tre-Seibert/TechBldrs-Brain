@@ -86,7 +86,7 @@ Click path, done while signed in as the existing admin — **do not** set `ENABL
 
 This blocks *new* password registrations only. The current admin's password login keeps working as a break-glass path. Verify it still works in a private/incognito window before closing your authenticated session.
 
-Optional: Open WebUI supports `OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true`, which would bind a Microsoft sign-in to the existing password-admin account by matching email. Upstream docs flag an account-takeover caveat if the OAuth provider doesn't reliably verify email — Entra does for this org's own tenant, but it's left off by default here; turn it on only if you've read that tradeoff.
+`OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true` is on in compose, so a Microsoft sign-in binds to the existing password-admin account by matching email instead of erroring with "this email is already registered." Upstream docs flag an account-takeover caveat if the OAuth provider doesn't reliably verify email — that doesn't apply here since this is a single-tenant Entra directory we control, not a public OAuth provider. Don't turn this on for a multi-tenant / public sign-in setup.
 
 ## What not to enable
 

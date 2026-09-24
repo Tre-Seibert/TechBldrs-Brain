@@ -37,6 +37,10 @@ services:
       WEBUI_URL: ${WEBUI_URL:-http://localhost:3000}
       ENABLE_FORWARD_USER_INFO_HEADERS: "true"
       FORWARD_USER_INFO_HEADER_JWT_SECRET: ${FORWARD_USER_INFO_HEADER_JWT_SECRET}
+      # Safe here: this is a single-tenant Entra directory we control, not a
+      # public OAuth provider, so a Microsoft sign-in binding to an existing
+      # password account by matching email is trustworthy.
+      OAUTH_MERGE_ACCOUNTS_BY_EMAIL: "true"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
