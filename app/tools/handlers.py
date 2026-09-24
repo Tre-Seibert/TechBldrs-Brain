@@ -248,25 +248,44 @@ def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | 
     return "\n".join(lines)
 
 
-def _similar_ticket_block(title: str, row: dict[str, Any]) -> list[str]:
-    label = row.get("ticket_label") or "?"
-    topic = (row.get("topic") or "").strip() or "(no topic)"
-    return [
-        f"{title} {label} — {topic}",
-        (
-            f"  {(row.get('client_code') or '?')} · status {row.get('status') or '?'} · "
-            f"category {row.get('category') or '?'} · stage {row.get('stage') or '?'} · "
-            f"assignee {row.get('assignee_code') or 'unassigned'}"
-        ),
-        (
-            f"  requestor {row.get('requestor_text') or 'n/a'} · "
-            f"machine {row.get('machine_name') or 'n/a'}"
-        ),
-        (
-            f"  created {row.get('created_at') or 'n/a'} · "
-            f"last activity {row.get('last_activity_at') or 'n/a'}"
-        ),
-    ]
+_REASON_WORDS = {
+    "similar_topic": "same topic",
+    "similar_subject": "same subject",
+    "same_contact": "same contact",
+    "same_machine": "same machine",
+    "same_requestor": "same requestor",
+}
+
+
+def _ticket_topic(row: dict[str, Any]) -> str:
+    return (row.get("topic") or row.get("subject") or "").strip() or "(no topic)"
+
+
+def _ticket_who(row: dict[str, Any]) -> str:
+    return (row.get("requestor_text") or "").strip() or "unknown"
+
+
+def _ticket_assignee(row: dict[str, Any]) -> str:
+    return (row.get("assignee_code") or "").strip() or "unassigned"
+
+
+def _similar_why(pair: dict[str, Any]) -> str:
+    keep = pair.get("keep") or {}
+    absorb = pair.get("absorb") or {}
+    bits = [_REASON_WORDS.get(code, code) for code in (pair.get("reasons") or [])]
+    keep_who, absorb_who = _ticket_who(keep), _ticket_who(absorb)
+    if keep_who.lower() != absorb_who.lower() and "same requestor" not in bits:
+        bits.append(f"different requestors ({keep_who} vs {absorb_who})")
+    elif keep_who != "unknown" and "same requestor" in bits:
+        bits = [f"same requestor ({keep_who})" if bit == "same requestor" else bit for bit in bits]
+    keep_asg, absorb_asg = _ticket_assignee(keep), _ticket_assignee(absorb)
+    if keep_asg != absorb_asg:
+        bits.append(f"assignees {keep_asg} vs {absorb_asg}")
+    keep_machine = (keep.get("machine_name") or "").strip()
+    absorb_machine = (absorb.get("machine_name") or "").strip()
+    if keep_machine and absorb_machine and keep_machine.lower() != absorb_machine.lower():
+        bits.append(f"machines {keep_machine} vs {absorb_machine}")
+    return ". ".join(bit[:1].upper() + bit[1:] for bit in bits) + "." if bits else "Similar tickets."
 
 
 def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
@@ -274,14 +293,21 @@ def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
         return heading
     lines = [heading.rstrip("."), ""]
     for pair in pairs:
-        reasons = ", ".join(pair.get("reasons") or []) or "similar"
-        lines.extend(_similar_ticket_block("Keep", pair.get("keep") or {}))
-        lines.extend(_similar_ticket_block("Absorb", pair.get("absorb") or {}))
-        lines.append(f"  Why: {reasons}")
+        keep = pair.get("keep") or {}
+        absorb = pair.get("absorb") or {}
+        keep_label = keep.get("ticket_label") or "?"
+        absorb_label = absorb.get("ticket_label") or "?"
+        keep_topic = _ticket_topic(keep)
+        absorb_topic = _ticket_topic(absorb)
+        title = keep_topic if keep_topic.lower() == absorb_topic.lower() else f"{keep_topic} / {absorb_topic}"
+        lines.append(f"Keep {keep_label}, absorb {absorb_label} — {title}")
+        lines.append(_similar_why(pair))
         if pair.get("merge_blocked"):
-            lines.append(f"  Cannot merge: {pair['merge_blocked']}")
+            lines.append(f"Cannot merge: {pair['merge_blocked']}")
+        else:
+            lines.append(f"To merge: merge {absorb_label} into {keep_label}")
         lines.append("")
-    lines.append("Nothing was merged. To merge, reply with both labels, e.g. merge ZTB-1691 into ZTB-1680.")
+    lines.append("Nothing was merged. Reply with a To merge line to confirm.")
     return "\n".join(lines).rstrip()
 
 

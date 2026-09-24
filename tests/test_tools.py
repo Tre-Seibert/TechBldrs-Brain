@@ -17,6 +17,7 @@ from app.tools.handlers import (
     SearchContactArgs,
     SearchTechnicianArgs,
     find_similar_tickets,
+    format_similar_list,
     latest_ticket,
     list_mail,
     list_tickets,
@@ -163,9 +164,38 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(result.data[0]["keep"]["ticket_label"], "ACME-0041")
         self.assertEqual(result.data[0]["absorb"]["ticket_label"], "ACME-0045")
         self.assertIn("all open tickets", result.reply or "")
-        self.assertIn("requestor", result.reply or "")
-        self.assertIn("machine", result.reply or "")
+        self.assertIn("Keep ACME-0041, absorb ACME-0045", result.reply or "")
+        self.assertIn("To merge: merge ACME-0045 into ACME-0041", result.reply or "")
+        self.assertNotIn("last activity", result.reply or "")
         self.assertNotIn("your tickets", result.reply or "")
+
+    def test_merge_reply_shows_only_decision_facts(self) -> None:
+        reply = format_similar_list(
+            [
+                {
+                    "keep": {
+                        "ticket_label": "STRX-0025",
+                        "topic": "TechBldrs Quote for New Network Line",
+                        "requestor_text": "Joseph Awe",
+                        "assignee_code": "ja",
+                    },
+                    "absorb": {
+                        "ticket_label": "STRX-0026",
+                        "topic": "TechBldrs Quote for New Network Line",
+                        "requestor_text": "Dani Lindsay",
+                        "assignee_code": None,
+                    },
+                    "reasons": ["similar_topic", "similar_subject"],
+                }
+            ],
+            heading="Possible merges in all open tickets (1)",
+        )
+        self.assertIn("Keep STRX-0025, absorb STRX-0026 — TechBldrs Quote for New Network Line", reply)
+        self.assertIn("Different requestors (Joseph Awe vs Dani Lindsay)", reply)
+        self.assertIn("Assignees ja vs unassigned", reply)
+        self.assertIn("To merge: merge STRX-0026 into STRX-0025", reply)
+        self.assertNotIn("created", reply)
+        self.assertNotIn("stage open", reply)
 
     def test_list_tickets_assigned_defaults_to_open_not_review(self) -> None:
         result = list_tickets(self.source, ListTicketsArgs(assignee_code="ts", stage="review"))
