@@ -4,7 +4,7 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.agent.loop import _ignored_client_tool_names, chat_turn_from_messages
+from app.agent.loop import _apply_english_reply, _ignored_client_tool_names, chat_turn_from_messages
 from app.main import app
 from app.tools import openai_tools
 
@@ -98,6 +98,16 @@ class ApiTests(unittest.TestCase):
             json={"target_ticket_id": 3100, "source_ticket_ids": [3105], "confirm": True},
         )
         self.assertIn(response.status_code, (404, 405))
+
+    def test_apply_english_reply_replaces_chinese(self) -> None:
+        payload = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "从提供的 JSON 格式数据中，可以看到多个服务请求记录。"}}
+            ]
+        }
+        reply = "- ZINT-5449 — Page Loading Feedback (ZINT · Done · ts)"
+        out = _apply_english_reply(payload, [reply])
+        self.assertEqual(out["choices"][0]["message"]["content"], reply)
 
     def test_chat_turn_reads_latest_user_and_prior_assistant(self) -> None:
         turn = chat_turn_from_messages(

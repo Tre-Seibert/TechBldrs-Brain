@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
 from app.flow.source import FlowSource
+from app.identity import current_actor_email
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     LATEST_TICKET,
@@ -74,12 +75,6 @@ class FindSimilarTicketsArgs(BaseModel):
     status: str | None = None
     limit: int = 20
 
-    @model_validator(mode="after")
-    def _need_scope(self) -> FindSimilarTicketsArgs:
-        if self.ticket_id is None and not (self.client_code or "").strip() and not (self.assignee_code or "").strip():
-            raise ValueError("client_code, assignee_code, or ticket_id is required")
-        return self
-
 
 class MergeTicketsArgs(BaseModel):
     target_ticket_id: int
@@ -107,6 +102,7 @@ class ToolResult(BaseModel):
     client_code: str | None = None
     error: str | None = None
     note: str | None = None
+    reply: str | None = None
 
 
 def _contact_payload(row: ContactRecord) -> dict[str, Any]:
@@ -201,8 +197,74 @@ def _mail_payload(row: MailRecord) -> dict[str, Any]:
     }
 
 
-def _refuse(tool: str, source: FlowSource, error: str, *, client_code: str | None = None) -> ToolResult:
-    return ToolResult(ok=False, tool=tool, source=source.source_name, client_code=client_code, error=error)
+def _refuse(
+    tool: str,
+    source: FlowSource,
+    error: str,
+    *,
+    client_code: str | None = None,
+    reply: str | None = None,
+) -> ToolResult:
+    return ToolResult(
+        ok=False,
+        tool=tool,
+        source=source.source_name,
+        client_code=client_code,
+        error=error,
+        reply=reply or error,
+    )
+
+
+def _actor_assignee(source: FlowSource) -> tuple[str | None, str | None]:
+    """Signed-in tech's assignee_code, or (None, reason) if we cannot default a merge scan."""
+    email = (current_actor_email.get() or "").strip()
+    if not email:
+        return None, (
+            "Name a client code (ZINT, ZTB, ...) or a technician. "
+            "Do not assume Western Dental or WDON."
+        )
+    matches = source.search_technician(query=email, limit=5)
+    codes = sorted({(row.assignee_code or "").lower() for row in matches if row.assignee_code})
+    if len(codes) == 1:
+        return codes[0], None
+    return None, (
+        f"Could not map signed-in user {email} to one assignee. "
+        "Name a client code or a technician. Do not assume Western Dental or WDON."
+    )
+
+
+def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | None = None) -> str:
+    if not rows:
+        return heading.rstrip(".") + ". None found."
+    lines = [heading.rstrip("."), ""]
+    for row in rows:
+        label = row.get("ticket_label") or "?"
+        topic = (row.get("topic") or row.get("subject") or "").strip() or "(no topic)"
+        status = (row.get("status") or "").strip() or "unknown status"
+        client = (row.get("client_code") or "").strip()
+        assignee = (row.get("assignee_code") or "").strip() or "unassigned"
+        extra = f"{client} · {status} · {assignee}" if client else f"{status} · {assignee}"
+        lines.append(f"- {label} — {topic} ({extra})")
+    if note:
+        lines.extend(["", note])
+    return "\n".join(lines)
+
+
+def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
+    if not pairs:
+        return heading
+    lines = [heading.rstrip("."), ""]
+    for pair in pairs:
+        keep = (pair.get("keep") or {}).get("ticket_label") or "?"
+        absorb = (pair.get("absorb") or {}).get("ticket_label") or "?"
+        reasons = ", ".join(pair.get("reasons") or []) or "similar"
+        blocked = pair.get("merge_blocked")
+        line = f"- Keep {keep} ← absorb {absorb} ({reasons})"
+        if blocked:
+            line += f" — cannot merge: {blocked}"
+        lines.append(line)
+    lines.extend(["", "Nothing was merged. To merge, reply with both labels, e.g. merge ZTB-1691 into ZTB-1680."])
+    return "\n".join(lines)
 
 
 def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, str | None]:
@@ -275,15 +337,19 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
     if len(rows) >= max(args.limit, 1):
         note = (
             f"Showing {len(rows)} tickets (limit {args.limit}, max 100). "
-            "More may exist; narrow with client_code or status."
+            "More may exist; narrow with a client code or status."
         )
+    data = [_ticket_payload(r) for r in rows]
+    who = assignee or client or (args.q or args.ticket_num or "that search")
+    heading = f"{len(rows)} ticket(s) for {who}"
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
-        data=[_ticket_payload(r) for r in rows],
+        data=data,
         row_ids=[r.id for r in rows],
         client_code=scoped,
         note=note,
+        reply=format_ticket_list(data, heading=heading, note=note if rows else None),
     )
 
 
@@ -306,14 +372,17 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs) -> ToolResult:
             row_ids=[],
             client_code=code,
             note="No matching ticket.",
+            reply=f"No ticket found for {code}.",
         )
     row = rows[0]
+    data = _ticket_payload(row)
     return ToolResult(
         tool=LATEST_TICKET,
         source=source.source_name,
-        data=_ticket_payload(row),
+        data=data,
         row_ids=[row.id],
         client_code=row.client_code.upper(),
+        reply=format_ticket_list([data], heading=f"Latest ticket for {code}"),
     )
 
 
@@ -322,6 +391,12 @@ def find_similar_tickets(source: FlowSource, args: FindSimilarTicketsArgs) -> To
     if error:
         return _refuse(FIND_SIMILAR_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
+    scoped_to_you = False
+    if args.ticket_id is None and not client and not assignee:
+        assignee, error = _actor_assignee(source)
+        if error:
+            return _refuse(FIND_SIMILAR_TICKETS, source, error, reply=error)
+        scoped_to_you = True
     pairs = source.find_similar_tickets(
         ticket_id=args.ticket_id,
         client_code=client,
@@ -332,18 +407,32 @@ def find_similar_tickets(source: FlowSource, args: FindSimilarTicketsArgs) -> To
     row_ids: list[int] = []
     for pair in pairs:
         row_ids.extend((pair.keep_ticket.id, pair.absorb_ticket.id))
+    data = [_similar_payload(pair) for pair in pairs]
+    if scoped_to_you:
+        scope = f"your tickets ({assignee})"
+    elif assignee and client:
+        scope = f"{client} assigned to {assignee}"
+    elif assignee:
+        scope = f"tickets assigned to {assignee}"
+    elif client:
+        scope = f"{client}"
+    else:
+        scope = "that search"
+    if pairs:
+        heading = f"Possible merges in {scope} ({len(data)})"
+    else:
+        heading = (
+            f"No likely duplicates in {scope}. "
+            "Name a client code (ZINT, ZTB, ...) if you wanted a different scan."
+        )
     return ToolResult(
         tool=FIND_SIMILAR_TICKETS,
         source=source.source_name,
-        data=[_similar_payload(pair) for pair in pairs],
+        data=data,
         row_ids=row_ids,
         client_code=client,
-        note=(
-            "Suggestions only; nothing was merged. Show keep/absorb labels and reasons. To merge, the "
-            "user must reply restating both labels (e.g. 'merge ACME-0045 into ACME-0041')."
-            if pairs
-            else "No likely duplicates found in that scope."
-        ),
+        note="Suggestions only; nothing was merged." if pairs else heading,
+        reply=format_similar_list(data, heading=heading),
     )
 
 
@@ -441,13 +530,23 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
         contact_id=args.contact_id,
         limit=args.limit,
     )
+    data = [_mail_payload(r) for r in rows]
+    lines = [f"{len(data)} {args.direction} mail row(s) for {args.client_code.upper()}.", ""]
+    if not data:
+        lines.append("None found.")
+    for row in data:
+        who = (row.get("from_name") or row.get("from_address") or "unknown").strip()
+        subj = (row.get("subject") or "").strip() or "(no subject)"
+        when = row.get("received_at") or ""
+        lines.append(f"- {row.get('ticket_label')} — {subj} — {who} ({when})")
     return ToolResult(
         tool=LIST_MAIL,
         source=source.source_name,
-        data=[_mail_payload(r) for r in rows],
+        data=data,
         row_ids=[r.id for r in rows],
         client_code=args.client_code.upper(),
         note="direction=inbound means from the client to TechBldrs (filed on a Flow ticket).",
+        reply="\n".join(lines).rstrip(),
     )
 
 

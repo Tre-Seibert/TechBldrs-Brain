@@ -119,9 +119,28 @@ class ToolStubTests(unittest.TestCase):
         self.assertIn("same_contact", pair["reasons"])
         self.assertEqual(self._ticket_ids(), {3100, 3105})
 
-    def test_find_similar_tickets_requires_scope(self) -> None:
-        with self.assertRaises(ValueError):
-            FindSimilarTicketsArgs()
+    def test_find_similar_tickets_without_scope_does_not_guess_wdon(self) -> None:
+        result = find_similar_tickets(self.source, FindSimilarTicketsArgs())
+        self.assertFalse(result.ok)
+        self.assertIn("Do not assume Western Dental", result.error)
+        self.assertNotIn("WDON-1842", result.reply or "")
+
+    def test_find_similar_tickets_defaults_to_signed_in_tech(self) -> None:
+        token = current_actor_email.set("tseibert@techbldrs.example")
+        try:
+            result = find_similar_tickets(self.source, FindSimilarTicketsArgs())
+        finally:
+            current_actor_email.reset(token)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data[0]["keep"]["ticket_label"], "ACME-0041")
+        self.assertIn("your tickets (ts)", result.reply or "")
+
+    def test_list_tickets_reply_is_english_lines(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tre"))
+        self.assertIn("ACME-0041", result.reply or "")
+        self.assertIn("ACME-0045", result.reply or "")
+        self.assertNotRegex(result.reply or "", r"[\u4e00-\u9fff]")
+        self.assertNotIn("client_id", result.reply or "")
 
     def test_list_mail_wdon_inbound(self) -> None:
         result = list_mail(

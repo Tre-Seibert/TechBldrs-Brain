@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -13,7 +14,16 @@ from app.agent.system import SYSTEM_PROMPT
 from app.config import Settings
 from app.flow.source import FlowSource
 from app.tools import ChatTurn, openai_tools, run_tool
-from app.tools.registry import TOOL_NAMES
+from app.tools.registry import (
+    FIND_SIMILAR_TICKETS,
+    LATEST_TICKET,
+    LIST_MAIL,
+    LIST_TICKETS,
+    TOOL_NAMES,
+)
+
+_RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL}
+_CJK_RE = re.compile(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 
 _log = logging.getLogger("tb_brain.agent")
 
@@ -112,6 +122,43 @@ async def _resolve_model(client: httpx.AsyncClient, settings: Settings, requeste
     return str(name)
 
 
+def _tool_message_content(result: Any) -> str:
+    """Keep the model from seeing a fat JSON schema it will 'analyze' in Chinese."""
+    if result.reply:
+        return json.dumps(
+            {
+                "ok": result.ok,
+                "reply": result.reply,
+                "row_ids": result.row_ids,
+                "error": result.error,
+            }
+        )
+    return result.model_dump_json()
+
+
+def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[str, Any]:
+    """Qwen 7B often answers list tools in Chinese. Show our English list instead."""
+    if not replies:
+        return payload
+    text = replies[-1]
+    choices = payload.get("choices")
+    if not choices:
+        payload["choices"] = [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
+        return payload
+    message = dict(choices[0].get("message") or {})
+    existing = message.get("content") or ""
+    if existing and not _CJK_RE.search(existing) and "JSON" not in existing:
+        # Model already wrote English and didn't dump the schema — keep a short lead-in.
+        if existing.strip() != text.strip() and len(existing) < 400:
+            message["content"] = f"{existing.strip()}\n\n{text}"
+        else:
+            message["content"] = text
+    else:
+        message["content"] = text
+    choices[0]["message"] = message
+    return payload
+
+
 async def run_tool_loop(
     *,
     settings: Settings,
@@ -129,6 +176,7 @@ async def run_tool_loop(
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
     chat = _ensure_system(list(messages))
+    relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
     async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
@@ -161,7 +209,7 @@ async def run_tool_loop(
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 payload["model"] = resolved_model
-                return payload
+                return _apply_english_reply(payload, relayed)
             chat.append(message)
             _log.info(
                 "agent tool_calls iteration=%s count=%s",
@@ -182,12 +230,14 @@ async def run_tool_loop(
                     settings=settings,
                     turn=turn,
                 )
+                if result.reply and name in _RELAY_TOOLS:
+                    relayed.append(result.reply)
                 chat.append(
                     {
                         "role": "tool",
                         "tool_call_id": call.get("id") or name,
                         "name": name,
-                        "content": result.model_dump_json(),
+                        "content": _tool_message_content(result),
                     }
                 )
         raise AgentError(

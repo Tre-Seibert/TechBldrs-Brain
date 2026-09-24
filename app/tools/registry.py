@@ -205,9 +205,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         FIND_SIMILAR_TICKETS,
-        "Suggest likely duplicate tickets (keep/absorb pairs with reasons) for a client, a "
-        "technician, or one ticket. Use for 'what tickets need merged', 'duplicates', 'same issue "
-        "twice'. Suggests only; never merges.",
+        "Suggest likely duplicate tickets (keep/absorb pairs with reasons). "
+        "If the user named a client or technician, pass that. If they did not, call with no "
+        "client_code — never invent WDON or Western Dental. Suggests only; never merges.",
         _FIND_SIMILAR_SCHEMA,
     ),
     _fn(
