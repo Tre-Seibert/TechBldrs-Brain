@@ -596,23 +596,19 @@ def merge_tickets(source: FlowSource, args: MergeTicketsArgs, turn: ChatTurn | N
 
     target_label = (args.target_label or "").strip().upper()
     source_labels = [label.strip().upper() for label in args.source_labels if label.strip()]
-    expected = [(target_label, args.target_ticket_id)] + list(zip(source_labels, args.source_ticket_ids))
     resolved: list[TicketRecord] = []
-    for label, ticket_id in expected:
+    for label in [target_label, *source_labels]:
         row = _resolve_label(source, label)
         if row is None:
             return _refuse(MERGE_TICKETS, source, f"Not merged: {label} did not resolve to exactly one ticket.")
-        if row.id != ticket_id:
-            return _refuse(
-                MERGE_TICKETS,
-                source,
-                f"Not merged: {label} is ticket id {row.id}, not {ticket_id}. Re-check the ids from the tool results.",
-            )
         resolved.append(row)
     if len({row.client_id for row in resolved}) != 1:
         return _refuse(MERGE_TICKETS, source, "Not merged: tickets from different clients cannot be merged.")
 
-    summary = source.merge_tickets(target_ticket_id=args.target_ticket_id, source_ticket_ids=args.source_ticket_ids)
+    # Labels the user typed are the source of truth. The 7B/14B often invents ticket ids.
+    target_id = resolved[0].id
+    source_ids = [row.id for row in resolved[1:]]
+    summary = source.merge_tickets(target_ticket_id=target_id, source_ticket_ids=source_ids)
     return ToolResult(
         tool=MERGE_TICKETS,
         read_only=False,

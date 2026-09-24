@@ -289,9 +289,12 @@ class MergeGateTests(unittest.TestCase):
         turn = ChatTurn(user_text="merge ACME-0041 into ACME-0045", previous_assistant_text=_PLAN)
         self._assert_refused(_merge_args(), turn, "opposite direction")
 
-    def test_mismatched_ids_refuse(self) -> None:
+    def test_mismatched_ids_still_merge_the_named_labels(self) -> None:
         turn = ChatTurn(user_text="merge ACME-0045 into ACME-0041", previous_assistant_text=_PLAN)
-        self._assert_refused(_merge_args(target_ticket_id=9001), turn, "is ticket id 3100")
+        result = merge_tickets(self.source, _merge_args(target_ticket_id=176943, source_ticket_ids=[1]), turn)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data["merged_source_labels"], ["ACME-0045"])
+        self.assertEqual(self._ticket_ids(), {3100})
 
     def test_restated_labels_merge_on_stub(self) -> None:
         turn = ChatTurn(user_text="Yes, merge ACME-0045 into ACME-0041", previous_assistant_text=_PLAN)
