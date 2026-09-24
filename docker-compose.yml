@@ -9,7 +9,7 @@
 #   2. Ollama on the host for tb-brain's LLM_BASE_URL. Do not store models in this repo.
 #
 #   docker compose up -d
-#   http://127.0.0.1:3000
+#   http://localhost:3000
 #   Pick model tb-brain. /v1/models always advertises that id.
 #
 # Sign-in with Microsoft (lab SSO): MICROSOFT_CLIENT_ID/_SECRET/_TENANT_ID and
@@ -34,7 +34,7 @@ services:
       MICROSOFT_CLIENT_TENANT_ID: ${MICROSOFT_CLIENT_TENANT_ID}
       OPENID_PROVIDER_URL: https://login.microsoftonline.com/${MICROSOFT_CLIENT_TENANT_ID}/v2.0/.well-known/openid-configuration
       OAUTH_SCOPES: "openid email profile"
-      WEBUI_URL: ${WEBUI_URL:-http://127.0.0.1:3000}
+      WEBUI_URL: ${WEBUI_URL:-http://localhost:3000}
       ENABLE_FORWARD_USER_INFO_HEADERS: "true"
       FORWARD_USER_INFO_HEADER_JWT_SECRET: ${FORWARD_USER_INFO_HEADER_JWT_SECRET}
     extra_hosts:

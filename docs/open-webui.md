@@ -18,7 +18,7 @@ Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of tb-
 3. Confirm Ollama: `curl.exe --noproxy "*" http://127.0.0.1:11434/api/tags`
 4. Start tb-brain: `.\scripts\run.ps1` (must stay up; `BRAIN_HOST=0.0.0.0` so the container can reach it).
 5. From the repo: `docker compose up -d`
-6. Open `http://127.0.0.1:3000`. New chat, model **tb-brain**. Admin → Settings → Connections: Ollama off, only `http://host.docker.internal:8765/v1` with key `sk-tb-brain-lab`. Admin → Settings → Models → tb-brain: turn **Builtin Tools** off (Task Management's `update_task`, Notes, Calendar, Automations). The tool loop ignores those even if Open WebUI still sends them.
+6. Open `http://localhost:3000`. New chat, model **tb-brain**. Admin → Settings → Connections: Ollama off, only `http://host.docker.internal:8765/v1` with key `sk-tb-brain-lab`. Admin → Settings → Models → tb-brain: turn **Builtin Tools** off (Task Management's `update_task`, Notes, Calendar, Automations). The tool loop ignores those even if Open WebUI still sends them.
 
 ## How chat reaches tools
 
@@ -42,7 +42,7 @@ Do not reuse Flow's production app registration or its redirect URI. In the Azur
 1. **Entra ID → App registrations → New registration**
    - Name: `tb-brain lab (Open WebUI)`
    - Supported account types: same tenant as Flow (single tenant)
-   - Redirect URI (platform **Web**): `http://127.0.0.1:3000/oauth/microsoft/callback`
+   - Redirect URI (platform **Web**): `http://localhost:3000/oauth/microsoft/callback` — use `localhost`, not `127.0.0.1`; Entra matches the redirect URI as an exact string, and `WEBUI_URL` (below) has to use the same host you register here
 2. **API permissions**: Microsoft Graph → Delegated → `openid`, `email`, `profile` (usually pre-consented; grant admin consent if your tenant requires it).
 3. **Certificates & secrets → New client secret**. Copy the secret *value* immediately — it's the only time it's shown.
 4. **Overview** page: copy
@@ -51,6 +51,8 @@ Do not reuse Flow's production app registration or its redirect URI. In the Azur
    - Client secret value → `MICROSOFT_CLIENT_SECRET`
 
 Put all three in this repo's host `.env` (never committed — `.env` is gitignored). If the tenant doesn't return an `email` claim, set `OAUTH_EMAIL_CLAIM=preferred_username` in compose and `OAUTH_EMAIL_CLAIM=preferred_username` in tb-brain's own `.env`.
+
+Also set `WEBUI_URL` in that same `.env` to the **base** URL only — `http://localhost:3000`, not `http://localhost:3000/oauth/microsoft/callback`. Open WebUI appends the callback path itself; if `WEBUI_URL` already has it, sign-in fails with `AADSTS50011` (redirect URI mismatch) because Open WebUI builds an incorrect URI to send Entra.
 
 ### 2. Sign the identity hop
 
@@ -72,7 +74,7 @@ Without this secret, Open WebUI falls back to sending an unsigned `X-OpenWebUI-U
 docker compose up -d --force-recreate
 ```
 
-Open `http://127.0.0.1:3000` — the login screen should now offer "Sign in with Microsoft" alongside the existing password form.
+Open `http://localhost:3000` — the login screen should now offer "Sign in with Microsoft" alongside the existing password form.
 
 ### 4. Disable password sign-ups (without locking out the admin)
 
