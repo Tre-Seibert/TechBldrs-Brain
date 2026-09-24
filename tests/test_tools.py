@@ -137,6 +137,18 @@ class ToolStubTests(unittest.TestCase):
         archived = list_tickets(self.source, ListTicketsArgs(assignee_code="ts", stage="archived"))
         self.assertEqual([row["ticket_label"] for row in archived.data], ["ACME-0010"])
 
+    def test_list_tickets_assigned_ignores_model_live(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="ts", stage="live"))
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041", "ACME-0045"])
+        self.assertIn("Want archived tickets too?", result.reply or "")
+        self.assertNotIn("(live)", result.reply or "")
+
+    def test_list_tickets_empty_archived_does_not_invent_reason(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="tr", stage="archived"))
+        self.assertEqual(result.data, [])
+        self.assertEqual(result.reply, "No archived tickets assigned to tr.")
+        self.assertNotIn("reviewed and closed", result.reply or "")
+
     def test_list_tickets_reply_is_english_lines(self) -> None:
         result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tre"))
         self.assertIn("ACME-0041", result.reply or "")

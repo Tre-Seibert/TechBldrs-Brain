@@ -224,7 +224,10 @@ def _refuse(
 
 def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | None = None) -> str:
     if not rows:
-        return heading.rstrip(".") + ". None found."
+        cleaned = heading.rstrip(".")
+        if cleaned.lower().startswith("no "):
+            return cleaned + "."
+        return cleaned + ". None found."
     lines = [heading.rstrip("."), ""]
     for row in rows:
         label = row.get("ticket_label") or "?"
@@ -329,12 +332,17 @@ def search_technician(source: FlowSource, args: SearchTechnicianArgs) -> ToolRes
 
 
 def _default_list_stage(args: ListTicketsArgs) -> str:
-    if (args.stage or "").strip():
-        return args.stage.strip().lower()
+    """Assigned-to lists are Open unless the user asked for review/archived/all.
+
+    The 7B often passes stage=live on its own, which pulls 9 REVIEW back in.
+    """
+    wanted = (args.stage or "").strip().lower()
     assignee_only = bool((args.assignee_code or "").strip()) and not any(
         (value or "").strip() for value in (args.client_code, args.q, args.ticket_num)
     )
-    return "open" if assignee_only else "live"
+    if assignee_only and wanted not in ("review", "archived", "all"):
+        return "open"
+    return wanted or "live"
 
 
 def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
@@ -367,7 +375,16 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
         )
     data = [_ticket_payload(r) for r in rows]
     who = assignee or client or (args.q or args.ticket_num or "that search")
-    heading = f"{len(rows)} open ticket(s) for {who}" if stage == "open" else f"{len(rows)} ticket(s) for {who} ({stage})"
+    if not rows:
+        heading = (
+            f"No {stage} tickets assigned to {who}."
+            if assignee
+            else f"No {stage} tickets for {who}."
+        )
+    elif stage == "open":
+        heading = f"{len(rows)} open ticket(s) for {who}"
+    else:
+        heading = f"{len(rows)} {stage} ticket(s) for {who}"
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,

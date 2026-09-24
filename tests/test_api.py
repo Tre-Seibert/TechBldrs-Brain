@@ -109,6 +109,21 @@ class ApiTests(unittest.TestCase):
         out = _apply_english_reply(payload, [reply])
         self.assertEqual(out["choices"][0]["message"]["content"], reply)
 
+    def test_apply_english_reply_replaces_short_english_too(self) -> None:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "There are no archived tickets assigned to ts. All archived tickets for ts are reviewed and closed.",
+                    }
+                }
+            ]
+        }
+        reply = "No archived tickets assigned to ts."
+        out = _apply_english_reply(payload, [reply])
+        self.assertEqual(out["choices"][0]["message"]["content"], reply)
+
     def test_chat_turn_reads_latest_user_and_prior_assistant(self) -> None:
         turn = chat_turn_from_messages(
             [

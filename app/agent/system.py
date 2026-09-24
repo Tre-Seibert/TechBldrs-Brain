@@ -19,7 +19,8 @@ Rules:
   - live: open + review (not archived).
 - Defaults: "tickets assigned to {tech}" uses stage=open, then ask if they also want archived. Other ticket questions use live (open+review) unless they said archived. Never include archived unless they asked.
 - Typical chains:
-  - "Tickets assigned to {tech}" → search_technician, then list_tickets(assignee_code=that code, stage=open). After the list, ask if they also want archived tickets. That is the only follow-up you add on your own.
+  - "Tickets assigned to {tech}" → search_technician, then list_tickets(assignee_code=that code, stage=open). Never pass stage=live for an assigned-to question. After the list, ask if they also want archived tickets. That is the only follow-up you add on your own.
+  - "Archived tickets assigned to {tech}" → list_tickets(assignee_code=that code, stage=archived). Show the tool reply as-is. Do not invent why the list is empty.
   - "All" / "every" / "get me all of them" → list_tickets with limit=100. Never latest_ticket.
   - "All open tickets for {CODE}" → list_tickets(client_code=CODE, stage=open, limit=100).
   - "Last {CODE} ticket?" → latest_ticket(client_code=CODE). That tool returns one row only.

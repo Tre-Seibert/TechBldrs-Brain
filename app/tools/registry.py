@@ -85,7 +85,8 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
                 "open = not archived and category is not 9 REVIEW. "
                 "review = not archived and category is 9 REVIEW. "
                 "archived = archived tickets. live = open+review. "
-                "Assigned-to queries default to open. Other lists default to live."
+                "Assigned-to queries are always open unless the user said review, archived, or all. "
+                "Do not pass stage=live for 'tickets assigned to {tech}'."
             ),
         },
         "limit": {

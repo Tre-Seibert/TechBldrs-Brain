@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -23,7 +22,6 @@ from app.tools.registry import (
 )
 
 _RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL}
-_CJK_RE = re.compile(r"[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 
 _log = logging.getLogger("tb_brain.agent")
 
@@ -146,15 +144,7 @@ def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[st
         payload["choices"] = [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
         return payload
     message = dict(choices[0].get("message") or {})
-    existing = message.get("content") or ""
-    if existing and not _CJK_RE.search(existing) and "JSON" not in existing:
-        # Model already wrote English and didn't dump the schema — keep a short lead-in.
-        if existing.strip() != text.strip() and len(existing) < 400:
-            message["content"] = f"{existing.strip()}\n\n{text}"
-        else:
-            message["content"] = text
-    else:
-        message["content"] = text
+    message["content"] = text
     choices[0]["message"] = message
     return payload
 
