@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
 from app.flow.source import FlowSource
+from app.identity import current_signed_in_email
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     LATEST_TICKET,
@@ -21,6 +22,10 @@ from app.tools.registry import (
 
 _ASSIGNEE_CODE_RE = re.compile(r"^[A-Za-z]{2}$")
 _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
+_SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
+_UNKNOWN_SELF = (
+    "I don't know who you are signed in as. Sign in with your Flow email, or name a technician."
+)
 
 
 @dataclass(frozen=True)
@@ -280,12 +285,37 @@ def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _is_self_token(text: str | None) -> bool:
+    return (text or "").strip().lower() in _SELF_ASSIGNEE
+
+
+def _signed_in_technician(source: FlowSource) -> tuple[TechnicianRecord | None, str | None]:
+    email = (current_signed_in_email.get() or "").strip().lower()
+    if not email:
+        return None, _UNKNOWN_SELF
+    matches = source.search_technician(query=email, limit=5)
+    exact = [row for row in matches if (row.email or "").strip().lower() == email]
+    pick = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
+    if pick and pick.assignee_code:
+        return pick, None
+    return None, f"No Flow technician uses the signed-in email {email}."
+
+
 def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, str | None]:
     """Return (assignee_code, error). A two-letter code passes through; a name or email is
-    resolved through search_technician — never a hardcoded alias table."""
+    resolved through search_technician — never a hardcoded alias table.
+
+    'me' / 'my' / 'myself' / 'i' is the signed-in Flow email, not a name search.
+    Those tokens are also valid two-letter codes, so self-check comes first.
+    """
     text = (raw or "").strip()
     if not text:
         return None, None
+    if _is_self_token(text):
+        tech, error = _signed_in_technician(source)
+        if error:
+            return None, error
+        return (tech.assignee_code or "").lower(), None
     if _ASSIGNEE_CODE_RE.match(text):
         return text.lower(), None
     matches = source.search_technician(query=text, limit=10)
@@ -317,7 +347,13 @@ def search_contact(source: FlowSource, args: SearchContactArgs) -> ToolResult:
 
 
 def search_technician(source: FlowSource, args: SearchTechnicianArgs) -> ToolResult:
-    rows = source.search_technician(query=args.query, limit=args.limit)
+    if _is_self_token(args.query):
+        tech, error = _signed_in_technician(source)
+        if error:
+            return _refuse(SEARCH_TECHNICIAN, source, error)
+        rows = [tech]
+    else:
+        rows = source.search_technician(query=args.query, limit=args.limit)
     return ToolResult(
         tool=SEARCH_TECHNICIAN,
         source=source.source_name,
@@ -331,14 +367,14 @@ def search_technician(source: FlowSource, args: SearchTechnicianArgs) -> ToolRes
     )
 
 
-def _default_list_stage(args: ListTicketsArgs) -> str:
+def _default_list_stage(args: ListTicketsArgs, *, assignee_code: str | None, query: str | None) -> str:
     """Assigned-to lists are Open unless the user asked for review/archived/all.
 
     The 7B often passes stage=live on its own, which pulls 9 REVIEW back in.
     """
     wanted = (args.stage or "").strip().lower()
-    assignee_only = bool((args.assignee_code or "").strip()) and not any(
-        (value or "").strip() for value in (args.client_code, args.q, args.ticket_num)
+    assignee_only = bool(assignee_code) and not any(
+        (value or "").strip() for value in (args.client_code, query, args.ticket_num)
     )
     if assignee_only and wanted not in ("review", "archived", "all"):
         return "open"
@@ -346,15 +382,20 @@ def _default_list_stage(args: ListTicketsArgs) -> str:
 
 
 def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
-    assignee, error = _resolve_assignee(source, args.assignee_code)
+    raw_assignee = args.assignee_code
+    raw_q = (args.q or "").strip() or None
+    if not (raw_assignee or "").strip() and _is_self_token(raw_q):
+        raw_assignee = "me"
+        raw_q = None
+    assignee, error = _resolve_assignee(source, raw_assignee)
     if error:
         return _refuse(LIST_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
-    stage = _default_list_stage(args)
+    stage = _default_list_stage(args, assignee_code=assignee, query=raw_q)
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
-        query=(args.q or "").strip() or None,
+        query=raw_q,
         status=args.status,
         ticket_num=(args.ticket_num or "").strip() or None,
         stage=stage,

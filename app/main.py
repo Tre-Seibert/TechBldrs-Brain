@@ -13,7 +13,7 @@ from app.agent.loop import AgentError, run_tool_loop, stream_final_message
 from app.config import Settings, get_settings
 from app.flow.factory import build_flow_source
 from app.flow.source import FlowNotConfigured, FlowSource
-from app.identity import ResolvedActor, current_actor_email, resolve_actor
+from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
 from app.tools import openai_tools, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
@@ -122,11 +122,13 @@ def _resolve_actor(
 
 @contextmanager
 def _actor_scope(resolved: ResolvedActor):
-    token = current_actor_email.set(resolved.email if resolved.verified else None)
+    write_token = current_actor_email.set(resolved.email if resolved.verified else None)
+    me_token = current_signed_in_email.set(resolved.email)
     try:
         yield
     finally:
-        current_actor_email.reset(token)
+        current_signed_in_email.reset(me_token)
+        current_actor_email.reset(write_token)
 
 
 class ChatCompletionRequest(BaseModel):

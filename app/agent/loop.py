@@ -9,9 +9,10 @@ from typing import Any
 
 import httpx
 
-from app.agent.system import SYSTEM_PROMPT
+from app.agent.system import SYSTEM_PROMPT, signed_in_prompt_line
 from app.config import Settings
 from app.flow.source import FlowSource
+from app.identity import current_signed_in_email
 from app.tools import ChatTurn, openai_tools, run_tool
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
@@ -78,14 +79,31 @@ def chat_turn_from_messages(messages: list[dict[str, Any]]) -> ChatTurn:
     )
 
 
-def _ensure_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _signed_in_line(source: FlowSource) -> str:
+    email = (current_signed_in_email.get() or "").strip().lower() or None
+    name = None
+    code = None
+    if email:
+        matches = source.search_technician(query=email, limit=5)
+        exact = [row for row in matches if (row.email or "").strip().lower() == email]
+        pick = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
+        if pick:
+            name = pick.display_name
+            code = pick.assignee_code
+    return signed_in_prompt_line(name, code, email)
+
+
+def _ensure_system(messages: list[dict[str, Any]], *, source: FlowSource) -> list[dict[str, Any]]:
+    prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source)
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
         content = str(first.get("content") or "")
         if "tb-brain" not in content:
-            first["content"] = SYSTEM_PROMPT + "\n\n" + content
+            first["content"] = prompt + "\n\n" + content
+        else:
+            first["content"] = content.rstrip() + "\n- " + _signed_in_line(source)
         return [first, *messages[1:]]
-    return [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+    return [{"role": "system", "content": prompt}, *messages]
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:
@@ -165,7 +183,7 @@ async def run_tool_loop(
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
-    chat = _ensure_system(list(messages))
+    chat = _ensure_system(list(messages), source=source)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)

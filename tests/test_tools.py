@@ -6,7 +6,7 @@ from unittest import mock
 from app.config import Settings
 from app.flow.http import HttpFlowSource
 from app.flow.stub import StubFlowSource
-from app.identity import current_actor_email
+from app.identity import current_actor_email, current_signed_in_email
 from app.tools import ChatTurn, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
@@ -72,6 +72,42 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041", "ACME-0045"])
         self.assertIn("Want archived tickets too?", result.reply or "")
         self.assertNotIn("ACME-0050", result.reply or "")
+
+    def test_list_tickets_me_uses_signed_in_email(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = list_tickets(self.source, ListTicketsArgs(assignee_code="me"))
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041", "ACME-0045"])
+        self.assertIn("Want archived tickets too?", result.reply or "")
+
+    def test_list_tickets_my_as_two_letter_token_is_still_self(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = list_tickets(self.source, ListTicketsArgs(assignee_code="my"))
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok)
+        self.assertEqual({row["assignee_code"] for row in result.data}, {"ts"})
+
+    def test_list_tickets_me_without_sign_in_does_not_search_names(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="me"))
+        self.assertFalse(result.ok)
+        self.assertIn("signed in", result.error or "")
+        self.assertNotIn("Kimora", result.error or "")
+        self.assertNotIn("Sammer", result.error or "")
+
+    def test_search_technician_me_returns_signed_in_tech(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = search_technician(self.source, SearchTechnicianArgs(query="me"))
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.data), 1)
+        self.assertEqual(result.data[0]["assignee_code"], "ts")
 
     def test_list_tickets_resolves_a_technician_name(self) -> None:
         # A 7B model sometimes passes the name straight through; the handler

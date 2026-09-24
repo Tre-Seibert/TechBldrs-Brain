@@ -49,7 +49,10 @@ _SEARCH_TECHNICIAN_SCHEMA: dict[str, Any] = {
     "properties": {
         "query": {
             "type": "string",
-            "description": "Technician first name, full name, email, or two-letter code (e.g. Tre, tseibert, ts).",
+            "description": (
+                "Technician first name, full name, email, or two-letter code (e.g. Tre, tseibert, ts). "
+                "Do not search for 'me' — use list_tickets(assignee_code=me) instead."
+            ),
         },
     },
     "required": ["query"],
@@ -60,7 +63,10 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
     "properties": {
         "assignee_code": {
             "type": "string",
-            "description": "Two-letter technician code from search_technician (e.g. ts).",
+            "description": (
+                "Two-letter technician code from search_technician (e.g. ts), "
+                "or 'me' for the signed-in technician. Use me for 'my tickets'."
+            ),
         },
         "client_code": {
             "type": "string",

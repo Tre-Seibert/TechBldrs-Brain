@@ -28,6 +28,10 @@ _log = logging.getLogger("tb_brain.identity")
 # an unverified source.
 current_actor_email: ContextVar[str | None] = ContextVar("current_actor_email", default=None)
 
+# Email of the person in this chat (JWT when verified, Open WebUI header in lab).
+# Used only to resolve "me" / "my tickets". Not forwarded to Flow writes.
+current_signed_in_email: ContextVar[str | None] = ContextVar("current_signed_in_email", default=None)
+
 
 @dataclass(frozen=True)
 class ResolvedActor:

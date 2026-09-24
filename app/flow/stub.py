@@ -96,9 +96,11 @@ class StubFlowSource:
             if tech.is_active
             and (
                 not needle
-                or needle in _norm(tech.display_name)
-                or needle in _norm(tech.email)
                 or needle == _norm(tech.assignee_code)
+                or (
+                    len(needle) >= 3
+                    and (needle in _norm(tech.display_name) or needle in _norm(tech.email))
+                )
             )
         ]
         # Same as Flow: an exact assignee-code hit outranks a display-name substring.

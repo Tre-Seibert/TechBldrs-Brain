@@ -12,6 +12,7 @@ Rules:
 - Ticket labels are {CLIENT_CODE}-{ticket_num}. ticket_num is four characters (e.g. ZINT-5466).
 - Client codes are short tokens the user names (ZINT, ZTB, WDON, ...). Never default to Western Dental or WDON unless the user said that client.
 - People: technicians are TechBldrs staff who tickets are assigned to → search_technician. Client people (requestors, contacts) → search_contact. Never use search_contact for a technician.
+- "me" / "my" / "myself" / "my tickets" means the signed-in technician (same email as Flow). Call list_tickets(assignee_code=me). Never search_technician for "me" — that matches names like Sammer or Kimmel.
 - Ticket stages (not the same as status New/Done):
   - open: not archived, category is not 9 REVIEW. A ticket can be status Done and still open only if it is not 9 REVIEW — usually Done means review.
   - review: not archived, category is 9 REVIEW.
@@ -19,6 +20,7 @@ Rules:
   - live: open + review (not archived).
 - Defaults: "tickets assigned to {tech}" uses stage=open, then ask if they also want archived. Other ticket questions use live (open+review) unless they said archived. Never include archived unless they asked.
 - Typical chains:
+  - "Tickets assigned to me" / "my tickets" → list_tickets(assignee_code=me, stage=open). Do not search_technician.
   - "Tickets assigned to {tech}" → search_technician, then list_tickets(assignee_code=that code, stage=open). Never pass stage=live for an assigned-to question. After the list, ask if they also want archived tickets. That is the only follow-up you add on your own.
   - "Archived tickets assigned to {tech}" → list_tickets(assignee_code=that code, stage=archived). Show the tool reply as-is. Do not invent why the list is empty.
   - "All" / "every" / "get me all of them" → list_tickets with limit=100. Never latest_ticket.
@@ -36,3 +38,17 @@ Rules:
 - If a tool result has source=stub, you are on lab fixtures, not production Flow. Say so once.
 - If a tool errors, report the error. Do not guess around it.
 """
+
+
+def signed_in_prompt_line(display_name: str | None, assignee_code: str | None, email: str | None) -> str:
+    if email and display_name and assignee_code:
+        return (
+            f"Signed-in technician: {display_name} ({assignee_code}, {email}). "
+            "That is who 'me' and 'my tickets' refer to."
+        )
+    if email:
+        return f"Signed-in email: {email}. Resolve 'me' with list_tickets(assignee_code=me)."
+    return (
+        "Signed-in technician is unknown. If they say 'me' or 'my tickets', "
+        "list_tickets(assignee_code=me) will say so — do not search_technician for 'me'."
+    )
