@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
 from app.flow.source import FlowSource
-from app.identity import current_actor_email
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     LATEST_TICKET,
@@ -59,6 +58,7 @@ class ListTicketsArgs(BaseModel):
     q: str | None = None
     ticket_num: str | None = None
     status: str | None = None
+    stage: str | None = None
     limit: int = 100
 
     @model_validator(mode="after")
@@ -73,6 +73,7 @@ class FindSimilarTicketsArgs(BaseModel):
     assignee_code: str | None = None
     ticket_id: int | None = None
     status: str | None = None
+    stage: str | None = None
     limit: int = 20
 
 
@@ -145,6 +146,7 @@ def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
         "topic": row.topic,
         "status": row.status,
         "category": row.category,
+        "stage": row.stage,
         "requestor_text": row.requestor_text,
         "contact_id": row.contact_id,
         "machine_name": row.machine_name,
@@ -163,9 +165,14 @@ def _similar_payload(pair: SimilarTicketPair) -> dict[str, Any]:
             "ticket_label": ticket_label(row.client_code, row.ticket_num),
             "topic": row.topic,
             "status": row.status,
+            "category": row.category,
+            "stage": row.stage or ("review" if (row.category or "").strip().lower() == "9 review" else "open"),
+            "client_code": row.client_code,
             "assignee_code": row.assignee_code,
             "requestor_text": row.requestor_text,
+            "machine_name": row.machine_name,
             "created_at": row.created_at.isoformat(sep=" "),
+            "last_activity_at": row.last_activity_at.isoformat(sep=" "),
         }
 
     payload: dict[str, Any] = {
@@ -215,24 +222,6 @@ def _refuse(
     )
 
 
-def _actor_assignee(source: FlowSource) -> tuple[str | None, str | None]:
-    """Signed-in tech's assignee_code, or (None, reason) if we cannot default a merge scan."""
-    email = (current_actor_email.get() or "").strip()
-    if not email:
-        return None, (
-            "Name a client code (ZINT, ZTB, ...) or a technician. "
-            "Do not assume Western Dental or WDON."
-        )
-    matches = source.search_technician(query=email, limit=5)
-    codes = sorted({(row.assignee_code or "").lower() for row in matches if row.assignee_code})
-    if len(codes) == 1:
-        return codes[0], None
-    return None, (
-        f"Could not map signed-in user {email} to one assignee. "
-        "Name a client code or a technician. Do not assume Western Dental or WDON."
-    )
-
-
 def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | None = None) -> str:
     if not rows:
         return heading.rstrip(".") + ". None found."
@@ -241,13 +230,35 @@ def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | 
         label = row.get("ticket_label") or "?"
         topic = (row.get("topic") or row.get("subject") or "").strip() or "(no topic)"
         status = (row.get("status") or "").strip() or "unknown status"
+        category = (row.get("category") or "").strip() or "uncategorized"
         client = (row.get("client_code") or "").strip()
         assignee = (row.get("assignee_code") or "").strip() or "unassigned"
-        extra = f"{client} · {status} · {assignee}" if client else f"{status} · {assignee}"
+        extra = f"{client} · {status} · {category} · {assignee}" if client else f"{status} · {category} · {assignee}"
         lines.append(f"- {label} — {topic} ({extra})")
     if note:
         lines.extend(["", note])
     return "\n".join(lines)
+
+
+def _similar_ticket_block(title: str, row: dict[str, Any]) -> list[str]:
+    label = row.get("ticket_label") or "?"
+    topic = (row.get("topic") or "").strip() or "(no topic)"
+    return [
+        f"{title} {label} — {topic}",
+        (
+            f"  {(row.get('client_code') or '?')} · status {row.get('status') or '?'} · "
+            f"category {row.get('category') or '?'} · stage {row.get('stage') or '?'} · "
+            f"assignee {row.get('assignee_code') or 'unassigned'}"
+        ),
+        (
+            f"  requestor {row.get('requestor_text') or 'n/a'} · "
+            f"machine {row.get('machine_name') or 'n/a'}"
+        ),
+        (
+            f"  created {row.get('created_at') or 'n/a'} · "
+            f"last activity {row.get('last_activity_at') or 'n/a'}"
+        ),
+    ]
 
 
 def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
@@ -255,16 +266,15 @@ def format_similar_list(pairs: list[dict[str, Any]], *, heading: str) -> str:
         return heading
     lines = [heading.rstrip("."), ""]
     for pair in pairs:
-        keep = (pair.get("keep") or {}).get("ticket_label") or "?"
-        absorb = (pair.get("absorb") or {}).get("ticket_label") or "?"
         reasons = ", ".join(pair.get("reasons") or []) or "similar"
-        blocked = pair.get("merge_blocked")
-        line = f"- Keep {keep} ← absorb {absorb} ({reasons})"
-        if blocked:
-            line += f" — cannot merge: {blocked}"
-        lines.append(line)
-    lines.extend(["", "Nothing was merged. To merge, reply with both labels, e.g. merge ZTB-1691 into ZTB-1680."])
-    return "\n".join(lines)
+        lines.extend(_similar_ticket_block("Keep", pair.get("keep") or {}))
+        lines.extend(_similar_ticket_block("Absorb", pair.get("absorb") or {}))
+        lines.append(f"  Why: {reasons}")
+        if pair.get("merge_blocked"):
+            lines.append(f"  Cannot merge: {pair['merge_blocked']}")
+        lines.append("")
+    lines.append("Nothing was merged. To merge, reply with both labels, e.g. merge ZTB-1691 into ZTB-1680.")
+    return "\n".join(lines).rstrip()
 
 
 def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, str | None]:
@@ -318,17 +328,28 @@ def search_technician(source: FlowSource, args: SearchTechnicianArgs) -> ToolRes
     )
 
 
+def _default_list_stage(args: ListTicketsArgs) -> str:
+    if (args.stage or "").strip():
+        return args.stage.strip().lower()
+    assignee_only = bool((args.assignee_code or "").strip()) and not any(
+        (value or "").strip() for value in (args.client_code, args.q, args.ticket_num)
+    )
+    return "open" if assignee_only else "live"
+
+
 def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
         return _refuse(LIST_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
+    stage = _default_list_stage(args)
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
         query=(args.q or "").strip() or None,
         status=args.status,
         ticket_num=(args.ticket_num or "").strip() or None,
+        stage=stage,
         limit=args.limit,
     )
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
@@ -339,9 +360,14 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
             f"Showing {len(rows)} tickets (limit {args.limit}, max 100). "
             "More may exist; narrow with a client code or status."
         )
+    if stage == "open" and assignee:
+        note = (
+            f"{note} These are Open tickets (not archived, not 9 REVIEW). "
+            "Want archived tickets too?"
+        )
     data = [_ticket_payload(r) for r in rows]
     who = assignee or client or (args.q or args.ticket_num or "that search")
-    heading = f"{len(rows)} ticket(s) for {who}"
+    heading = f"{len(rows)} open ticket(s) for {who}" if stage == "open" else f"{len(rows)} ticket(s) for {who} ({stage})"
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
@@ -360,6 +386,7 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs) -> ToolResult:
         client_code=code,
         contact_id=args.contact_id,
         status=args.status,
+        stage="live",
         sort="last_activity_at",
         order="desc",
         limit=1,
@@ -391,40 +418,31 @@ def find_similar_tickets(source: FlowSource, args: FindSimilarTicketsArgs) -> To
     if error:
         return _refuse(FIND_SIMILAR_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
-    scoped_to_you = False
-    if args.ticket_id is None and not client and not assignee:
-        assignee, error = _actor_assignee(source)
-        if error:
-            return _refuse(FIND_SIMILAR_TICKETS, source, error, reply=error)
-        scoped_to_you = True
+    stage = (args.stage or "").strip().lower() or "open"
     pairs = source.find_similar_tickets(
         ticket_id=args.ticket_id,
         client_code=client,
         assignee_code=assignee,
         status=args.status,
+        stage=stage,
         limit=args.limit,
     )
     row_ids: list[int] = []
     for pair in pairs:
         row_ids.extend((pair.keep_ticket.id, pair.absorb_ticket.id))
     data = [_similar_payload(pair) for pair in pairs]
-    if scoped_to_you:
-        scope = f"your tickets ({assignee})"
-    elif assignee and client:
-        scope = f"{client} assigned to {assignee}"
+    if assignee and client:
+        scope = f"open tickets for {client} assigned to {assignee}"
     elif assignee:
-        scope = f"tickets assigned to {assignee}"
+        scope = f"open tickets assigned to {assignee}"
     elif client:
-        scope = f"{client}"
+        scope = f"open tickets for {client}"
     else:
-        scope = "that search"
+        scope = "all open tickets"
     if pairs:
         heading = f"Possible merges in {scope} ({len(data)})"
     else:
-        heading = (
-            f"No likely duplicates in {scope}. "
-            "Name a client code (ZINT, ZTB, ...) if you wanted a different scan."
-        )
+        heading = f"No likely duplicates in {scope}."
     return ToolResult(
         tool=FIND_SIMILAR_TICKETS,
         source=source.source_name,

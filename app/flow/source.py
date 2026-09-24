@@ -34,6 +34,7 @@ class FlowSource(Protocol):
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
         limit: int = 100,
@@ -46,6 +47,7 @@ class FlowSource(Protocol):
         client_code: str | None = None,
         assignee_code: str | None = None,
         status: str | None = None,
+        stage: str | None = None,
         limit: int = 20,
     ) -> list[SimilarTicketPair]: ...
 

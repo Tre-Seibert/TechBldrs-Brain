@@ -68,6 +68,7 @@ class TicketRecord(BaseModel):
     topic: str
     status: str = "New"
     category: str = "Normal"
+    stage: str | None = None
     requestor_text: str = ""
     contact_id: int | None = None
     machine_name: str | None = None
@@ -76,6 +77,8 @@ class TicketRecord(BaseModel):
     created_at: datetime
     last_activity_at: datetime
     closed_at: datetime | None = None
+    archived: bool = False
+    archived_at: datetime | None = None
 
     @field_validator("subject", "topic", "requestor_text", "status", "category", mode="before")
     @classmethod

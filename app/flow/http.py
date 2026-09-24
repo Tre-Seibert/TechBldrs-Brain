@@ -141,6 +141,7 @@ class HttpFlowSource:
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
         limit: int = 100,
@@ -153,6 +154,7 @@ class HttpFlowSource:
             "contact_id": contact_id,
             "status": status,
             "ticket_num": ticket_num,
+            "stage": stage,
         }
         params.update({key: value for key, value in optional.items() if value not in (None, "")})
         data = self._get("/api/private/brain/tickets", params)
@@ -166,6 +168,7 @@ class HttpFlowSource:
         client_code: str | None = None,
         assignee_code: str | None = None,
         status: str | None = None,
+        stage: str | None = None,
         limit: int = 20,
     ) -> list[SimilarTicketPair]:
         params: dict[str, Any] = {"limit": limit}
@@ -174,6 +177,7 @@ class HttpFlowSource:
             "client_code": client_code,
             "assignee_code": assignee_code,
             "status": status,
+            "stage": stage,
         }
         params.update({key: value for key, value in optional.items() if value not in (None, "")})
         data = self._get("/api/private/brain/tickets/similar", params)

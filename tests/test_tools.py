@@ -45,7 +45,7 @@ class ToolStubTests(unittest.TestCase):
         self.source = StubFlowSource()
 
     def _ticket_ids(self) -> set[int]:
-        return {row.id for row in self.source.list_tickets(client_code="ACME")}
+        return {row.id for row in self.source.list_tickets(client_code="ACME", stage="open")}
 
     def test_search_contact_debe(self) -> None:
         result = search_contact(self.source, SearchContactArgs(query="Debe"))
@@ -70,6 +70,8 @@ class ToolStubTests(unittest.TestCase):
         result = list_tickets(self.source, ListTicketsArgs(assignee_code=code))
         self.assertTrue(result.ok)
         self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041", "ACME-0045"])
+        self.assertIn("Want archived tickets too?", result.reply or "")
+        self.assertNotIn("ACME-0050", result.reply or "")
 
     def test_list_tickets_resolves_a_technician_name(self) -> None:
         # A 7B model sometimes passes the name straight through; the handler
@@ -119,21 +121,21 @@ class ToolStubTests(unittest.TestCase):
         self.assertIn("same_contact", pair["reasons"])
         self.assertEqual(self._ticket_ids(), {3100, 3105})
 
-    def test_find_similar_tickets_without_scope_does_not_guess_wdon(self) -> None:
+    def test_find_similar_tickets_without_scope_scans_all_open(self) -> None:
         result = find_similar_tickets(self.source, FindSimilarTicketsArgs())
-        self.assertFalse(result.ok)
-        self.assertIn("Do not assume Western Dental", result.error)
-        self.assertNotIn("WDON-1842", result.reply or "")
-
-    def test_find_similar_tickets_defaults_to_signed_in_tech(self) -> None:
-        token = current_actor_email.set("tseibert@techbldrs.example")
-        try:
-            result = find_similar_tickets(self.source, FindSimilarTicketsArgs())
-        finally:
-            current_actor_email.reset(token)
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.data[0]["keep"]["ticket_label"], "ACME-0041")
-        self.assertIn("your tickets (ts)", result.reply or "")
+        self.assertEqual(result.data[0]["absorb"]["ticket_label"], "ACME-0045")
+        self.assertIn("all open tickets", result.reply or "")
+        self.assertIn("requestor", result.reply or "")
+        self.assertIn("machine", result.reply or "")
+        self.assertNotIn("your tickets", result.reply or "")
+
+    def test_list_tickets_assigned_defaults_to_open_not_review(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="ts", stage="review"))
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0050"])
+        archived = list_tickets(self.source, ListTicketsArgs(assignee_code="ts", stage="archived"))
+        self.assertEqual([row["ticket_label"] for row in archived.data], ["ACME-0010"])
 
     def test_list_tickets_reply_is_english_lines(self) -> None:
         result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tre"))
@@ -175,7 +177,7 @@ class MergeGateTests(unittest.TestCase):
         self.source = StubFlowSource()
 
     def _ticket_ids(self) -> set[int]:
-        return {row.id for row in self.source.list_tickets(client_code="ACME")}
+        return {row.id for row in self.source.list_tickets(client_code="ACME", stage="open")}
 
     def _assert_refused(self, args: MergeTicketsArgs, turn: ChatTurn | None, fragment: str) -> None:
         result = merge_tickets(self.source, args, turn)
@@ -221,7 +223,10 @@ class MergeGateTests(unittest.TestCase):
         self.assertEqual(result.data["merged_source_labels"], ["ACME-0045"])
         self.assertEqual(self._ticket_ids(), {3100})
         # Fixtures are per-instance: a fresh stub still has both tickets.
-        self.assertEqual({row.id for row in StubFlowSource().list_tickets(client_code="ACME")}, {3100, 3105})
+        self.assertEqual(
+            {row.id for row in StubFlowSource().list_tickets(client_code="ACME", stage="open")},
+            {3100, 3105},
+        )
 
     def test_http_write_without_verified_actor_fails_closed(self) -> None:
         source = HttpFlowSource(base_url="https://flow.example", token="token")

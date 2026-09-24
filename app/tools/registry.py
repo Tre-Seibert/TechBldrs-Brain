@@ -76,7 +76,17 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
         },
         "status": {
             "type": "string",
-            "description": "Optional exact status (Open, New, Closed, ...). Omit for every status.",
+            "description": "Optional exact status (New, Done, ...). Not the same as stage.",
+        },
+        "stage": {
+            "type": "string",
+            "enum": ["open", "review", "live", "archived", "all"],
+            "description": (
+                "open = not archived and category is not 9 REVIEW. "
+                "review = not archived and category is 9 REVIEW. "
+                "archived = archived tickets. live = open+review. "
+                "Assigned-to queries default to open. Other lists default to live."
+            ),
         },
         "limit": {
             "type": "integer",
@@ -113,9 +123,10 @@ _FIND_SIMILAR_SCHEMA: dict[str, Any] = {
             "description": "Look for duplicates among this technician's tickets (code from search_technician).",
         },
         "ticket_id": {"type": "integer", "description": "Find duplicates of this one ticket (tickets.id)."},
-        "status": {
+        "stage": {
             "type": "string",
-            "description": "Omit for open tickets only. Use all to include closed.",
+            "enum": ["open", "review", "live"],
+            "description": "Default open (all open tickets, not just the signed-in tech). Do not pass assignee unless the user named one.",
         },
         "limit": {"type": "integer", "description": "Max pairs (default 20, max 50)."},
     },
@@ -206,8 +217,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _fn(
         FIND_SIMILAR_TICKETS,
         "Suggest likely duplicate tickets (keep/absorb pairs with reasons). "
-        "If the user named a client or technician, pass that. If they did not, call with no "
-        "client_code — never invent WDON or Western Dental. Suggests only; never merges.",
+        "If the user named a client or technician, pass that. If they asked about open tickets "
+        "in general, call with no assignee_code and stage=open — never default to the signed-in "
+        "tech or to WDON. Suggests only; never merges.",
         _FIND_SIMILAR_SCHEMA,
     ),
     _fn(

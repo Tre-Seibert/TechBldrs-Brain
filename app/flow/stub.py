@@ -23,6 +23,24 @@ def _topic_tokens(topic: str | None) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", _norm(topic)))
 
 
+def _ticket_stage(ticket: TicketRecord) -> str:
+    if ticket.archived or ticket.archived_at is not None:
+        return "archived"
+    if _norm(ticket.category) == "9 review":
+        return "review"
+    return "open"
+
+
+def _stage_match(ticket: TicketRecord, stage: str | None) -> bool:
+    wanted = _norm(stage) or "live"
+    current = _ticket_stage(ticket)
+    if wanted == "all":
+        return True
+    if wanted == "live":
+        return current in ("open", "review")
+    return current == wanted
+
+
 class StubFlowSource:
     """In-process fixtures shaped like Flow's brain API.
 
@@ -96,6 +114,7 @@ class StubFlowSource:
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
         limit: int = 100,
@@ -115,7 +134,8 @@ class StubFlowSource:
         matches = [
             t
             for t in self._tickets
-            if (not code or _norm(t.client_code) == code)
+            if _stage_match(t, stage)
+            and (not code or _norm(t.client_code) == code)
             and (not assignee or _norm(t.assignee_code) == assignee)
             and (not needle or text_hit(t))
             and (contact_id is None or t.contact_id == contact_id)
@@ -133,20 +153,20 @@ class StubFlowSource:
         client_code: str | None = None,
         assignee_code: str | None = None,
         status: str | None = None,
+        stage: str | None = None,
         limit: int = 20,
     ) -> list[SimilarTicketPair]:
         """Lab stand-in for Flow's scorer: same client + same contact + overlapping topic."""
-        if ticket_id is None and not client_code and not assignee_code:
-            raise FlowRequestError("Flow 400: ticket_id, client_code, or assignee_code is required")
         code = _norm(client_code)
         assignee = _norm(assignee_code)
-        include_closed = _norm(status) == "all"
+        wanted_status = _norm(status)
         pool = [
             t
             for t in self._tickets
-            if (not code or _norm(t.client_code) == code)
+            if _stage_match(t, stage or "open")
+            and (not code or _norm(t.client_code) == code)
             and (not assignee or _norm(t.assignee_code) == assignee)
-            and (include_closed or (_norm(t.status) != "closed" and not t.complete))
+            and (not wanted_status or wanted_status == "all" or _norm(t.status) == wanted_status)
         ]
         pairs: list[SimilarTicketPair] = []
         for left, right in combinations(pool, 2):
