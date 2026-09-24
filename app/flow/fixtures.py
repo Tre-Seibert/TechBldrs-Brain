@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.flow.schemas import ClientRecord, ContactRecord, MailRecord, TicketRecord
+from app.flow.schemas import ClientRecord, ContactRecord, MailRecord, TechnicianRecord, TicketRecord
 
 # Naive datetimes match Flow's DateTime columns (no timezone in MariaDB models).
 _DT = datetime
@@ -86,7 +86,7 @@ TICKETS: list[TicketRecord] = [
         requestor_text="Debe Hernandez",
         contact_id=101,
         machine_name="WDON-IMG-01",
-        assignee_code="TR",
+        assignee_code="tr",
         complete=False,
         created_at=_DT(2026, 9, 17, 14, 5, 0),
         last_activity_at=_DT(2026, 9, 18, 9, 41, 0),
@@ -102,7 +102,7 @@ TICKETS: list[TicketRecord] = [
         category="Normal",
         requestor_text="Chris Patel",
         contact_id=102,
-        assignee_code="TR",
+        assignee_code="tr",
         complete=True,
         created_at=_DT(2026, 8, 4, 11, 0, 0),
         last_activity_at=_DT(2026, 8, 4, 11, 22, 0),
@@ -119,8 +119,44 @@ TICKETS: list[TicketRecord] = [
         category="Normal",
         requestor_text="Riley Chen",
         contact_id=201,
+        assignee_code="ts",
         created_at=_DT(2026, 9, 10, 8, 0, 0),
         last_activity_at=_DT(2026, 9, 19, 16, 0, 0),
+    ),
+    # Same client, contact, and issue as ACME-0041 — the duplicate that
+    # find_similar_tickets should surface (keep 0041, absorb 0045).
+    TicketRecord(
+        id=3105,
+        client_id=7,
+        client_code="ACME",
+        ticket_num="0045",
+        subject="|ACME|0045| {Riley Chen} VPN dropouts again",
+        topic="VPN dropouts again",
+        status="New",
+        category="Normal",
+        requestor_text="Riley Chen",
+        contact_id=201,
+        assignee_code="ts",
+        created_at=_DT(2026, 9, 19, 15, 30, 0),
+        last_activity_at=_DT(2026, 9, 19, 15, 45, 0),
+    ),
+]
+
+# Flow users rows (assignees), allowlisted fields only.
+TECHNICIANS: list[TechnicianRecord] = [
+    TechnicianRecord(
+        id=1,
+        display_name="Tre Seibert",
+        email="tseibert@techbldrs.example",
+        assignee_code="ts",
+        role="administrator",
+    ),
+    TechnicianRecord(
+        id=2,
+        display_name="Tom Rivera",
+        email="trivera@techbldrs.example",
+        assignee_code="tr",
+        role="technician",
     ),
 ]
 

@@ -12,7 +12,7 @@ import httpx
 from app.agent.system import SYSTEM_PROMPT
 from app.config import Settings
 from app.flow.source import FlowSource
-from app.tools import openai_tools, run_tool
+from app.tools import ChatTurn, openai_tools, run_tool
 from app.tools.registry import TOOL_NAMES
 
 _log = logging.getLogger("tb_brain.agent")
@@ -35,6 +35,39 @@ def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
         if isinstance(name, str) and name and name not in TOOL_NAMES:
             names.append(name)
     return names
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            str(part.get("text") or "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return ""
+
+
+def chat_turn_from_messages(messages: list[dict[str, Any]]) -> ChatTurn:
+    """The latest user message and the assistant reply just before it, from the incoming history.
+
+    Computed from what the client sent, not from this request's tool-loop
+    messages, so the model cannot satisfy the merge gate by itself.
+    """
+    user_index = next(
+        (index for index in range(len(messages) - 1, -1, -1) if messages[index].get("role") == "user"),
+        None,
+    )
+    if user_index is None:
+        return ChatTurn()
+    previous = next(
+        (messages[index] for index in range(user_index - 1, -1, -1) if messages[index].get("role") == "assistant"),
+        None,
+    )
+    return ChatTurn(
+        user_text=_message_text(messages[user_index]),
+        previous_assistant_text=_message_text(previous) if previous is not None else "",
+    )
 
 
 def _ensure_system(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -94,6 +127,7 @@ async def run_tool_loop(
     if ignored:
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
+    turn = chat_turn_from_messages(messages)
     chat = _ensure_system(list(messages))
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
@@ -146,6 +180,7 @@ async def run_tool_loop(
                     actor=actor,
                     actor_verified=actor_verified,
                     settings=settings,
+                    turn=turn,
                 )
                 chat.append(
                     {

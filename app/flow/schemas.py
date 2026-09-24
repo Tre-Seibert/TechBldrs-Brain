@@ -5,6 +5,7 @@ Flow tables used here:
   contacts     — full_name, email_1/2/3, contact_type, client_id
   tickets      — ticket_num (4-char), subject envelope |CODE|NUM| {...} topic
   mail         — ticket-attached; direction inbound | outbound | imported
+  users        — technicians: display_name, email, assignee_code (two letters)
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 ContactType = Literal[
     "client",
@@ -76,9 +77,34 @@ class TicketRecord(BaseModel):
     last_activity_at: datetime
     closed_at: datetime | None = None
 
+    @field_validator("subject", "topic", "requestor_text", "status", "category", mode="before")
+    @classmethod
+    def _none_to_empty(cls, value: object) -> object:
+        # Flow can return null for legacy rows; the list tool treats that as blank.
+        return "" if value is None else value
+
     @property
     def label(self) -> str:
         return ticket_label(self.client_code, self.ticket_num)
+
+
+class TechnicianRecord(BaseModel):
+    """Flow users row, allowlisted fields only (never entra_* tokens)."""
+
+    id: int
+    display_name: str
+    email: str
+    assignee_code: str | None = None
+    role: str | None = None
+    is_active: bool = True
+
+
+class SimilarTicketPair(BaseModel):
+    keep_ticket: TicketRecord
+    absorb_ticket: TicketRecord
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+    merge_blocked: str | None = None
 
 
 class MailRecord(BaseModel):

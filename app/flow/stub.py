@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from app.flow.fixtures import CLIENTS, CONTACTS, MAIL, TICKETS
-from app.flow.schemas import ContactRecord, MailRecord, TicketRecord
+import re
+from itertools import combinations
+from typing import Any
+
+from app.flow.fixtures import CLIENTS, CONTACTS, MAIL, TECHNICIANS, TICKETS
+from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
+from app.flow.source import FlowRequestError
 
 
 def _norm(value: str | None) -> str:
@@ -14,10 +19,21 @@ def _clamp_limit(limit: int, default: int = 25, maximum: int = 100) -> int:
     return min(limit, maximum)
 
 
+def _topic_tokens(topic: str | None) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", _norm(topic)))
+
+
 class StubFlowSource:
-    """In-process fixtures. Used until a read-only Flow brain API or DB user exists."""
+    """In-process fixtures shaped like Flow's brain API.
+
+    Each instance holds its own ticket list so a lab merge never leaks into
+    another instance (or another test).
+    """
 
     source_name = "stub"
+
+    def __init__(self) -> None:
+        self._tickets: list[TicketRecord] = [ticket.model_copy() for ticket in TICKETS]
 
     def search_contact(
         self,
@@ -54,28 +70,132 @@ class StubFlowSource:
                 break
         return hits
 
-    def latest_ticket(
+    def search_technician(self, *, query: str, limit: int = 25) -> list[TechnicianRecord]:
+        needle = _norm(query)
+        hits = [
+            tech
+            for tech in TECHNICIANS
+            if tech.is_active
+            and (
+                not needle
+                or needle in _norm(tech.display_name)
+                or needle in _norm(tech.email)
+                or needle == _norm(tech.assignee_code)
+            )
+        ]
+        # Same as Flow: an exact assignee-code hit outranks a display-name substring.
+        hits.sort(key=lambda tech: (bool(needle) and _norm(tech.assignee_code) != needle, tech.display_name))
+        return hits[: _clamp_limit(limit)]
+
+    def list_tickets(
         self,
         *,
-        client_code: str,
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        query: str | None = None,
         contact_id: int | None = None,
         status: str | None = None,
-    ) -> TicketRecord | None:
+        ticket_num: str | None = None,
+        sort: str = "last_activity_at",
+        order: str = "desc",
+        limit: int = 100,
+    ) -> list[TicketRecord]:
         code = _norm(client_code)
-        if not code:
-            return None
+        assignee = _norm(assignee_code)
+        needle = _norm(query)
+        wanted_num = (ticket_num or "").strip()
+        if not (code or assignee or needle or wanted_num):
+            raise FlowRequestError("Flow 400: client_code, assignee_code, q, or ticket_num is required")
         wanted_status = _norm(status)
+
+        def text_hit(ticket: TicketRecord) -> bool:
+            fields = (ticket.topic, ticket.subject, ticket.requestor_text, ticket.machine_name, ticket.ticket_num)
+            return any(needle in _norm(value) for value in fields) or needle == _norm(ticket.label)
+
         matches = [
             t
-            for t in TICKETS
-            if _norm(t.client_code) == code
+            for t in self._tickets
+            if (not code or _norm(t.client_code) == code)
+            and (not assignee or _norm(t.assignee_code) == assignee)
+            and (not needle or text_hit(t))
             and (contact_id is None or t.contact_id == contact_id)
             and (not wanted_status or _norm(t.status) == wanted_status)
+            and (not wanted_num or t.ticket_num == wanted_num)
         ]
-        if not matches:
-            return None
-        matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=True)
-        return matches[0]
+        reverse = (order or "desc").lower() != "asc"
+        matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)
+        return matches[: _clamp_limit(limit, default=100)]
+
+    def find_similar_tickets(
+        self,
+        *,
+        ticket_id: int | None = None,
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[SimilarTicketPair]:
+        """Lab stand-in for Flow's scorer: same client + same contact + overlapping topic."""
+        if ticket_id is None and not client_code and not assignee_code:
+            raise FlowRequestError("Flow 400: ticket_id, client_code, or assignee_code is required")
+        code = _norm(client_code)
+        assignee = _norm(assignee_code)
+        include_closed = _norm(status) == "all"
+        pool = [
+            t
+            for t in self._tickets
+            if (not code or _norm(t.client_code) == code)
+            and (not assignee or _norm(t.assignee_code) == assignee)
+            and (include_closed or (_norm(t.status) != "closed" and not t.complete))
+        ]
+        pairs: list[SimilarTicketPair] = []
+        for left, right in combinations(pool, 2):
+            if left.client_id != right.client_id:
+                continue
+            if ticket_id is not None and ticket_id not in (left.id, right.id):
+                continue
+            a, b = _topic_tokens(left.topic), _topic_tokens(right.topic)
+            overlap = len(a & b) / len(a | b) if a and b else 0.0
+            if overlap < 0.5:
+                continue
+            reasons = ["similar_topic"]
+            score = 5.0 * overlap
+            if left.contact_id and left.contact_id == right.contact_id:
+                reasons.append("same_contact")
+                score += 2.0
+            if ticket_id is not None:
+                keep, absorb = (left, right) if left.id == ticket_id else (right, left)
+            else:
+                keep, absorb = sorted((left, right), key=lambda t: (t.created_at, t.id))
+            pairs.append(
+                SimilarTicketPair(keep_ticket=keep, absorb_ticket=absorb, score=round(score, 2), reasons=reasons)
+            )
+        pairs.sort(key=lambda pair: -pair.score)
+        return pairs[: _clamp_limit(limit, default=20, maximum=50)]
+
+    def merge_tickets(self, *, target_ticket_id: int, source_ticket_ids: list[int]) -> dict[str, Any]:
+        by_id = {ticket.id: ticket for ticket in self._tickets}
+        target = by_id.get(target_ticket_id)
+        sources = [by_id.get(ticket_id) for ticket_id in source_ticket_ids]
+        if target is None or any(source is None for source in sources) or not sources:
+            raise FlowRequestError("Flow 400: Target or source ticket not found.")
+        if any(source.client_id != target.client_id for source in sources):
+            raise FlowRequestError("Flow 400: Tickets from different clients cannot be merged.")
+        merged_ids = [source.id for source in sources]
+        self._tickets = [ticket for ticket in self._tickets if ticket.id not in merged_ids]
+        return {
+            "ok": True,
+            "status": "merged",
+            "target_ticket_id": target.id,
+            "target_ticket_label": target.label,
+            "merged_source_ids": merged_ids,
+            "merged_source_labels": [ticket_label(s.client_code, s.ticket_num) for s in sources],
+            "counts": {
+                "mail": sum(1 for mail in MAIL if mail.ticket_id in merged_ids),
+                "time_entries": 0,
+                "parts": 0,
+            },
+        }
 
     def list_mail(
         self,
@@ -103,7 +223,7 @@ class StubFlowSource:
                     break
         allowed_ticket_ids: set[int] | None = None
         if contact_id is not None:
-            allowed_ticket_ids = {t.id for t in TICKETS if t.contact_id == contact_id}
+            allowed_ticket_ids = {t.id for t in self._tickets if t.contact_id == contact_id}
 
         hits: list[MailRecord] = []
         for mail in MAIL:

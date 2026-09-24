@@ -15,8 +15,24 @@ from app.flow.factory import build_flow_source
 from app.flow.source import FlowNotConfigured, FlowSource
 from app.identity import ResolvedActor, current_actor_email, resolve_actor
 from app.tools import openai_tools, run_tool
-from app.tools.handlers import ListMailArgs, LatestTicketArgs, SearchContactArgs
-from app.tools.registry import LATEST_TICKET, LIST_MAIL, SEARCH_CONTACT, TOOL_NAMES
+from app.tools.handlers import (
+    FindSimilarTicketsArgs,
+    LatestTicketArgs,
+    ListMailArgs,
+    ListTicketsArgs,
+    SearchContactArgs,
+    SearchTechnicianArgs,
+)
+from app.tools.registry import (
+    FIND_SIMILAR_TICKETS,
+    LATEST_TICKET,
+    LIST_MAIL,
+    LIST_TICKETS,
+    SEARCH_CONTACT,
+    SEARCH_TECHNICIAN,
+    TOOL_NAMES,
+    WRITE_TOOL_NAMES,
+)
 
 _log = logging.getLogger("tb_brain")
 
@@ -59,8 +75,9 @@ app = FastAPI(
     title="tb-brain",
     version=__version__,
     description=(
-        "Read-only MSP tool-calling agent over Flow. "
-        "Stable tools: search_contact, latest_ticket, list_mail. "
+        "MSP tool-calling agent over Flow, read-only by default. "
+        "Tools: search_contact, search_technician, list_tickets, latest_ticket, "
+        "find_similar_tickets, list_mail; merge_tickets is chat-only behind a confirm gate. "
         "Not a RAG dump of tickets."
     ),
     lifespan=lifespan,
@@ -135,6 +152,7 @@ def health(request: Request) -> dict[str, Any]:
         "flow_source": getattr(source, "source_name", "unknown"),
         "llm_base_url": settings.llm_base_url,
         "tools": list(TOOL_NAMES),
+        "write_tools": list(WRITE_TOOL_NAMES),
     }
 
 
@@ -193,13 +211,14 @@ def list_tools() -> dict[str, Any]:
     return {"ok": True, "read_only": True, "tools": openai_tools()}
 
 
-@app.post("/tools/search_contact", operation_id=SEARCH_CONTACT)
-def tool_search_contact(
+def _run_tool_endpoint(
     request: Request,
-    args: SearchContactArgs,
-    x_brain_actor: str | None = Header(default=None),
-    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
-    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    x_brain_actor: str | None,
+    x_openwebui_user_jwt: str | None,
+    x_openwebui_user_email: str | None,
 ) -> dict[str, Any]:
     resolved = _resolve_actor(
         request,
@@ -210,13 +229,71 @@ def tool_search_contact(
     with _actor_scope(resolved):
         result = run_tool(
             source=_source(request),
-            name=SEARCH_CONTACT,
-            arguments=args.model_dump(),
+            name=name,
+            arguments=arguments,
             actor=resolved.label,
             actor_verified=resolved.verified,
             settings=_settings(request),
         )
     return result.model_dump()
+
+
+# Read tools only. merge_tickets has no direct route: its confirm gate needs
+# the chat history, so it runs only inside /v1/chat/completions.
+
+
+@app.post("/tools/search_contact", operation_id=SEARCH_CONTACT)
+def tool_search_contact(
+    request: Request,
+    args: SearchContactArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        SEARCH_CONTACT,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/search_technician", operation_id=SEARCH_TECHNICIAN)
+def tool_search_technician(
+    request: Request,
+    args: SearchTechnicianArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        SEARCH_TECHNICIAN,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/list_tickets", operation_id=LIST_TICKETS)
+def tool_list_tickets(
+    request: Request,
+    args: ListTicketsArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        LIST_TICKETS,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
 
 
 @app.post("/tools/latest_ticket", operation_id=LATEST_TICKET)
@@ -227,22 +304,32 @@ def tool_latest_ticket(
     x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
     x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ) -> dict[str, Any]:
-    resolved = _resolve_actor(
+    return _run_tool_endpoint(
         request,
+        LATEST_TICKET,
+        args.model_dump(),
         x_brain_actor=x_brain_actor,
         x_openwebui_user_jwt=x_openwebui_user_jwt,
         x_openwebui_user_email=x_openwebui_user_email,
     )
-    with _actor_scope(resolved):
-        result = run_tool(
-            source=_source(request),
-            name=LATEST_TICKET,
-            arguments=args.model_dump(),
-            actor=resolved.label,
-            actor_verified=resolved.verified,
-            settings=_settings(request),
-        )
-    return result.model_dump()
+
+
+@app.post("/tools/find_similar_tickets", operation_id=FIND_SIMILAR_TICKETS)
+def tool_find_similar_tickets(
+    request: Request,
+    args: FindSimilarTicketsArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        FIND_SIMILAR_TICKETS,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
 
 
 @app.post("/tools/list_mail", operation_id=LIST_MAIL)
@@ -253,22 +340,14 @@ def tool_list_mail(
     x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
     x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
 ) -> dict[str, Any]:
-    resolved = _resolve_actor(
+    return _run_tool_endpoint(
         request,
+        LIST_MAIL,
+        args.model_dump(),
         x_brain_actor=x_brain_actor,
         x_openwebui_user_jwt=x_openwebui_user_jwt,
         x_openwebui_user_email=x_openwebui_user_email,
     )
-    with _actor_scope(resolved):
-        result = run_tool(
-            source=_source(request),
-            name=LIST_MAIL,
-            arguments=args.model_dump(),
-            actor=resolved.label,
-            actor_verified=resolved.verified,
-            settings=_settings(request),
-        )
-    return result.model_dump()
 
 
 def run() -> None:

@@ -1,22 +1,48 @@
-"""HTTP adapter for Flow's read-only brain API (PRIVATE_API_TOKEN).
+"""HTTP adapter for Flow's brain API (PRIVATE_API_TOKEN).
 
-  GET /api/private/brain/contacts?q=&client_code=&limit=
-  GET /api/private/brain/tickets?client_code=&contact_id=&status=&sort=&order=&limit=
-  GET /api/private/brain/mail?client_code=&direction=&email=&contact_id=&limit=
+  GET  /api/private/brain/contacts?q=&client_code=&limit=
+  GET  /api/private/brain/technicians?q=&limit=
+  GET  /api/private/brain/tickets?client_code=&assignee_code=&q=&ticket_num=&contact_id=&status=&sort=&order=&limit=
+  GET  /api/private/brain/tickets/similar?ticket_id=&client_code=&assignee_code=&status=&limit=
+  GET  /api/private/brain/mail?client_code=&direction=&email=&contact_id=&limit=
+  POST /api/private/brain/tickets/merge   {target_ticket_id, source_ticket_ids, confirm: true}
 
-The model must never issue SQL. This client is SELECT-equivalent via HTTP.
+The model must never issue SQL. Reads are SELECT-equivalent via HTTP.
 latest_ticket is a tool, not a Flow route: it calls /tickets with sort=last_activity_at&limit=1.
+
+X-Brain-Actor-Email is attached only from current_actor_email, which main.py
+sets only for a verified Open WebUI JWT. Writes without it fail closed here,
+before Flow's machine-token admin fallback could ever apply.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
 
-from app.flow.schemas import ContactRecord, MailRecord, TicketRecord
-from app.flow.source import FlowNotConfigured
+from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord
+from app.flow.source import FlowNotConfigured, FlowRequestError, FlowWriteRefused
 from app.identity import current_actor_email
+
+_HTML_DESCRIPTION_RE = re.compile(r"<p>(.*?)</p>", re.S)
+
+
+def _flow_error_message(response: httpx.Response) -> str:
+    """Flow's JSON 'error', or the <p> description of a werkzeug abort() page."""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("error", "message", "description"):
+            if payload.get(key):
+                return str(payload[key])
+    match = _HTML_DESCRIPTION_RE.search(response.text or "")
+    if match:
+        return re.sub(r"\s+", " ", match.group(1)).strip()
+    return (response.text or "").strip()[:300] or f"HTTP {response.status_code}"
 
 
 class HttpFlowSource:
@@ -46,6 +72,24 @@ class HttpFlowSource:
             headers["X-Brain-Actor-Email"] = actor_email
         return headers
 
+    def _unwrap(self, response: httpx.Response, url: str) -> Any:
+        if response.status_code == 401:
+            raise FlowNotConfigured("Flow brain API rejected the token (401)")
+        if response.status_code == 403:
+            raise FlowRequestError(f"Flow refused the request (403): {_flow_error_message(response)}")
+        if response.status_code in (400, 404):
+            message = _flow_error_message(response)
+            # werkzeug's stock 404 means the route itself is missing (Flow older than 1.3.17),
+            # not a row-level "ticket not found".
+            if response.status_code == 404 and message.startswith("The requested URL was not found"):
+                raise FlowNotConfigured(f"Flow has no route at {url}. Is Flow on 1.3.17+?")
+            raise FlowRequestError(f"Flow {response.status_code}: {message}")
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict) and "data" in payload:
+            return payload["data"]
+        return payload
+
     def _get(self, path: str, params: dict[str, Any]) -> Any:
         self._require_ready()
         url = f"{self._base}{path}"
@@ -53,17 +97,21 @@ class HttpFlowSource:
             response = httpx.get(url, headers=self._headers(), params=params, timeout=self._timeout)
         except httpx.HTTPError as exc:
             raise FlowNotConfigured(f"Flow brain API unreachable at {url}: {exc}") from exc
-        if response.status_code in (401, 403):
-            raise FlowNotConfigured("Flow brain API rejected the token (401/403)")
-        if response.status_code == 404:
-            raise FlowNotConfigured(
-                "Flow has no /api/private/brain/* routes yet. Keep FLOW_MODE=stub."
+        return self._unwrap(response, url)
+
+    def _post_as_actor(self, path: str, body: dict[str, Any]) -> Any:
+        self._require_ready()
+        if not current_actor_email.get():
+            raise FlowWriteRefused(
+                "No verified technician identity on this chat. Sign in to Open WebUI with your "
+                "Microsoft account (signed JWT) before tb-brain can write to Flow as you."
             )
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict) and "data" in payload:
-            return payload["data"]
-        return payload
+        url = f"{self._base}{path}"
+        try:
+            response = httpx.post(url, headers=self._headers(), json=body, timeout=self._timeout)
+        except httpx.HTTPError as exc:
+            raise FlowNotConfigured(f"Flow brain API unreachable at {url}: {exc}") from exc
+        return self._unwrap(response, url)
 
     def search_contact(
         self,
@@ -79,28 +127,65 @@ class HttpFlowSource:
         rows = data if isinstance(data, list) else []
         return [ContactRecord.model_validate(row) for row in rows]
 
-    def latest_ticket(
+    def search_technician(self, *, query: str, limit: int = 25) -> list[TechnicianRecord]:
+        data = self._get("/api/private/brain/technicians", {"q": query, "limit": limit})
+        rows = data if isinstance(data, list) else []
+        return [TechnicianRecord.model_validate(row) for row in rows]
+
+    def list_tickets(
         self,
         *,
-        client_code: str,
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        query: str | None = None,
         contact_id: int | None = None,
         status: str | None = None,
-    ) -> TicketRecord | None:
-        params: dict[str, Any] = {
+        ticket_num: str | None = None,
+        sort: str = "last_activity_at",
+        order: str = "desc",
+        limit: int = 100,
+    ) -> list[TicketRecord]:
+        params: dict[str, Any] = {"sort": sort, "order": order, "limit": limit}
+        optional = {
             "client_code": client_code,
-            "sort": "last_activity_at",
-            "order": "desc",
-            "limit": 1,
+            "assignee_code": assignee_code,
+            "q": query,
+            "contact_id": contact_id,
+            "status": status,
+            "ticket_num": ticket_num,
         }
-        if contact_id is not None:
-            params["contact_id"] = contact_id
-        if status:
-            params["status"] = status
+        params.update({key: value for key, value in optional.items() if value not in (None, "")})
         data = self._get("/api/private/brain/tickets", params)
         rows = data if isinstance(data, list) else []
-        if not rows:
-            return None
-        return TicketRecord.model_validate(rows[0])
+        return [TicketRecord.model_validate(row) for row in rows]
+
+    def find_similar_tickets(
+        self,
+        *,
+        ticket_id: int | None = None,
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[SimilarTicketPair]:
+        params: dict[str, Any] = {"limit": limit}
+        optional = {
+            "ticket_id": ticket_id,
+            "client_code": client_code,
+            "assignee_code": assignee_code,
+            "status": status,
+        }
+        params.update({key: value for key, value in optional.items() if value not in (None, "")})
+        data = self._get("/api/private/brain/tickets/similar", params)
+        rows = data if isinstance(data, list) else []
+        return [SimilarTicketPair.model_validate(row) for row in rows]
+
+    def merge_tickets(self, *, target_ticket_id: int, source_ticket_ids: list[int]) -> dict[str, Any]:
+        data = self._post_as_actor(
+            "/api/private/brain/tickets/merge",
+            {"target_ticket_id": target_ticket_id, "source_ticket_ids": source_ticket_ids, "confirm": True},
+        )
+        return data if isinstance(data, dict) else {"result": data}
 
     def list_mail(
         self,

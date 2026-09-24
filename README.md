@@ -15,13 +15,16 @@ Example questions answered via tools (stub Flow data until a read-only API/DB us
 | When did Debe last reach out? | `search_contact` → `list_mail` (inbound, that contact) |
 | What was the last WDON ticket? | `latest_ticket(client_code=WDON)` |
 | Show all emails from WDON to our tenant | `list_mail(WDON, inbound)` |
+| Give me all tickets assigned to Tre | `search_technician(Tre)` → `list_tickets(assignee_code=ts, limit=100)` |
+| What tickets need merged for ZINT? | `find_similar_tickets(client_code=ZINT)` (suggests only) |
+| Merge ZTB-1691 into ZTB-1680 | `merge_tickets(confirm=true, labels…)`, only after the plan was shown and the user restated both labels |
 
 WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outbound` / `imported`). Microsoft Graph is only for mail that was **never filed on a ticket** — not this phase.
 
 ## Hard rules
 
 - **Local only.** No cloud LLM for client data (dental/PHI).
-- **Read-only.** No send-mail, no close-ticket, no writes.
+- **Read-only by default.** No send-mail, no close-ticket. The one write is `merge_tickets`: chat-only (no `/tools` route), needs `confirm=true`, the plan shown first, the user's latest message restating both labels, and a verified Open WebUI identity forwarded to Flow as `X-Brain-Actor-Email`. Otherwise it fails closed.
 - **Do not auto-inject IT Glue passwords** into prompts.
 - **Log every tool call** (actor, client, tool, row ids) off OneDrive.
 - **No OneDrive for runtime data.** This folder syncs; venv/models/Qdrant/Docker volumes must not live here.
@@ -30,7 +33,8 @@ WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outboun
 
 ```text
 app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
-app/tools/           search_contact, latest_ticket, list_mail
+app/tools/           search_contact, search_technician, list_tickets, latest_ticket,
+                     find_similar_tickets, merge_tickets (gated write), list_mail
 app/flow/            Flow-shaped schemas + stub fixtures + future HTTP client
 app/agent/           OpenAI-compatible tool loop (LLM_BASE_URL)
 docs/open-webui.md   Lab UI notes
@@ -65,7 +69,7 @@ flowchart LR
   webui -->|"lab default"| ollama[Ollama on host]
   webui -->|"tool loop optional"| brain[tb-brain FastAPI]
   brain --> ollama
-  brain --> tools["search_contact / latest_ticket / list_mail"]
+  brain --> tools["search / list / similar / gated merge"]
   tools -->|"FLOW_MODE=stub"| fixtures[In-process fixtures]
   tools -->|"later"| flowAPI["Flow read-only brain API"]
   flowAPI --> flowDB[(Flow MariaDB)]
