@@ -23,6 +23,18 @@ from app.tools.registry import (
 _ASSIGNEE_CODE_RE = re.compile(r"^[A-Za-z]{2}$")
 _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
+_OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
+_URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
+_CATEGORY_ALIASES = {
+    "urgent": "0 Urgent",
+    "0 urgent": "0 Urgent",
+    "high": "1 High",
+    "1 high": "1 High",
+    "waiting": "4 Waiting",
+    "4 waiting": "4 Waiting",
+    "project": "6 Project",
+    "6 project": "6 Project",
+}
 _UNKNOWN_SELF = (
     "I don't know who you are signed in as. Sign in with your Flow email, or name a technician."
 )
@@ -63,13 +75,17 @@ class ListTicketsArgs(BaseModel):
     q: str | None = None
     ticket_num: str | None = None
     status: str | None = None
+    category: str | None = None
     stage: str | None = None
     limit: int = 100
 
     @model_validator(mode="after")
     def _need_scope(self) -> ListTicketsArgs:
-        if not any((value or "").strip() for value in (self.assignee_code, self.client_code, self.q, self.ticket_num)):
-            raise ValueError("assignee_code, client_code, q, or ticket_num is required")
+        if not any(
+            (value or "").strip()
+            for value in (self.assignee_code, self.client_code, self.q, self.ticket_num, self.category)
+        ):
+            raise ValueError("assignee_code, client_code, q, ticket_num, or category is required")
         return self
 
 
@@ -315,6 +331,35 @@ def _is_self_token(text: str | None) -> bool:
     return (text or "").strip().lower() in _SELF_ASSIGNEE
 
 
+def _asked_own_tickets(turn: ChatTurn | None) -> bool:
+    text = turn.user_text if turn else ""
+    return bool(_OWN_TICKETS_RE.search(text or ""))
+
+
+def _resolve_category(raw: str | None) -> str | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    return _CATEGORY_ALIASES.get(text.lower(), text)
+
+
+def _category_from_query(query: str | None) -> tuple[str | None, str | None]:
+    text = (query or "").strip()
+    if not text:
+        return None, None
+    category = _CATEGORY_ALIASES.get(text.lower())
+    if category:
+        return category, None
+    return None, text
+
+
+def _category_from_turn(turn: ChatTurn | None) -> str | None:
+    text = turn.user_text if turn else ""
+    if text and _URGENT_RE.search(text):
+        return "0 Urgent"
+    return None
+
+
 def _signed_in_technician(source: FlowSource) -> tuple[TechnicianRecord | None, str | None]:
     email = (current_signed_in_email.get() or "").strip().lower()
     if not email:
@@ -393,37 +438,49 @@ def search_technician(source: FlowSource, args: SearchTechnicianArgs) -> ToolRes
     )
 
 
-def _default_list_stage(args: ListTicketsArgs, *, assignee_code: str | None, query: str | None) -> str:
-    """Assigned-to lists are Open unless the user asked for review/archived/all.
-
-    The 7B often passes stage=live on its own, which pulls 9 REVIEW back in.
-    """
+def _default_list_stage(
+    args: ListTicketsArgs,
+    *,
+    assignee_code: str | None,
+    query: str | None,
+    category: str | None,
+) -> str:
+    """Assigned-to and category lists are Open unless review/archived/all was asked."""
     wanted = (args.stage or "").strip().lower()
-    assignee_only = bool(assignee_code) and not any(
+    scoped = bool(assignee_code or category) and not any(
         (value or "").strip() for value in (args.client_code, query, args.ticket_num)
     )
-    if assignee_only and wanted not in ("review", "archived", "all"):
+    if scoped and wanted not in ("review", "archived", "all"):
         return "open"
     return wanted or "live"
 
 
-def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
+def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None = None) -> ToolResult:
     raw_assignee = args.assignee_code
     raw_q = (args.q or "").strip() or None
     if not (raw_assignee or "").strip() and _is_self_token(raw_q):
         raw_assignee = "me"
         raw_q = None
+    category = _resolve_category(args.category)
+    if not category:
+        from_q, raw_q = _category_from_query(raw_q)
+        category = from_q
+    if not category:
+        category = _category_from_turn(turn)
+    if category and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
+        raw_assignee = None
     assignee, error = _resolve_assignee(source, raw_assignee)
     if error:
         return _refuse(LIST_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
-    stage = _default_list_stage(args, assignee_code=assignee, query=raw_q)
+    stage = _default_list_stage(args, assignee_code=assignee, query=raw_q, category=category)
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
         query=raw_q,
         status=args.status,
         ticket_num=(args.ticket_num or "").strip() or None,
+        category=category,
         stage=stage,
         limit=args.limit,
     )
@@ -435,19 +492,22 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs) -> ToolResult:
             f"Showing {len(rows)} tickets (limit {args.limit}, max 100). "
             "More may exist; narrow with a client code or status."
         )
-    if stage == "open" and assignee:
+    if stage == "open" and assignee and not category:
         note = (
             f"{note} These are Open tickets (not archived, not 9 REVIEW). "
             "Want archived tickets too?"
         )
     data = [_ticket_payload(r) for r in rows]
-    who = assignee or client or (args.q or args.ticket_num or "that search")
+    who = category or assignee or client or (args.q or args.ticket_num or "that search")
     if not rows:
-        heading = (
-            f"No {stage} tickets assigned to {who}."
-            if assignee
-            else f"No {stage} tickets for {who}."
-        )
+        if category:
+            heading = f"No {stage} {who} tickets."
+        elif assignee:
+            heading = f"No {stage} tickets assigned to {who}."
+        else:
+            heading = f"No {stage} tickets for {who}."
+    elif category:
+        heading = f"{len(rows)} open {who} ticket(s)" if stage == "open" else f"{len(rows)} {stage} {who} ticket(s)"
     elif stage == "open":
         heading = f"{len(rows)} open ticket(s) for {who}"
     else:
@@ -654,7 +714,7 @@ def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: Chat
     if name == SEARCH_TECHNICIAN:
         return search_technician(source, SearchTechnicianArgs.model_validate(raw_args))
     if name == LIST_TICKETS:
-        return list_tickets(source, ListTicketsArgs.model_validate(raw_args))
+        return list_tickets(source, ListTicketsArgs.model_validate(raw_args), turn)
     if name == LATEST_TICKET:
         return latest_ticket(source, LatestTicketArgs.model_validate(raw_args))
     if name == FIND_SIMILAR_TICKETS:

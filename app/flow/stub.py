@@ -116,6 +116,7 @@ class StubFlowSource:
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        category: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -125,8 +126,11 @@ class StubFlowSource:
         assignee = _norm(assignee_code)
         needle = _norm(query)
         wanted_num = (ticket_num or "").strip()
-        if not (code or assignee or needle or wanted_num):
-            raise FlowRequestError("Flow 400: client_code, assignee_code, q, or ticket_num is required")
+        wanted_category = _norm(category)
+        if wanted_category in ("urgent", "0 urgent"):
+            wanted_category = "0 urgent"
+        if not (code or assignee or needle or wanted_num or wanted_category):
+            raise FlowRequestError("Flow 400: client_code, assignee_code, q, ticket_num, or category is required")
         wanted_status = _norm(status)
 
         def text_hit(ticket: TicketRecord) -> bool:
@@ -143,6 +147,7 @@ class StubFlowSource:
             and (contact_id is None or t.contact_id == contact_id)
             and (not wanted_status or _norm(t.status) == wanted_status)
             and (not wanted_num or t.ticket_num == wanted_num)
+            and (not wanted_category or _norm(t.category) == wanted_category)
         ]
         reverse = (order or "desc").lower() != "asc"
         matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)

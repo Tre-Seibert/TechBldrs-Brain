@@ -175,6 +175,21 @@ TICKETS: list[TicketRecord] = [
         last_activity_at=_DT(2026, 7, 2, 9, 0, 0),
         archived_at=_DT(2026, 7, 3, 9, 0, 0),
     ),
+    TicketRecord(
+        id=3300,
+        client_id=7,
+        client_code="ACME",
+        ticket_num="0099",
+        subject="|ACME|0099| {Riley Chen} Server down",
+        topic="Server down",
+        status="Open",
+        category="0 Urgent",
+        requestor_text="Riley Chen",
+        contact_id=201,
+        assignee_code="eo",
+        created_at=_DT(2026, 9, 22, 10, 0, 0),
+        last_activity_at=_DT(2026, 9, 22, 10, 15, 0),
+    ),
 ]
 
 # Flow users rows (assignees), allowlisted fields only.

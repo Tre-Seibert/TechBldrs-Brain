@@ -80,6 +80,13 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Four-character ticket number.",
         },
+        "category": {
+            "type": "string",
+            "description": (
+                "Ticket category. Urgent is '0 Urgent' (also accept urgent). "
+                "Any urgent tickets? → category=urgent, no assignee_code."
+            ),
+        },
         "status": {
             "type": "string",
             "description": "Optional exact status (New, Done, ...). Not the same as stage.",
@@ -211,8 +218,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _fn(
         LIST_TICKETS,
         "List Flow tickets. The main ticket tool: tickets assigned to a technician, all tickets for "
-        "a client, open tickets, or a text search. Needs at least one of assignee_code, client_code, "
-        "q, ticket_num. client_code is optional when assignee_code is given.",
+        "a client, open tickets, a category, or a text search. Needs at least one of assignee_code, "
+        "client_code, category, q, ticket_num. Urgent tickets use category=urgent, not assignee=me.",
         _LIST_TICKETS_SCHEMA,
     ),
     _fn(

@@ -141,6 +141,7 @@ class HttpFlowSource:
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        category: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -154,6 +155,7 @@ class HttpFlowSource:
             "contact_id": contact_id,
             "status": status,
             "ticket_num": ticket_num,
+            "category": category,
             "stage": stage,
         }
         params.update({key: value for key, value in optional.items() if value not in (None, "")})

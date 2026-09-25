@@ -46,7 +46,11 @@ class ToolStubTests(unittest.TestCase):
         self.source = StubFlowSource()
 
     def _ticket_ids(self) -> set[int]:
-        return {row.id for row in self.source.list_tickets(client_code="ACME", stage="open")}
+        return {
+            row.id
+            for row in self.source.list_tickets(client_code="ACME", stage="open")
+            if row.assignee_code == "ts"
+        }
 
     def test_search_contact_debe(self) -> None:
         result = search_contact(self.source, SearchContactArgs(query="Debe"))
@@ -138,6 +142,35 @@ class ToolStubTests(unittest.TestCase):
     def test_list_tickets_requires_a_scope(self) -> None:
         with self.assertRaises(ValueError):
             ListTicketsArgs(status="Open")
+
+    def test_list_tickets_urgent_is_category_not_my_open_list(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = list_tickets(
+                self.source,
+                ListTicketsArgs(assignee_code="me"),
+                ChatTurn(user_text="any urgent tickets that need immediate attention?"),
+            )
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0099"])
+        self.assertEqual(result.data[0]["category"], "0 Urgent")
+        self.assertIn("0 Urgent", result.reply or "")
+        self.assertNotIn("ACME-0041", result.reply or "")
+
+    def test_list_tickets_my_urgent_keeps_signed_in_assignee(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = list_tickets(
+                self.source,
+                ListTicketsArgs(assignee_code="me", category="urgent"),
+                ChatTurn(user_text="my urgent tickets"),
+            )
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertEqual(result.data, [])
+        self.assertIn("No open 0 Urgent tickets", result.reply or "")
 
     def test_latest_ticket_wdon(self) -> None:
         result = latest_ticket(self.source, LatestTicketArgs(client_code="WDON"))
@@ -255,7 +288,11 @@ class MergeGateTests(unittest.TestCase):
         self.source = StubFlowSource()
 
     def _ticket_ids(self) -> set[int]:
-        return {row.id for row in self.source.list_tickets(client_code="ACME", stage="open")}
+        return {
+            row.id
+            for row in self.source.list_tickets(client_code="ACME", stage="open")
+            if row.assignee_code == "ts"
+        }
 
     def _assert_refused(self, args: MergeTicketsArgs, turn: ChatTurn | None, fragment: str) -> None:
         result = merge_tickets(self.source, args, turn)
@@ -306,7 +343,7 @@ class MergeGateTests(unittest.TestCase):
         # Fixtures are per-instance: a fresh stub still has both tickets.
         self.assertEqual(
             {row.id for row in StubFlowSource().list_tickets(client_code="ACME", stage="open")},
-            {3100, 3105},
+            {3100, 3105, 3300},
         )
 
     def test_http_write_without_verified_actor_fails_closed(self) -> None:

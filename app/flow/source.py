@@ -34,6 +34,7 @@ class FlowSource(Protocol):
         contact_id: int | None = None,
         status: str | None = None,
         ticket_num: str | None = None,
+        category: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
