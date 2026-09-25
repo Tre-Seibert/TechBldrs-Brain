@@ -99,6 +99,22 @@ class ApiTests(unittest.TestCase):
         )
         self.assertIn(response.status_code, (404, 405))
 
+    def test_apply_english_reply_replaces_thai_without_tool(self) -> None:
+        from app.agent.loop import _NO_TOOL_ENGLISH
+
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "คณะกรรมการทำงานนี้ค้นหาข้อมูลเกี่ยวกับ Thomas Carter",
+                    }
+                }
+            ]
+        }
+        out = _apply_english_reply(payload, [])
+        self.assertEqual(out["choices"][0]["message"]["content"], _NO_TOOL_ENGLISH)
+
     def test_apply_english_reply_replaces_chinese(self) -> None:
         payload = {
             "choices": [

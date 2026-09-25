@@ -16,8 +16,11 @@ from app.tools.handlers import (
     MergeTicketsArgs,
     SearchContactArgs,
     SearchTechnicianArgs,
+    _asked_latest_for_person,
     _contact_name_score,
     _damerau,
+    _person_name_from_turn,
+    answer_person_ticket_question,
     find_similar_tickets,
     format_similar_list,
     latest_ticket,
@@ -109,6 +112,41 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(_contact_name_score("Micahel Sodl", "Michael Sodl"), 1)
         self.assertEqual(_contact_name_score("Micahel Sodl", "Sodl, Michael"), 1)
         self.assertIsNone(_contact_name_score("Micahel Sodl", "Riley Chen"))
+
+    def test_latest_ticket_involving_requestor(self) -> None:
+        turn = ChatTurn(user_text="Tell me the latest ticket involving Michael Sodl")
+        self.assertEqual(_person_name_from_turn(turn), "Michael Sodl")
+        self.assertTrue(_asked_latest_for_person(turn))
+        result = answer_person_ticket_question(self.source, turn)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+        self.assertIn("Latest ticket for Michael Sodl", result.reply or "")
+        self.assertNotIn("Western Dental", result.reply or "")
+        self.assertNotIn("WDON-1842", result.reply or "")
+
+    def test_latest_ticket_involving_unknown_person_is_english(self) -> None:
+        result = answer_person_ticket_question(
+            self.source,
+            ChatTurn(user_text="Tell me the latest ticket involving Thomas Carter"),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("No ticket found for Thomas Carter", result.reply or "")
+        self.assertNotRegex(result.reply or "", r"[\u0E00-\u0E7F]")
+        self.assertNotIn("Western Dental", result.reply or "")
+
+    def test_latest_ticket_ignores_invented_wdon_when_person_named(self) -> None:
+        result = latest_ticket(
+            self.source,
+            LatestTicketArgs(client_code="WDON"),
+            ChatTurn(user_text="Tell me the latest ticket involving Michael Sodl"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+        self.assertNotEqual(
+            result.data[0]["ticket_label"] if result.data else None,
+            "WDON-1842",
+        )
 
     def test_search_technician_resolves_name_email_and_code(self) -> None:
         for query in ("Tre", "tseibert", "ts", "TS"):

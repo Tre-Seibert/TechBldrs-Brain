@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -14,15 +15,22 @@ from app.config import Settings
 from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
 from app.tools import ChatTurn, openai_tools, run_tool
+from app.tools.handlers import answer_person_ticket_question
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     LATEST_TICKET,
     LIST_MAIL,
     LIST_TICKETS,
+    SEARCH_CONTACT,
     TOOL_NAMES,
 )
 
-_RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL}
+_RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL, SEARCH_CONTACT}
+_NON_ENGLISH_RE = re.compile(r"[\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]")
+_NO_TOOL_ENGLISH = (
+    "I can only answer from Flow tools, and I did not get a usable result. "
+    "Ask again with a person, technician, or client code."
+)
 
 _log = logging.getLogger("tb_brain.agent")
 
@@ -152,12 +160,30 @@ def _tool_message_content(result: Any) -> str:
     return result.model_dump_json()
 
 
+def _assistant_payload(text: str, model: str) -> dict[str, Any]:
+    return {
+        "id": "tb-brain",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+
+
 def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[str, Any]:
-    """Qwen 7B often answers list tools in Chinese. Show our English list instead."""
-    if not replies:
-        return payload
-    text = replies[-1]
+    """Qwen often answers in Chinese/Thai. Show the English tool list instead."""
+    content = ""
     choices = payload.get("choices")
+    if choices:
+        content = str((choices[0].get("message") or {}).get("content") or "")
+    text = replies[-1] if replies else ("" if not _NON_ENGLISH_RE.search(content) else _NO_TOOL_ENGLISH)
+    if not text:
+        return payload
     if not choices:
         payload["choices"] = [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
         return payload
@@ -183,6 +209,9 @@ async def run_tool_loop(
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
+    direct = answer_person_ticket_question(source, turn)
+    if direct is not None and direct.reply:
+        return _assistant_payload(direct.reply, settings.llm_model.strip() or "tb-brain")
     chat = _ensure_system(list(messages), source=source)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}

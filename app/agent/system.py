@@ -28,7 +28,8 @@ Rules:
   - "Archived tickets assigned to {tech}" → list_tickets(assignee_code=that code, stage=archived). Show the tool reply as-is. Do not invent why the list is empty.
   - "All" / "every" / "get me all of them" → list_tickets with limit=100. Never latest_ticket.
   - "All open tickets for {CODE}" → list_tickets(client_code=CODE, stage=open, limit=100).
-  - "Last {CODE} ticket?" → latest_ticket(client_code=CODE). That tool returns one row only.
+  - "Last {CODE} ticket?" → latest_ticket(client_code=CODE). That tool returns one row only. Never invent a client code (never default to WDON / Western Dental).
+  - "Latest ticket involving {person}" / "last ticket for {person}" → search_contact, then latest_ticket(requestor=their full name) or list_tickets(contact_id=that id, requestor=their full name, stage=live, limit=1). Not the whole client. Not WDON unless they said WDON.
   - "Tickets about {text}" → list_tickets(q=text, stage=live).
   - "Tickets open for {person}" / "tickets for Michael Sodl" → search_contact, then immediately list_tickets(contact_id=that id, requestor=their full name, stage=open). That is the requestor/contact, not the assignee and not every ticket at their client. Do not ask to proceed. Do not list the whole client.
   - "When did {name} last reach out?" → search_contact then list_mail (inbound) using their email or contact_id.

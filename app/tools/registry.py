@@ -154,18 +154,21 @@ _LATEST_TICKET_SCHEMA: dict[str, Any] = {
     "properties": {
         "client_code": {
             "type": "string",
-            "description": "Flow client_code (e.g. WDON for Western Dental).",
+            "description": "Flow client_code for 'last {CODE} ticket'. Do not invent WDON.",
         },
         "contact_id": {
             "type": "integer",
-            "description": "Optional contacts.id from search_contact.",
+            "description": "Optional contacts.id from search_contact when the user named a person.",
+        },
+        "requestor": {
+            "type": "string",
+            "description": "Person name when asking the latest ticket involving that requestor.",
         },
         "status": {
             "type": "string",
             "description": "Optional ticket status filter (Open, Closed, New, ...).",
         },
     },
-    "required": ["client_code"],
 }
 
 _FIND_SIMILAR_SCHEMA: dict[str, Any] = {
@@ -264,8 +267,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         LATEST_TICKET,
-        "Only for 'what is the last {CODE} ticket': the single most recently active ticket for one "
-        "client. Never for assignee lists or 'all' tickets; use list_tickets for those.",
+        "Single most recent ticket. Use client_code for 'last {CODE} ticket'. For a person "
+        "('latest ticket involving Thomas Carter') pass requestor or contact_id after search_contact. "
+        "Never invent WDON. Never for assignee lists or 'all' tickets.",
         _LATEST_TICKET_SCHEMA,
     ),
     _fn(

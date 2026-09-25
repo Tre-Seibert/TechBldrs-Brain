@@ -25,6 +25,16 @@ _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
 _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
 _TICKETS_FOR_RE = re.compile(r"\btickets?\b[^.?!\n]*\bfor\s+(?P<name>.+)", re.IGNORECASE)
+_TICKET_PERSON_RES = (
+    re.compile(
+        r"\b(?:latest|last|most recent)\s+tickets?\b[^.?!\n]*\b(?:involving|for|from|about)\s+(?P<name>.+)",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\btickets?\b[^.?!\n]*\b(?:involving|from)\s+(?P<name>.+)", re.IGNORECASE),
+    _TICKETS_FOR_RE,
+)
+_LATEST_TICKET_RE = re.compile(r"\b(?:latest|last|most recent)\s+tickets?\b", re.IGNORECASE)
+_MAIL_TURN_RE = re.compile(r"\b(emails?|mails?|reach out|inbox)\b", re.IGNORECASE)
 _PERSON_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z.'-]*$")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
 _BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
@@ -87,8 +97,9 @@ class SearchTechnicianArgs(BaseModel):
 
 
 class LatestTicketArgs(BaseModel):
-    client_code: str
+    client_code: str | None = None
     contact_id: int | None = None
+    requestor: str | None = None
     status: str | None = None
 
 
@@ -467,23 +478,50 @@ def _contact_name_score(query: str, stored: str) -> int | None:
     return None
 
 
+def _clean_person_name(name: str | None) -> str | None:
+    text = (name or "").strip(" ?.!,")
+    if not text or _is_self_token(text) or _OWN_TICKETS_RE.search(text):
+        return None
+    if _LABEL_RE.match(text) or _ASSIGNEE_CODE_RE.match(text):
+        return None
+    if re.fullmatch(r"[A-Za-z]{2,8}", text) and text.isupper():
+        return None
+    return text
+
+
 def _person_name_from_turn(turn: ChatTurn | None) -> str | None:
     text = turn.user_text if turn else ""
-    match = _TICKETS_FOR_RE.search(text or "")
-    if not match:
-        return None
-    name = match.group("name").strip(" ?.!,")
-    if not name or _is_self_token(name) or _OWN_TICKETS_RE.search(name):
-        return None
-    if _LABEL_RE.match(name) or _ASSIGNEE_CODE_RE.match(name):
-        return None
-    if re.fullmatch(r"[A-Za-z]{2,8}", name) and name.isupper():
-        return None
-    return name
+    for pattern in _TICKET_PERSON_RES:
+        match = pattern.search(text or "")
+        if match:
+            name = _clean_person_name(match.group("name"))
+            if name:
+                return name
+    return None
 
 
 def _asked_tickets_for_person(turn: ChatTurn | None) -> bool:
     return _person_name_from_turn(turn) is not None
+
+
+def _asked_latest_for_person(turn: ChatTurn | None) -> bool:
+    text = turn.user_text if turn else ""
+    return bool(text and _LATEST_TICKET_RE.search(text) and _person_name_from_turn(turn))
+
+
+def _asked_mail_for_person(turn: ChatTurn | None) -> bool:
+    text = turn.user_text if turn else ""
+    return bool(text and _MAIL_TURN_RE.search(text))
+
+
+def answer_person_ticket_question(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
+    """Bypass the LLM for 'tickets for / latest ticket involving {person}'."""
+    if not _asked_tickets_for_person(turn) or _asked_mail_for_person(turn):
+        return None
+    name = _person_name_from_turn(turn)
+    if not name:
+        return None
+    return search_contact(source, SearchContactArgs(query=name), turn)
 
 
 def _search_contacts_loose(source: FlowSource, person: str) -> list:
@@ -647,18 +685,41 @@ def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn |
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     client_code = codes[0] if len(codes) == 1 else (args.client_code or None)
     if _asked_tickets_for_person(turn):
+        stage = "live" if _asked_latest_for_person(turn) else "open"
+        limit = 1 if _asked_latest_for_person(turn) else 100
         if pick is not None:
             return list_tickets(
                 source,
-                ListTicketsArgs(contact_id=pick.id, requestor=pick.full_name, stage="open"),
+                ListTicketsArgs(
+                    contact_id=pick.id,
+                    requestor=pick.full_name,
+                    stage=stage,
+                    limit=limit,
+                ),
                 turn,
             )
         if contact_error:
             return _refuse(SEARCH_CONTACT, source, contact_error)
+        listed = list_tickets(
+            source,
+            ListTicketsArgs(requestor=person, stage=stage, limit=limit),
+            turn,
+        )
+        if listed.data or not _asked_latest_for_person(turn):
+            return listed
         return list_tickets(
             source,
-            ListTicketsArgs(requestor=person, stage="open"),
+            ListTicketsArgs(q=person, stage=stage, limit=limit),
             turn,
+            force_text_query=True,
+        )
+    if not rows:
+        return ToolResult(
+            tool=SEARCH_CONTACT,
+            source=source.source_name,
+            data=[],
+            row_ids=[],
+            reply=f"I couldn't find a contact for {person}. Check the name and try again.",
         )
     return ToolResult(
         tool=SEARCH_CONTACT,
@@ -729,7 +790,13 @@ def _default_list_stage(
     return wanted or "live"
 
 
-def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None = None) -> ToolResult:
+def list_tickets(
+    source: FlowSource,
+    args: ListTicketsArgs,
+    turn: ChatTurn | None = None,
+    *,
+    force_text_query: bool = False,
+) -> ToolResult:
     raw_assignee = args.assignee_code
     raw_q = (args.q or "").strip() or None
     if not (raw_assignee or "").strip() and _is_self_token(raw_q):
@@ -771,8 +838,8 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
     assignee, error = _resolve_assignee(source, raw_assignee)
     contact_id = args.contact_id
     requestor = (args.requestor or "").strip() or None
-    person = requestor or _person_name_from_turn(turn)
-    if not person and raw_q and _looks_like_person_name(raw_q):
+    person = None if force_text_query else (requestor or _person_name_from_turn(turn))
+    if not force_text_query and not person and raw_q and _looks_like_person_name(raw_q):
         person = raw_q
     if error and raw_assignee and _looks_like_person_name(raw_assignee):
         person = person or raw_assignee
@@ -781,7 +848,7 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         assignee = None
     if error:
         return _refuse(LIST_TICKETS, source, error)
-    person_label = None
+    person_label = _person_name_from_turn(turn) if force_text_query else None
     if person and contact_id is None:
         matches = _search_contacts_loose(source, person)
         pick, contact_error = _pick_contact(matches, person)
@@ -817,9 +884,17 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         "review",
         "archived",
         "all",
+        "live",
     ):
         if not client and not raw_q and not args.ticket_num:
-            stage = "open"
+            stage = "live" if _asked_latest_for_person(turn) else "open"
+    if _asked_latest_for_person(turn) and (args.stage or "").strip().lower() not in (
+        "review",
+        "archived",
+        "all",
+    ):
+        stage = "live"
+    limit = 1 if _asked_latest_for_person(turn) else args.limit
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
@@ -844,7 +919,7 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         last_activity_after=(args.last_activity_after or "").strip() or None,
         requestor=requestor,
         stage=stage,
-        limit=args.limit,
+        limit=limit,
     )
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     scoped = client or (codes[0] if len(codes) == 1 else None)
@@ -870,7 +945,10 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         or (args.q or args.ticket_num or args.machine_name or args.invoice_num or args.job or "that search")
     )
     column_label = bool(category or reason or overdue)
-    if not rows:
+    latest_person = _asked_latest_for_person(turn)
+    if latest_person:
+        heading = f"Latest ticket for {who}" if rows else f"No ticket found for {who}."
+    elif not rows:
         if column_label:
             heading = f"No {stage} {who} tickets."
         elif assignee:
@@ -894,9 +972,27 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
     )
 
 
-def latest_ticket(source: FlowSource, args: LatestTicketArgs) -> ToolResult:
-    """Convenience wrapper: list_tickets(client_code, limit=1) by last activity."""
-    code = args.client_code.strip().upper()
+def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | None = None) -> ToolResult:
+    """Single most recent ticket for a client code, or for a named person from the turn."""
+    person = _person_name_from_turn(turn) or (args.requestor or "").strip() or None
+    if person:
+        return list_tickets(
+            source,
+            ListTicketsArgs(
+                contact_id=args.contact_id,
+                requestor=person,
+                stage="live",
+                limit=1,
+            ),
+            turn or ChatTurn(user_text=f"latest ticket involving {person}"),
+        )
+    code = (args.client_code or "").strip().upper()
+    if not code:
+        return _refuse(
+            LATEST_TICKET,
+            source,
+            "latest_ticket needs a client_code or a person's name (e.g. latest ticket involving Thomas Carter).",
+        )
     rows = source.list_tickets(
         client_code=code,
         contact_id=args.contact_id,
@@ -1087,7 +1183,7 @@ def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: Chat
     if name == LIST_TICKETS:
         return list_tickets(source, ListTicketsArgs.model_validate(raw_args), turn)
     if name == LATEST_TICKET:
-        return latest_ticket(source, LatestTicketArgs.model_validate(raw_args))
+        return latest_ticket(source, LatestTicketArgs.model_validate(raw_args), turn)
     if name == FIND_SIMILAR_TICKETS:
         return find_similar_tickets(source, FindSimilarTicketsArgs.model_validate(raw_args))
     if name == MERGE_TICKETS:
