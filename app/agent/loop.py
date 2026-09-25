@@ -61,9 +61,15 @@ def _message_text(message: dict[str, Any]) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return " ".join(
-            str(part.get("text") or "") for part in content if isinstance(part, dict) and part.get("type") == "text"
-        )
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = part.get("text") or part.get("content") or ""
+                if text:
+                    parts.append(str(text))
+        return " ".join(parts)
     return ""
 
 
@@ -241,8 +247,11 @@ async def run_tool_loop(
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
     direct = answer_person_ticket_question(source, turn)
-    if direct is not None and direct.reply:
-        return _assistant_payload(direct.reply, settings.llm_model.strip() or "tb-brain")
+    if direct is not None:
+        return _assistant_payload(
+            direct.reply or direct.error or _NO_TOOL_ENGLISH,
+            settings.llm_model.strip() or "tb-brain",
+        )
     chat = _ensure_system(list(messages), source=source)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}

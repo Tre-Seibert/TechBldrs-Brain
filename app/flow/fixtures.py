@@ -82,6 +82,17 @@ CONTACTS: list[ContactRecord] = [
         email_1="michael@acme.example",
         is_active=True,
     ),
+    ContactRecord(
+        id=203,
+        client_id=41,
+        client_code="WDON",
+        contact_type="client",
+        full_name="Thomas Carter",
+        file_as="Carter, Thomas",
+        company_name="Western Dental",
+        email_1="thomas.carter@westerndental.example",
+        is_active=True,
+    ),
 ]
 
 TICKETS: list[TicketRecord] = [
@@ -221,6 +232,20 @@ TICKETS: list[TicketRecord] = [
         assignee_code="dh",
         created_at=_DT(2026, 9, 23, 8, 0, 0),
         last_activity_at=_DT(2026, 9, 23, 8, 15, 0),
+    ),
+    TicketRecord(
+        id=2619,
+        client_id=41,
+        client_code="WDON",
+        ticket_num="2619",
+        subject="|WDON|2619| {Thomas Carter} B Ellerby Email",
+        topic="B Ellerby Email",
+        status="Open",
+        category="2 Normal",
+        requestor_text="Thomas Carter",
+        assignee_code="dh",
+        created_at=_DT(2026, 9, 25, 12, 50, 0),
+        last_activity_at=_DT(2026, 9, 25, 12, 57, 0),
     ),
 ]
 

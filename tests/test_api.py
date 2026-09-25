@@ -63,8 +63,8 @@ class ApiTests(unittest.TestCase):
         response = self.client.post("/tools/latest_ticket", json={"client_code": "WDON"})
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["data"]["ticket_label"], "WDON-1842")
-        self.assertEqual(body["row_ids"], [9001])
+        self.assertEqual(body["data"]["ticket_label"], "WDON-2619")
+        self.assertEqual(body["row_ids"], [2619])
 
     def test_tool_list_tickets_by_assignee(self) -> None:
         response = self.client.post("/tools/list_tickets", json={"assignee_code": "Tre"})

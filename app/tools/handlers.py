@@ -27,10 +27,10 @@ _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECA
 _TICKETS_FOR_RE = re.compile(r"\btickets?\b[^.?!\n]*\bfor\s+(?P<name>.+)", re.IGNORECASE)
 _TICKET_PERSON_RES = (
     re.compile(
-        r"\b(?:latest|last|most recent)\s+tickets?\b[^.?!\n]*\b(?:involving|for|from|about)\s+(?P<name>.+)",
-        re.IGNORECASE,
+        r"\b(?:latest|last|most recent)\s+tickets?\b.*?\b(?:involving|for|from|about)\s+(?P<name>.+)",
+        re.IGNORECASE | re.DOTALL,
     ),
-    re.compile(r"\btickets?\b[^.?!\n]*\b(?:involving|from)\s+(?P<name>.+)", re.IGNORECASE),
+    re.compile(r"\btickets?\b.*?\b(?:involving|from)\s+(?P<name>.+)", re.IGNORECASE | re.DOTALL),
     _TICKETS_FOR_RE,
 )
 _LATEST_TICKET_RE = re.compile(r"\b(?:latest|last|most recent)\s+tickets?\b", re.IGNORECASE)
@@ -687,32 +687,29 @@ def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn |
     if _asked_tickets_for_person(turn):
         stage = "live" if _asked_latest_for_person(turn) else "open"
         limit = 1 if _asked_latest_for_person(turn) else 100
-        if pick is not None:
-            return list_tickets(
-                source,
-                ListTicketsArgs(
-                    contact_id=pick.id,
-                    requestor=pick.full_name,
-                    stage=stage,
-                    limit=limit,
-                ),
-                turn,
-            )
-        if contact_error:
-            return _refuse(SEARCH_CONTACT, source, contact_error)
         listed = list_tickets(
             source,
-            ListTicketsArgs(requestor=person, stage=stage, limit=limit),
+            ListTicketsArgs(
+                contact_id=pick.id if pick is not None else None,
+                requestor=(pick.full_name if pick is not None else person),
+                stage=stage,
+                limit=limit,
+            ),
             turn,
         )
-        if listed.data or not _asked_latest_for_person(turn):
+        if listed.data:
             return listed
-        return list_tickets(
+        by_text = list_tickets(
             source,
             ListTicketsArgs(q=person, stage=stage, limit=limit),
             turn,
             force_text_query=True,
         )
+        if by_text.data or _asked_latest_for_person(turn):
+            return by_text
+        if contact_error:
+            return _refuse(SEARCH_CONTACT, source, contact_error)
+        return listed
     if not rows:
         return ToolResult(
             tool=SEARCH_CONTACT,

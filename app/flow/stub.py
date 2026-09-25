@@ -68,7 +68,9 @@ def _person_hit(ticket: TicketRecord, *, contact_id: int | None, requestor: str 
             last = _last_name_token(contact.full_name)
             if last:
                 names.append(last)
-    stored = _norm(ticket.requestor_text)
+    stored = " ".join(
+        filter(None, (_norm(ticket.requestor_text), _norm(ticket.subject), _norm(ticket.topic)))
+    )
     return any(name and (name in stored or stored in name) for name in names)
 
 

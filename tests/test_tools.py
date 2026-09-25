@@ -128,12 +128,24 @@ class ToolStubTests(unittest.TestCase):
     def test_latest_ticket_involving_unknown_person_is_english(self) -> None:
         result = answer_person_ticket_question(
             self.source,
+            ChatTurn(user_text="Tell me the latest ticket involving Nobody Fakename"),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("No ticket found for Nobody Fakename", result.reply or "")
+        self.assertNotRegex(result.reply or "", r"[\u0E00-\u0E7F]")
+        self.assertNotIn("Western Dental", result.reply or "")
+
+    def test_latest_ticket_involving_thomas_carter_uses_subject(self) -> None:
+        result = answer_person_ticket_question(
+            self.source,
             ChatTurn(user_text="Tell me the latest ticket involving Thomas Carter"),
         )
         self.assertIsNotNone(result)
-        self.assertIn("No ticket found for Thomas Carter", result.reply or "")
-        self.assertNotRegex(result.reply or "", r"[\u0E00-\u0E7F]")
-        self.assertNotIn("Western Dental", result.reply or "")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-2619"])
+        self.assertIn("Latest ticket for Thomas Carter", result.reply or "")
+        self.assertIn("WDON-2619", result.reply or "")
+        self.assertNotIn("more information", (result.reply or "").lower())
 
     def test_latest_ticket_ignores_invented_wdon_when_person_named(self) -> None:
         result = latest_ticket(
@@ -303,9 +315,9 @@ class ToolStubTests(unittest.TestCase):
     def test_latest_ticket_wdon(self) -> None:
         result = latest_ticket(self.source, LatestTicketArgs(client_code="WDON"))
         self.assertTrue(result.ok)
-        self.assertEqual(result.data["ticket_label"], "WDON-1842")
-        self.assertEqual(result.data["topic"], "Imaging workstation offline")
-        self.assertEqual(result.row_ids, [9001])
+        self.assertEqual(result.data["ticket_label"], "WDON-2619")
+        self.assertEqual(result.data["topic"], "B Ellerby Email")
+        self.assertEqual(result.row_ids, [2619])
 
     def test_find_similar_tickets_returns_fixture_pair(self) -> None:
         result = find_similar_tickets(self.source, FindSimilarTicketsArgs(client_code="ACME"))
