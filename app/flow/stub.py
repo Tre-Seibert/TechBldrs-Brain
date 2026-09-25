@@ -44,17 +44,30 @@ def _ticket_stage(ticket: TicketRecord) -> str:
     return "open"
 
 
+def _last_name_token(name: str | None) -> str | None:
+    parts = [part for part in re.split(r"\s+", (name or "").strip()) if part]
+    if len(parts) >= 2 and len(parts[-1]) >= 4:
+        return _norm(parts[-1])
+    return None
+
+
 def _person_hit(ticket: TicketRecord, *, contact_id: int | None, requestor: str | None) -> bool:
     if contact_id is None and not (requestor or "").strip():
         return True
     if contact_id is not None and ticket.contact_id == contact_id:
         return True
     names = [_norm(requestor)] if (requestor or "").strip() else []
+    last = _last_name_token(requestor)
+    if last:
+        names.append(last)
     if contact_id is not None:
         contact = next((row for row in CONTACTS if row.id == contact_id), None)
         if contact is not None:
             names.append(_norm(contact.full_name))
             names.append(_norm(contact.file_as))
+            last = _last_name_token(contact.full_name)
+            if last:
+                names.append(last)
     stored = _norm(ticket.requestor_text)
     return any(name and (name in stored or stored in name) for name in names)
 
@@ -110,7 +123,8 @@ class StubFlowSource:
                     ],
                 )
             ).lower()
-            if needle in haystack:
+            last = _last_name_token(query)
+            if needle in haystack or (last and last in _norm(contact.full_name) + " " + _norm(contact.file_as)):
                 hits.append(contact)
             if len(hits) >= _clamp_limit(limit):
                 break

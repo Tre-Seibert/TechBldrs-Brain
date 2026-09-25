@@ -414,6 +414,59 @@ def _looks_like_person_name(text: str | None) -> bool:
     return len(parts) >= 2 and all(_PERSON_TOKEN_RE.match(part) for part in parts)
 
 
+def _name_parts(text: str | None) -> tuple[str, str]:
+    raw = (text or "").strip()
+    if "," in raw:
+        last, _, rest = raw.partition(",")
+        first = rest.strip().split()[0] if rest.strip() else ""
+        last = last.strip()
+        if last and first:
+            return first, last
+    parts = [part for part in re.split(r"\s+", raw) if part]
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[-1]
+
+
+def _damerau(left: str, right: str) -> int:
+    """Edit distance including adjacent transpositions (Micahel → Michael)."""
+    a, b = left.lower(), right.lower()
+    if a == b:
+        return 0
+    if not a or not b:
+        return max(len(a), len(b))
+    prev_prev = list(range(len(b) + 1))
+    prev = [1] + [0] * len(b)
+    for j in range(1, len(b) + 1):
+        prev[j] = prev_prev[j - 1] if a[0] == b[j - 1] else 1 + min(prev_prev[j], prev[j - 1], prev_prev[j - 1])
+    for i in range(2, len(a) + 1):
+        current = [i] + [0] * len(b)
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            current[j] = min(prev[j] + 1, current[j - 1] + 1, prev[j - 1] + cost)
+            if j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                current[j] = min(current[j], prev_prev[j - 2] + 1)
+        prev_prev, prev = prev, current
+    return prev[len(b)]
+
+
+def _contact_name_score(query: str, stored: str) -> int | None:
+    """Lower is closer. None means do not treat this as the same person."""
+    q_first, q_last = _name_parts(query)
+    n_first, n_last = _name_parts(stored)
+    if q_last and n_last and q_last.lower() == n_last.lower():
+        if not q_first:
+            return 2
+        distance = _damerau(q_first, n_first)
+        return distance if distance <= 2 else None
+    if q_first and n_first and not q_last:
+        distance = _damerau(q_first, n_first)
+        return distance if distance <= 1 else None
+    return None
+
+
 def _person_name_from_turn(turn: ChatTurn | None) -> str | None:
     text = turn.user_text if turn else ""
     match = _TICKETS_FOR_RE.search(text or "")
@@ -435,12 +488,24 @@ def _asked_tickets_for_person(turn: ChatTurn | None) -> bool:
 
 def _search_contacts_loose(source: FlowSource, person: str) -> list:
     matches = source.search_contact(query=person, limit=10)
-    if matches:
+    scored = [row for row in matches if _best_contact_score(person, row) is not None]
+    if scored:
         return matches
-    parts = [part for part in re.split(r"\s+", person.strip()) if part]
-    if len(parts) >= 2 and len(parts[-1]) >= 3:
-        return source.search_contact(query=parts[-1], limit=10)
-    return []
+    last = _name_parts(person)[1]
+    if last and len(last) >= 4:
+        return source.search_contact(query=last, limit=10)
+    return matches
+
+
+def _best_contact_score(person: str, row) -> int | None:
+    scores = [
+        score
+        for label in (row.full_name, row.file_as)
+        if label
+        for score in [_contact_name_score(person, label)]
+        if score is not None
+    ]
+    return min(scores) if scores else None
 
 
 def _pick_contact(matches: list, person: str):
@@ -448,6 +513,15 @@ def _pick_contact(matches: list, person: str):
     exact = [row for row in matches if (row.full_name or "").strip().lower() == wanted]
     if exact:
         return exact[0], None
+    ranked = sorted(
+        ((score, row) for row in matches if (score := _best_contact_score(person, row)) is not None),
+        key=lambda item: (item[0], item[1].full_name or ""),
+    )
+    if ranked:
+        best_score, best = ranked[0]
+        tied = [row for score, row in ranked if score == best_score]
+        if len({row.id for row in tied}) == 1:
+            return best, None
     if len(matches) == 1:
         return matches[0], None
     if not matches:
@@ -556,19 +630,34 @@ def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, 
 
 
 def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn | None = None) -> ToolResult:
-    rows = source.search_contact(
-        query=args.query,
-        client_code=args.client_code,
-        limit=args.limit,
+    person = _person_name_from_turn(turn) or args.query
+    looking_for_person = _looks_like_person_name(person) or _asked_tickets_for_person(turn)
+    rows = (
+        _search_contacts_loose(source, person)
+        if looking_for_person
+        else source.search_contact(
+            query=args.query,
+            client_code=args.client_code,
+            limit=args.limit,
+        )
     )
-    if not rows and _looks_like_person_name(args.query):
-        rows = _search_contacts_loose(source, args.query)
+    pick, contact_error = _pick_contact(rows, person) if looking_for_person else (None, None)
+    if contact_error and not _asked_tickets_for_person(turn):
+        return _refuse(SEARCH_CONTACT, source, contact_error)
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     client_code = codes[0] if len(codes) == 1 else (args.client_code or None)
-    if _asked_tickets_for_person(turn) and len(rows) == 1:
+    if _asked_tickets_for_person(turn):
+        if pick is not None:
+            return list_tickets(
+                source,
+                ListTicketsArgs(contact_id=pick.id, requestor=pick.full_name, stage="open"),
+                turn,
+            )
+        if contact_error:
+            return _refuse(SEARCH_CONTACT, source, contact_error)
         return list_tickets(
             source,
-            ListTicketsArgs(contact_id=rows[0].id, stage="open"),
+            ListTicketsArgs(requestor=person, stage="open"),
             turn,
         )
     return ToolResult(
@@ -710,7 +799,7 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
             if raw_q and _looks_like_person_name(raw_q):
                 raw_q = None
     elif contact_id is not None:
-        person_label = requestor
+        person_label = requestor or _person_name_from_turn(turn)
     if person_label or contact_id is not None:
         column_asked = True
     client = (args.client_code or "").strip().upper() or None

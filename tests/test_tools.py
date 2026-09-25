@@ -16,6 +16,8 @@ from app.tools.handlers import (
     MergeTicketsArgs,
     SearchContactArgs,
     SearchTechnicianArgs,
+    _contact_name_score,
+    _damerau,
     find_similar_tickets,
     format_similar_list,
     latest_ticket,
@@ -79,6 +81,34 @@ class ToolStubTests(unittest.TestCase):
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.tool, "list_tickets")
         self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+
+    def test_tickets_for_requestor_tolerates_first_name_typo(self) -> None:
+        result = search_contact(
+            self.source,
+            SearchContactArgs(query="Micahel"),
+            ChatTurn(user_text="What tickets are open for Micahel Sodl?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.tool, "list_tickets")
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+        self.assertIn("Michael Sodl", result.reply or "")
+        self.assertNotIn("for WIDG", result.reply or "")
+
+    def test_contact_id_heading_uses_the_person_not_the_client(self) -> None:
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(contact_id=202, stage="open"),
+            ChatTurn(user_text="What tickets are open for Michael Sodl?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Michael Sodl", result.reply or "")
+        self.assertNotIn("for ACME", result.reply or "")
+
+    def test_first_name_typo_scores_as_same_person(self) -> None:
+        self.assertEqual(_damerau("Micahel", "Michael"), 1)
+        self.assertEqual(_contact_name_score("Micahel Sodl", "Michael Sodl"), 1)
+        self.assertEqual(_contact_name_score("Micahel Sodl", "Sodl, Michael"), 1)
+        self.assertIsNone(_contact_name_score("Micahel Sodl", "Riley Chen"))
 
     def test_search_technician_resolves_name_email_and_code(self) -> None:
         for query in ("Tre", "tseibert", "ts", "TS"):
