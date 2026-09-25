@@ -108,12 +108,39 @@ class ApiTests(unittest.TestCase):
                     "message": {
                         "role": "assistant",
                         "content": "คณะกรรมการทำงานนี้ค้นหาข้อมูลเกี่ยวกับ Thomas Carter",
+                        "reasoning": "คิดเป็นภาษาไทย",
                     }
                 }
             ]
         }
         out = _apply_english_reply(payload, [])
         self.assertEqual(out["choices"][0]["message"]["content"], _NO_TOOL_ENGLISH)
+        self.assertNotIn("reasoning", out["choices"][0]["message"])
+
+    def test_apply_english_reply_replaces_cyrillic_and_mixed(self) -> None:
+        from app.agent.loop import _NO_TOOL_ENGLISH
+
+        payload = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "Последний тикет для Thomas Carter"}}
+            ]
+        }
+        out = _apply_english_reply(payload, [])
+        self.assertEqual(out["choices"][0]["message"]["content"], _NO_TOOL_ENGLISH)
+        mixed = {
+            "choices": [
+                {"message": {"role": "assistant", "content": "Latest ticket: คณะกรรมการทำงานนี้"}}
+            ]
+        }
+        out = _apply_english_reply(mixed, [])
+        self.assertEqual(out["choices"][0]["message"]["content"], _NO_TOOL_ENGLISH)
+
+    def test_apply_english_reply_keeps_english(self) -> None:
+        payload = {
+            "choices": [{"message": {"role": "assistant", "content": "No ticket found for Thomas Carter."}}]
+        }
+        out = _apply_english_reply(payload, [])
+        self.assertEqual(out["choices"][0]["message"]["content"], "No ticket found for Thomas Carter.")
 
     def test_apply_english_reply_replaces_chinese(self) -> None:
         payload = {

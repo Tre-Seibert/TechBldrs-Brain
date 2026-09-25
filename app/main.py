@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import __version__
-from app.agent.loop import AgentError, run_tool_loop, stream_final_message
+from app.agent.loop import AgentError, _english_only, enforce_english_payload, run_tool_loop, stream_final_message
 from app.config import Settings, get_settings
 from app.flow.factory import build_flow_source
 from app.flow.source import FlowNotConfigured, FlowSource
@@ -202,7 +202,8 @@ async def chat_completions(
                 extra_body=extra,
             )
         except AgentError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=_english_only(str(exc))) from exc
+    payload = enforce_english_payload(payload)
     if body.stream:
         return StreamingResponse(stream_final_message(payload), media_type="text/event-stream")
     return JSONResponse(payload)

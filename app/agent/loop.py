@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -26,11 +27,12 @@ from app.tools.registry import (
 )
 
 _RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL, SEARCH_CONTACT}
-_NON_ENGLISH_RE = re.compile(r"[\u0E00-\u0E7F\u3040-\u30FF\u3400-\u9FFF\uAC00-\uD7AF]")
 _NO_TOOL_ENGLISH = (
     "I can only answer from Flow tools, and I did not get a usable result. "
     "Ask again with a person, technician, or client code."
 )
+_THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_DROP_MESSAGE_KEYS = ("reasoning", "reasoning_content", "thinking", "thought")
 
 _log = logging.getLogger("tb_brain.agent")
 
@@ -160,37 +162,66 @@ def _tool_message_content(result: Any) -> str:
     return result.model_dump_json()
 
 
-def _assistant_payload(text: str, model: str) -> dict[str, Any]:
-    return {
-        "id": "tb-brain",
-        "object": "chat.completion",
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }
-        ],
-    }
+def _has_non_english_script(text: str) -> bool:
+    """True if any letter is not a Latin letter (Thai, Chinese, Cyrillic, Arabic, ...)."""
+    for char in text or "":
+        if not char.isalpha():
+            continue
+        name = unicodedata.name(char, "")
+        if not name.startswith("LATIN"):
+            return True
+    return False
 
 
-def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[str, Any]:
-    """Qwen often answers in Chinese/Thai. Show the English tool list instead."""
-    content = ""
+def _english_only(text: str, fallback: str | None = None) -> str:
+    cleaned = _THINK_RE.sub("", text or "").strip()
+    if cleaned and not _has_non_english_script(cleaned):
+        return cleaned
+    return (fallback or "").strip() or _NO_TOOL_ENGLISH
+
+
+def _set_assistant_content(payload: dict[str, Any], text: str) -> dict[str, Any]:
     choices = payload.get("choices")
-    if choices:
-        content = str((choices[0].get("message") or {}).get("content") or "")
-    text = replies[-1] if replies else ("" if not _NON_ENGLISH_RE.search(content) else _NO_TOOL_ENGLISH)
-    if not text:
-        return payload
     if not choices:
         payload["choices"] = [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]
         return payload
     message = dict(choices[0].get("message") or {})
+    for key in _DROP_MESSAGE_KEYS:
+        message.pop(key, None)
+    message["role"] = "assistant"
     message["content"] = text
     choices[0]["message"] = message
     return payload
+
+
+def _assistant_payload(text: str, model: str) -> dict[str, Any]:
+    return _apply_english_reply(
+        {
+            "id": "tb-brain",
+            "object": "chat.completion",
+            "model": model,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        },
+        [text] if text else [],
+    )
+
+
+def enforce_english_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Public last-mile gate for /v1/chat/completions."""
+    return _apply_english_reply(payload, [])
+
+
+def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[str, Any]:
+    """Last gate: the user only ever sees English. Tool lists win; model text is discarded if not English."""
+    if replies:
+        text = _THINK_RE.sub("", replies[-1]).strip() or _NO_TOOL_ENGLISH
+    else:
+        content = ""
+        choices = payload.get("choices")
+        if choices:
+            content = str((choices[0].get("message") or {}).get("content") or "")
+        text = _english_only(content)
+    return _set_assistant_content(payload, text)
 
 
 async def run_tool_loop(
@@ -285,6 +316,10 @@ async def run_tool_loop(
 
 async def stream_final_message(payload: dict[str, Any]) -> AsyncIterator[bytes]:
     """Run the full tool loop first, then SSE-stream the final assistant text."""
+    raw = ""
+    if payload.get("choices"):
+        raw = str((payload["choices"][0].get("message") or {}).get("content") or "")
+    payload = _set_assistant_content(payload, _THINK_RE.sub("", raw).strip() or _NO_TOOL_ENGLISH)
     choice = (payload.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = message.get("content") or ""
