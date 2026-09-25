@@ -87,9 +87,42 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
                 "Any urgent tickets? → category=urgent, no assignee_code."
             ),
         },
+        "reason": {
+            "type": "string",
+            "description": (
+                "Ticket reason: Billable/New, Support, Internal, Resolved, Admin, Alert. "
+                "Any billable tickets? → reason=billable, no assignee_code."
+            ),
+        },
+        "complete": {
+            "type": "boolean",
+            "description": "true = marked complete. false = incomplete. Not the same as status Done.",
+        },
+        "project": {
+            "type": "boolean",
+            "description": "Ticket project checkbox. Not the same as category 6 Project.",
+        },
+        "machine_name": {"type": "string", "description": "Machine / hostname on the ticket."},
+        "invoice_num": {"type": "string", "description": "Invoice number on the ticket."},
+        "job": {"type": "string", "description": "Job number on the ticket."},
+        "cause": {"type": "string", "description": "Substring match on ticket cause."},
+        "overdue": {
+            "type": "boolean",
+            "description": "true = due_at is in the past and the ticket is not complete.",
+        },
+        "due_before": {"type": "string", "description": "ISO date. Tickets due before this instant."},
+        "due_after": {"type": "string", "description": "ISO date. Tickets due on or after this instant."},
+        "created_before": {"type": "string", "description": "ISO date."},
+        "created_after": {"type": "string", "description": "ISO date."},
+        "last_activity_before": {"type": "string", "description": "ISO date."},
+        "last_activity_after": {"type": "string", "description": "ISO date."},
+        "contact_id": {
+            "type": "integer",
+            "description": "contacts.id from search_contact.",
+        },
         "status": {
             "type": "string",
-            "description": "Optional exact status (New, Done, ...). Not the same as stage.",
+            "description": "Optional exact status (New, Done, ...). Not the same as stage. Works on archived too.",
         },
         "stage": {
             "type": "string",
@@ -217,9 +250,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         LIST_TICKETS,
-        "List Flow tickets. The main ticket tool: tickets assigned to a technician, all tickets for "
-        "a client, open tickets, a category, or a text search. Needs at least one of assignee_code, "
-        "client_code, category, q, ticket_num. Urgent tickets use category=urgent, not assignee=me.",
+        "List Flow tickets. The main ticket tool: assignee, client, category, reason, complete, "
+        "project, machine, invoice, job, cause, overdue/dates, or text search. Needs at least one "
+        "of those scopes. Urgent/billable/overdue questions do not use assignee=me unless the user said my.",
         _LIST_TICKETS_SCHEMA,
     ),
     _fn(

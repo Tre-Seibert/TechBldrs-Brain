@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from itertools import combinations
 from typing import Any
 
@@ -11,6 +12,18 @@ from app.flow.source import FlowRequestError
 
 def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
+
+
+def _parse_dt(raw: str | None) -> datetime | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _clamp_limit(limit: int, default: int = 25, maximum: int = 100) -> int:
@@ -117,6 +130,20 @@ class StubFlowSource:
         status: str | None = None,
         ticket_num: str | None = None,
         category: str | None = None,
+        reason: str | None = None,
+        complete: bool | None = None,
+        project: bool | None = None,
+        machine_name: str | None = None,
+        invoice_num: str | None = None,
+        job: str | None = None,
+        cause: str | None = None,
+        overdue: bool | None = None,
+        due_before: str | None = None,
+        due_after: str | None = None,
+        created_before: str | None = None,
+        created_after: str | None = None,
+        last_activity_before: str | None = None,
+        last_activity_after: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -129,13 +156,59 @@ class StubFlowSource:
         wanted_category = _norm(category)
         if wanted_category in ("urgent", "0 urgent"):
             wanted_category = "0 urgent"
-        if not (code or assignee or needle or wanted_num or wanted_category):
-            raise FlowRequestError("Flow 400: client_code, assignee_code, q, ticket_num, or category is required")
+        wanted_reason = _norm(reason)
+        if wanted_reason in ("billable", "billable/new", "billable new"):
+            wanted_reason = "billable/new"
+        wanted_machine = _norm(machine_name)
+        wanted_invoice = _norm(invoice_num)
+        wanted_job = _norm(job)
+        wanted_cause = _norm(cause)
+        due_before_dt = _parse_dt(due_before)
+        due_after_dt = _parse_dt(due_after)
+        created_before_dt = _parse_dt(created_before)
+        created_after_dt = _parse_dt(created_after)
+        last_before_dt = _parse_dt(last_activity_before)
+        last_after_dt = _parse_dt(last_activity_after)
+        has_scope = any(
+            (
+                code,
+                assignee,
+                needle,
+                wanted_num,
+                wanted_category,
+                wanted_reason,
+                wanted_machine,
+                wanted_invoice,
+                wanted_job,
+                wanted_cause,
+                complete is not None,
+                project is not None,
+                overdue,
+                due_before_dt,
+                due_after_dt,
+                created_before_dt,
+                created_after_dt,
+                last_before_dt,
+                last_after_dt,
+                contact_id is not None,
+            )
+        )
+        if not has_scope:
+            raise FlowRequestError(
+                "Flow 400: client_code, assignee_code, q, ticket_num, category, reason, or another ticket filter is required"
+            )
         wanted_status = _norm(status)
+        now = datetime.now()
 
         def text_hit(ticket: TicketRecord) -> bool:
             fields = (ticket.topic, ticket.subject, ticket.requestor_text, ticket.machine_name, ticket.ticket_num)
             return any(needle in _norm(value) for value in fields) or needle == _norm(ticket.label)
+
+        def reason_hit(ticket: TicketRecord) -> bool:
+            stored = _norm(ticket.reason)
+            if not wanted_reason:
+                return True
+            return stored == wanted_reason or (wanted_reason == "billable/new" and stored == "billable/new")
 
         matches = [
             t
@@ -148,6 +221,20 @@ class StubFlowSource:
             and (not wanted_status or _norm(t.status) == wanted_status)
             and (not wanted_num or t.ticket_num == wanted_num)
             and (not wanted_category or _norm(t.category) == wanted_category)
+            and reason_hit(t)
+            and (complete is None or t.complete is complete)
+            and (project is None or t.project is project)
+            and (not wanted_machine or wanted_machine in _norm(t.machine_name))
+            and (not wanted_invoice or wanted_invoice == _norm(t.invoice_num))
+            and (not wanted_job or wanted_job == _norm(t.job))
+            and (not wanted_cause or wanted_cause in _norm(t.cause))
+            and (due_before_dt is None or (t.due_at is not None and t.due_at < due_before_dt))
+            and (due_after_dt is None or (t.due_at is not None and t.due_at >= due_after_dt))
+            and (created_before_dt is None or t.created_at < created_before_dt)
+            and (created_after_dt is None or t.created_at >= created_after_dt)
+            and (last_before_dt is None or t.last_activity_at < last_before_dt)
+            and (last_after_dt is None or t.last_activity_at >= last_after_dt)
+            and (not overdue or (t.due_at is not None and t.due_at < now and not t.complete))
         ]
         reverse = (order or "desc").lower() != "asc"
         matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)

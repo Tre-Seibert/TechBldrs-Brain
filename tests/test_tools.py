@@ -172,6 +172,45 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(result.data, [])
         self.assertIn("No open 0 Urgent tickets", result.reply or "")
 
+    def test_list_tickets_billable_is_reason_not_my_open_list(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = list_tickets(
+                self.source,
+                ListTicketsArgs(assignee_code="me"),
+                ChatTurn(user_text="any billable tickets?"),
+            )
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041"])
+        self.assertEqual(result.data[0]["reason"], "Billable/New")
+        self.assertIn("Billable/New", result.reply or "")
+        self.assertNotIn("ACME-0045", result.reply or "")
+
+    def test_list_tickets_overdue_from_turn(self) -> None:
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(overdue=True),
+            ChatTurn(user_text="any overdue tickets?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"])
+
+    def test_list_tickets_machine_and_invoice(self) -> None:
+        machine = list_tickets(self.source, ListTicketsArgs(machine_name="WDON-IMG-01"))
+        self.assertEqual([row["ticket_label"] for row in machine.data], ["WDON-1842"])
+        invoice = list_tickets(self.source, ListTicketsArgs(invoice_num="INV-441"))
+        self.assertEqual([row["ticket_label"] for row in invoice.data], ["ACME-0041"])
+
+    def test_list_tickets_incomplete(self) -> None:
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(assignee_code="tr"),
+            ChatTurn(user_text="incomplete tickets assigned to tr"),
+        )
+        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"])
+
     def test_latest_ticket_wdon(self) -> None:
         result = latest_ticket(self.source, LatestTicketArgs(client_code="WDON"))
         self.assertTrue(result.ok)

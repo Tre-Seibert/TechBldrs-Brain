@@ -25,15 +25,36 @@ _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
 _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
+_BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
+_OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
+_INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
 _CATEGORY_ALIASES = {
     "urgent": "0 Urgent",
     "0 urgent": "0 Urgent",
     "high": "1 High",
     "1 high": "1 High",
+    "re-opened": "1 Re-Opened",
+    "reopened": "1 Re-Opened",
+    "normal": "2 Normal",
+    "2 normal": "2 Normal",
+    "follow up": "3 Follow Up",
+    "follow-up": "3 Follow Up",
     "waiting": "4 Waiting",
     "4 waiting": "4 Waiting",
+    "on-site": "5 On-Site",
+    "onsite": "5 On-Site",
     "project": "6 Project",
     "6 project": "6 Project",
+}
+_REASON_ALIASES = {
+    "billable": "Billable/New",
+    "billable/new": "Billable/New",
+    "billable new": "Billable/New",
+    "support": "Support",
+    "internal": "Internal",
+    "resolved": "Resolved",
+    "admin": "Admin",
+    "alert": "Alert",
 }
 _UNKNOWN_SELF = (
     "I don't know who you are signed in as. Sign in with your Flow email, or name a technician."
@@ -76,17 +97,56 @@ class ListTicketsArgs(BaseModel):
     ticket_num: str | None = None
     status: str | None = None
     category: str | None = None
+    contact_id: int | None = None
+    reason: str | None = None
+    complete: bool | None = None
+    project: bool | None = None
+    machine_name: str | None = None
+    invoice_num: str | None = None
+    job: str | None = None
+    cause: str | None = None
+    overdue: bool | None = None
+    due_before: str | None = None
+    due_after: str | None = None
+    created_before: str | None = None
+    created_after: str | None = None
+    last_activity_before: str | None = None
+    last_activity_after: str | None = None
     stage: str | None = None
     limit: int = 100
 
     @model_validator(mode="after")
     def _need_scope(self) -> ListTicketsArgs:
-        if not any(
+        if any(
             (value or "").strip()
-            for value in (self.assignee_code, self.client_code, self.q, self.ticket_num, self.category)
+            for value in (
+                self.assignee_code,
+                self.client_code,
+                self.q,
+                self.ticket_num,
+                self.category,
+                self.reason,
+                self.machine_name,
+                self.invoice_num,
+                self.job,
+                self.cause,
+                self.due_before,
+                self.due_after,
+                self.created_before,
+                self.created_after,
+                self.last_activity_before,
+                self.last_activity_after,
+            )
         ):
-            raise ValueError("assignee_code, client_code, q, ticket_num, or category is required")
-        return self
+            return self
+        if any(
+            value is not None
+            for value in (self.contact_id, self.complete, self.project)
+        ) or self.overdue:
+            return self
+        raise ValueError(
+            "assignee_code, client_code, q, ticket_num, category, reason, or another ticket filter is required"
+        )
 
 
 class FindSimilarTicketsArgs(BaseModel):
@@ -172,9 +232,15 @@ def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
         "contact_id": row.contact_id,
         "machine_name": row.machine_name,
         "assignee_code": row.assignee_code,
+        "reason": row.reason,
+        "cause": row.cause,
+        "project": row.project,
         "complete": row.complete,
+        "invoice_num": row.invoice_num,
+        "job": row.job,
         "created_at": row.created_at.isoformat(sep=" "),
         "last_activity_at": row.last_activity_at.isoformat(sep=" "),
+        "due_at": row.due_at.isoformat(sep=" ") if row.due_at else None,
         "closed_at": row.closed_at.isoformat(sep=" ") if row.closed_at else None,
     }
 
@@ -257,7 +323,10 @@ def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | 
         category = (row.get("category") or "").strip() or "uncategorized"
         client = (row.get("client_code") or "").strip()
         assignee = (row.get("assignee_code") or "").strip() or "unassigned"
+        reason = (row.get("reason") or "").strip()
         extra = f"{client} · {status} · {category} · {assignee}" if client else f"{status} · {category} · {assignee}"
+        if reason:
+            extra = f"{extra} · {reason}"
         lines.append(f"- {label} — {topic} ({extra})")
     if note:
         lines.extend(["", note])
@@ -343,20 +412,54 @@ def _resolve_category(raw: str | None) -> str | None:
     return _CATEGORY_ALIASES.get(text.lower(), text)
 
 
-def _category_from_query(query: str | None) -> tuple[str | None, str | None]:
+def _resolve_reason(raw: str | None) -> str | None:
+    text = (raw or "").strip()
+    if not text:
+        return None
+    return _REASON_ALIASES.get(text.lower(), text)
+
+
+def _alias_from_query(query: str | None, aliases: dict[str, str]) -> tuple[str | None, str | None]:
     text = (query or "").strip()
     if not text:
         return None, None
-    category = _CATEGORY_ALIASES.get(text.lower())
-    if category:
-        return category, None
+    mapped = aliases.get(text.lower())
+    if mapped:
+        return mapped, None
     return None, text
+
+
+def _category_from_query(query: str | None) -> tuple[str | None, str | None]:
+    return _alias_from_query(query, _CATEGORY_ALIASES)
+
+
+def _reason_from_query(query: str | None) -> tuple[str | None, str | None]:
+    return _alias_from_query(query, _REASON_ALIASES)
 
 
 def _category_from_turn(turn: ChatTurn | None) -> str | None:
     text = turn.user_text if turn else ""
     if text and _URGENT_RE.search(text):
         return "0 Urgent"
+    return None
+
+
+def _reason_from_turn(turn: ChatTurn | None) -> str | None:
+    text = turn.user_text if turn else ""
+    if text and _BILLABLE_RE.search(text):
+        return "Billable/New"
+    return None
+
+
+def _overdue_from_turn(turn: ChatTurn | None) -> bool:
+    text = turn.user_text if turn else ""
+    return bool(text and _OVERDUE_RE.search(text))
+
+
+def _complete_from_turn(turn: ChatTurn | None) -> bool | None:
+    text = turn.user_text if turn else ""
+    if text and _INCOMPLETE_RE.search(text):
+        return False
     return None
 
 
@@ -444,10 +547,26 @@ def _default_list_stage(
     assignee_code: str | None,
     query: str | None,
     category: str | None,
+    reason: str | None = None,
+    overdue: bool | None = None,
+    complete: bool | None = None,
+    project: bool | None = None,
 ) -> str:
-    """Assigned-to and category lists are Open unless review/archived/all was asked."""
+    """Assigned-to and column lists are Open unless review/archived/all was asked."""
     wanted = (args.stage or "").strip().lower()
-    scoped = bool(assignee_code or category) and not any(
+    column_scope = bool(
+        assignee_code
+        or category
+        or reason
+        or overdue
+        or complete is not None
+        or project is not None
+        or (args.machine_name or "").strip()
+        or (args.invoice_num or "").strip()
+        or (args.job or "").strip()
+        or (args.cause or "").strip()
+    )
+    scoped = column_scope and not any(
         (value or "").strip() for value in (args.client_code, query, args.ticket_num)
     )
     if scoped and wanted not in ("review", "archived", "all"):
@@ -467,20 +586,67 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         category = from_q
     if not category:
         category = _category_from_turn(turn)
-    if category and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
+    reason = _resolve_reason(args.reason)
+    if not reason:
+        from_q, raw_q = _reason_from_query(raw_q)
+        reason = from_q
+    if not reason:
+        reason = _reason_from_turn(turn)
+    overdue = args.overdue
+    if overdue is None and _overdue_from_turn(turn):
+        overdue = True
+    complete = args.complete
+    if complete is None:
+        complete = _complete_from_turn(turn)
+    column_asked = bool(
+        category
+        or reason
+        or overdue
+        or complete is not None
+        or args.project is not None
+        or (args.machine_name or "").strip()
+        or (args.invoice_num or "").strip()
+        or (args.job or "").strip()
+        or (args.cause or "").strip()
+    )
+    if column_asked and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
         raw_assignee = None
     assignee, error = _resolve_assignee(source, raw_assignee)
     if error:
         return _refuse(LIST_TICKETS, source, error)
     client = (args.client_code or "").strip().upper() or None
-    stage = _default_list_stage(args, assignee_code=assignee, query=raw_q, category=category)
+    stage = _default_list_stage(
+        args,
+        assignee_code=assignee,
+        query=raw_q,
+        category=category,
+        reason=reason,
+        overdue=overdue,
+        complete=complete,
+        project=args.project,
+    )
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
         query=raw_q,
+        contact_id=args.contact_id,
         status=args.status,
         ticket_num=(args.ticket_num or "").strip() or None,
         category=category,
+        reason=reason,
+        complete=complete,
+        project=args.project,
+        machine_name=(args.machine_name or "").strip() or None,
+        invoice_num=(args.invoice_num or "").strip() or None,
+        job=(args.job or "").strip() or None,
+        cause=(args.cause or "").strip() or None,
+        overdue=overdue,
+        due_before=(args.due_before or "").strip() or None,
+        due_after=(args.due_after or "").strip() or None,
+        created_before=(args.created_before or "").strip() or None,
+        created_after=(args.created_after or "").strip() or None,
+        last_activity_before=(args.last_activity_before or "").strip() or None,
+        last_activity_after=(args.last_activity_after or "").strip() or None,
         stage=stage,
         limit=args.limit,
     )
@@ -492,21 +658,29 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
             f"Showing {len(rows)} tickets (limit {args.limit}, max 100). "
             "More may exist; narrow with a client code or status."
         )
-    if stage == "open" and assignee and not category:
+    if stage == "open" and assignee and not (category or reason or overdue):
         note = (
             f"{note} These are Open tickets (not archived, not 9 REVIEW). "
             "Want archived tickets too?"
         )
     data = [_ticket_payload(r) for r in rows]
-    who = category or assignee or client or (args.q or args.ticket_num or "that search")
+    who = (
+        category
+        or reason
+        or ("overdue" if overdue else None)
+        or assignee
+        or client
+        or (args.q or args.ticket_num or args.machine_name or args.invoice_num or args.job or "that search")
+    )
+    column_label = bool(category or reason or overdue)
     if not rows:
-        if category:
+        if column_label:
             heading = f"No {stage} {who} tickets."
         elif assignee:
             heading = f"No {stage} tickets assigned to {who}."
         else:
             heading = f"No {stage} tickets for {who}."
-    elif category:
+    elif column_label:
         heading = f"{len(rows)} open {who} ticket(s)" if stage == "open" else f"{len(rows)} {stage} {who} ticket(s)"
     elif stage == "open":
         heading = f"{len(rows)} open ticket(s) for {who}"

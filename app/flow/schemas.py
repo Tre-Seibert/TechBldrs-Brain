@@ -73,9 +73,15 @@ class TicketRecord(BaseModel):
     contact_id: int | None = None
     machine_name: str | None = None
     assignee_code: str | None = None
+    reason: str | None = None
+    cause: str | None = None
+    project: bool = False
     complete: bool = False
+    invoice_num: str | None = None
+    job: str | None = None
     created_at: datetime
     last_activity_at: datetime
+    due_at: datetime | None = None
     closed_at: datetime | None = None
     archived: bool = False
     archived_at: datetime | None = None
