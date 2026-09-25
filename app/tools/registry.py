@@ -118,7 +118,14 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
         "last_activity_after": {"type": "string", "description": "ISO date."},
         "contact_id": {
             "type": "integer",
-            "description": "contacts.id from search_contact.",
+            "description": (
+                "contacts.id from search_contact. Tickets for a named person use this, "
+                "not client_code. Also matches tickets that only have that name in requestor."
+            ),
+        },
+        "requestor": {
+            "type": "string",
+            "description": "Requestor name on the ticket (e.g. Michael Sodl). Prefer contact_id after search_contact.",
         },
         "status": {
             "type": "string",

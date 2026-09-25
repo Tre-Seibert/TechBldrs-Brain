@@ -71,6 +71,17 @@ CONTACTS: list[ContactRecord] = [
         email_1="riley@acme.example",
         is_active=True,
     ),
+    ContactRecord(
+        id=202,
+        client_id=7,
+        client_code="ACME",
+        contact_type="client",
+        full_name="Michael Sodl",
+        file_as="Sodl, Michael",
+        company_name="Acme Labs",
+        email_1="michael@acme.example",
+        is_active=True,
+    ),
 ]
 
 TICKETS: list[TicketRecord] = [
@@ -196,6 +207,20 @@ TICKETS: list[TicketRecord] = [
         assignee_code="eo",
         created_at=_DT(2026, 9, 22, 10, 0, 0),
         last_activity_at=_DT(2026, 9, 22, 10, 15, 0),
+    ),
+    TicketRecord(
+        id=3400,
+        client_id=7,
+        client_code="ACME",
+        ticket_num="0400",
+        subject="|ACME|0400| {Michael Sodl} VPN Unaccessible",
+        topic="VPN Unaccessible",
+        status="Open",
+        category="Normal",
+        requestor_text="Michael Sodl",
+        assignee_code="dh",
+        created_at=_DT(2026, 9, 23, 8, 0, 0),
+        last_activity_at=_DT(2026, 9, 23, 8, 15, 0),
     ),
 ]
 

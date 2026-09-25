@@ -59,6 +59,27 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(result.client_code, "WDON")
         self.assertEqual(result.data[0]["email_1"], "debe@westerndental.example")
 
+    def test_tickets_for_requestor_not_whole_client(self) -> None:
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(q="Micahel Sodl"),
+            ChatTurn(user_text="What tickets are open for Micahel Sodl?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+        self.assertIn("Michael Sodl", result.reply or "")
+        self.assertNotIn("ACME-0041", result.reply or "")
+
+    def test_search_contact_for_tickets_lists_requestor(self) -> None:
+        result = search_contact(
+            self.source,
+            SearchContactArgs(query="Sodl"),
+            ChatTurn(user_text="What tickets are open for Michael Sodl?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.tool, "list_tickets")
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0400"])
+
     def test_search_technician_resolves_name_email_and_code(self) -> None:
         for query in ("Tre", "tseibert", "ts", "TS"):
             result = search_technician(self.source, SearchTechnicianArgs(query=query))
@@ -382,7 +403,7 @@ class MergeGateTests(unittest.TestCase):
         # Fixtures are per-instance: a fresh stub still has both tickets.
         self.assertEqual(
             {row.id for row in StubFlowSource().list_tickets(client_code="ACME", stage="open")},
-            {3100, 3105, 3300},
+            {3100, 3105, 3300, 3400},
         )
 
     def test_http_write_without_verified_actor_fails_closed(self) -> None:

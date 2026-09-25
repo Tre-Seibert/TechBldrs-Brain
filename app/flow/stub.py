@@ -44,6 +44,21 @@ def _ticket_stage(ticket: TicketRecord) -> str:
     return "open"
 
 
+def _person_hit(ticket: TicketRecord, *, contact_id: int | None, requestor: str | None) -> bool:
+    if contact_id is None and not (requestor or "").strip():
+        return True
+    if contact_id is not None and ticket.contact_id == contact_id:
+        return True
+    names = [_norm(requestor)] if (requestor or "").strip() else []
+    if contact_id is not None:
+        contact = next((row for row in CONTACTS if row.id == contact_id), None)
+        if contact is not None:
+            names.append(_norm(contact.full_name))
+            names.append(_norm(contact.file_as))
+    stored = _norm(ticket.requestor_text)
+    return any(name and (name in stored or stored in name) for name in names)
+
+
 def _stage_match(ticket: TicketRecord, stage: str | None) -> bool:
     wanted = _norm(stage) or "live"
     current = _ticket_stage(ticket)
@@ -144,6 +159,7 @@ class StubFlowSource:
         created_after: str | None = None,
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
+        requestor: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -191,6 +207,7 @@ class StubFlowSource:
                 last_before_dt,
                 last_after_dt,
                 contact_id is not None,
+                (requestor or "").strip(),
             )
         )
         if not has_scope:
@@ -217,7 +234,7 @@ class StubFlowSource:
             and (not code or _norm(t.client_code) == code)
             and (not assignee or _norm(t.assignee_code) == assignee)
             and (not needle or text_hit(t))
-            and (contact_id is None or t.contact_id == contact_id)
+            and _person_hit(t, contact_id=contact_id, requestor=requestor)
             and (not wanted_status or _norm(t.status) == wanted_status)
             and (not wanted_num or t.ticket_num == wanted_num)
             and (not wanted_category or _norm(t.category) == wanted_category)

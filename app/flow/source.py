@@ -49,6 +49,7 @@ class FlowSource(Protocol):
         created_after: str | None = None,
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
+        requestor: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",

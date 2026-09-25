@@ -30,6 +30,7 @@ Rules:
   - "All open tickets for {CODE}" → list_tickets(client_code=CODE, stage=open, limit=100).
   - "Last {CODE} ticket?" → latest_ticket(client_code=CODE). That tool returns one row only.
   - "Tickets about {text}" → list_tickets(q=text, stage=live).
+  - "Tickets open for {person}" / "tickets for Michael Sodl" → search_contact, then immediately list_tickets(contact_id=that id, stage=open). That is the requestor/contact, not the assignee and not every ticket at their client. Do not ask to proceed. Do not list the whole client.
   - "When did {name} last reach out?" → search_contact then list_mail (inbound) using their email or contact_id.
   - "Emails from {CODE} to us?" → list_mail(client_code=CODE, direction=inbound).
   - "Do any open tickets need merged?" → find_similar_tickets(stage=open) with no assignee_code. Scan all open tickets, not the signed-in tech. If they named a client or tech, pass that.

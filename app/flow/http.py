@@ -156,6 +156,7 @@ class HttpFlowSource:
         created_after: str | None = None,
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
+        requestor: str | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -184,6 +185,7 @@ class HttpFlowSource:
             "created_after": created_after,
             "last_activity_before": last_activity_before,
             "last_activity_after": last_activity_after,
+            "requestor": requestor,
             "stage": stage,
         }
         params.update({key: value for key, value in optional.items() if value not in (None, "")})

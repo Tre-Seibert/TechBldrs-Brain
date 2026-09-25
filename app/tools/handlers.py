@@ -24,6 +24,8 @@ _ASSIGNEE_CODE_RE = re.compile(r"^[A-Za-z]{2}$")
 _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
 _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
+_TICKETS_FOR_RE = re.compile(r"\btickets?\b[^.?!\n]*\bfor\s+(?P<name>.+)", re.IGNORECASE)
+_PERSON_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z.'-]*$")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
 _BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
 _OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
@@ -112,6 +114,7 @@ class ListTicketsArgs(BaseModel):
     created_after: str | None = None
     last_activity_before: str | None = None
     last_activity_after: str | None = None
+    requestor: str | None = None
     stage: str | None = None
     limit: int = 100
 
@@ -136,6 +139,7 @@ class ListTicketsArgs(BaseModel):
                 self.created_after,
                 self.last_activity_before,
                 self.last_activity_after,
+                self.requestor,
             )
         ):
             return self
@@ -405,6 +409,55 @@ def _asked_own_tickets(turn: ChatTurn | None) -> bool:
     return bool(_OWN_TICKETS_RE.search(text or ""))
 
 
+def _looks_like_person_name(text: str | None) -> bool:
+    parts = [part for part in re.split(r"\s+", (text or "").strip()) if part]
+    return len(parts) >= 2 and all(_PERSON_TOKEN_RE.match(part) for part in parts)
+
+
+def _person_name_from_turn(turn: ChatTurn | None) -> str | None:
+    text = turn.user_text if turn else ""
+    match = _TICKETS_FOR_RE.search(text or "")
+    if not match:
+        return None
+    name = match.group("name").strip(" ?.!,")
+    if not name or _is_self_token(name) or _OWN_TICKETS_RE.search(name):
+        return None
+    if _LABEL_RE.match(name) or _ASSIGNEE_CODE_RE.match(name):
+        return None
+    if re.fullmatch(r"[A-Za-z]{2,8}", name) and name.isupper():
+        return None
+    return name
+
+
+def _asked_tickets_for_person(turn: ChatTurn | None) -> bool:
+    return _person_name_from_turn(turn) is not None
+
+
+def _search_contacts_loose(source: FlowSource, person: str) -> list:
+    matches = source.search_contact(query=person, limit=10)
+    if matches:
+        return matches
+    parts = [part for part in re.split(r"\s+", person.strip()) if part]
+    if len(parts) >= 2 and len(parts[-1]) >= 3:
+        return source.search_contact(query=parts[-1], limit=10)
+    return []
+
+
+def _pick_contact(matches: list, person: str):
+    wanted = person.strip().lower()
+    exact = [row for row in matches if (row.full_name or "").strip().lower() == wanted]
+    if exact:
+        return exact[0], None
+    if len(matches) == 1:
+        return matches[0], None
+    if not matches:
+        return None, None
+    options = ", ".join(
+        f"{row.full_name} ({row.client_code})" for row in matches if row.full_name
+    )
+    return None, f"{person!r} matches more than one contact: {options}. Ask which one."
+
+
 def _resolve_category(raw: str | None) -> str | None:
     text = (raw or "").strip()
     if not text:
@@ -502,21 +555,32 @@ def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, 
     return None, f"{text!r} matches more than one technician: {options}. Ask which one."
 
 
-def search_contact(source: FlowSource, args: SearchContactArgs) -> ToolResult:
+def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn | None = None) -> ToolResult:
     rows = source.search_contact(
         query=args.query,
         client_code=args.client_code,
         limit=args.limit,
     )
+    if not rows and _looks_like_person_name(args.query):
+        rows = _search_contacts_loose(source, args.query)
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     client_code = codes[0] if len(codes) == 1 else (args.client_code or None)
+    if _asked_tickets_for_person(turn) and len(rows) == 1:
+        return list_tickets(
+            source,
+            ListTicketsArgs(contact_id=rows[0].id, stage="open"),
+            turn,
+        )
     return ToolResult(
         tool=SEARCH_CONTACT,
         source=source.source_name,
         data=[_contact_payload(r) for r in rows],
         row_ids=[r.id for r in rows],
         client_code=(client_code or "").upper() or None,
-        note="Follow with list_mail (inbound) or latest_ticket for last reach-out / last ticket.",
+        note=(
+            "Tickets for this person: list_tickets(contact_id=that id, stage=open). "
+            "Do not list the whole client. Mail/last reach-out: list_mail (inbound) or latest_ticket."
+        ),
     )
 
 
@@ -565,6 +629,8 @@ def _default_list_stage(
         or (args.invoice_num or "").strip()
         or (args.job or "").strip()
         or (args.cause or "").strip()
+        or args.contact_id is not None
+        or (args.requestor or "").strip()
     )
     scoped = column_scope and not any(
         (value or "").strip() for value in (args.client_code, query, args.ticket_num)
@@ -608,12 +674,45 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         or (args.invoice_num or "").strip()
         or (args.job or "").strip()
         or (args.cause or "").strip()
+        or args.contact_id is not None
+        or (args.requestor or "").strip()
     )
     if column_asked and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
         raw_assignee = None
     assignee, error = _resolve_assignee(source, raw_assignee)
+    contact_id = args.contact_id
+    requestor = (args.requestor or "").strip() or None
+    person = requestor or _person_name_from_turn(turn)
+    if not person and raw_q and _looks_like_person_name(raw_q):
+        person = raw_q
+    if error and raw_assignee and _looks_like_person_name(raw_assignee):
+        person = person or raw_assignee
+        error = None
+        raw_assignee = None
+        assignee = None
     if error:
         return _refuse(LIST_TICKETS, source, error)
+    person_label = None
+    if person and contact_id is None:
+        matches = _search_contacts_loose(source, person)
+        pick, contact_error = _pick_contact(matches, person)
+        if contact_error:
+            return _refuse(LIST_TICKETS, source, contact_error)
+        if pick is not None:
+            contact_id = pick.id
+            requestor = pick.full_name
+            person_label = pick.full_name
+            if raw_q and _looks_like_person_name(raw_q):
+                raw_q = None
+        else:
+            requestor = person
+            person_label = person
+            if raw_q and _looks_like_person_name(raw_q):
+                raw_q = None
+    elif contact_id is not None:
+        person_label = requestor
+    if person_label or contact_id is not None:
+        column_asked = True
     client = (args.client_code or "").strip().upper() or None
     stage = _default_list_stage(
         args,
@@ -625,11 +724,18 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         complete=complete,
         project=args.project,
     )
+    if (person_label or contact_id is not None) and (args.stage or "").strip().lower() not in (
+        "review",
+        "archived",
+        "all",
+    ):
+        if not client and not raw_q and not args.ticket_num:
+            stage = "open"
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
         query=raw_q,
-        contact_id=args.contact_id,
+        contact_id=contact_id,
         status=args.status,
         ticket_num=(args.ticket_num or "").strip() or None,
         category=category,
@@ -647,6 +753,7 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         created_after=(args.created_after or "").strip() or None,
         last_activity_before=(args.last_activity_before or "").strip() or None,
         last_activity_after=(args.last_activity_after or "").strip() or None,
+        requestor=requestor,
         stage=stage,
         limit=args.limit,
     )
@@ -665,7 +772,8 @@ def list_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | Non
         )
     data = [_ticket_payload(r) for r in rows]
     who = (
-        category
+        person_label
+        or category
         or reason
         or ("overdue" if overdue else None)
         or assignee
@@ -884,7 +992,7 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
 
 def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: ChatTurn | None = None) -> ToolResult:
     if name == SEARCH_CONTACT:
-        return search_contact(source, SearchContactArgs.model_validate(raw_args))
+        return search_contact(source, SearchContactArgs.model_validate(raw_args), turn)
     if name == SEARCH_TECHNICIAN:
         return search_technician(source, SearchTechnicianArgs.model_validate(raw_args))
     if name == LIST_TICKETS:
