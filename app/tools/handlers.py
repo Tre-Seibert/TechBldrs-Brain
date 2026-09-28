@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -35,7 +36,22 @@ _TICKET_PERSON_RES = (
 )
 _LATEST_TICKET_RE = re.compile(r"\b(?:latest|last|most recent)\s+tickets?\b", re.IGNORECASE)
 _MAIL_TURN_RE = re.compile(r"\b(emails?|mails?|reach out|inbox)\b", re.IGNORECASE)
+_REACH_OUT_RES = (
+    re.compile(
+        r"\bwhen did\s+(?P<name>.+?)\s+last\s+(?:reach out|e-?mails?(?:\s+us)?|mails?(?:\s+us)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bwhen(?:'s| is| was)?\s+the last time\s+(?P<name>.+?)\s+(?:e-?mailed|reached out|mailed)(?:\s+us)?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\blast\s+(?:e-?mail|mail|reach out)\s+from\s+(?P<name>.+?)(?:\?|$)",
+        re.IGNORECASE,
+    ),
+)
 _PERSON_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z.'-]*$")
+_APOSTROPHE_RE = re.compile(r"['\u2019\u2018\u02bc`´]")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
 _BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
 _OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
@@ -425,8 +441,13 @@ def _looks_like_person_name(text: str | None) -> bool:
     return len(parts) >= 2 and all(_PERSON_TOKEN_RE.match(part) for part in parts)
 
 
+def _fold_apostrophes(text: str | None) -> str:
+    """O'Brien, O’Brien, and OBrien are the same name."""
+    return _APOSTROPHE_RE.sub("", text or "")
+
+
 def _name_parts(text: str | None) -> tuple[str, str]:
-    raw = (text or "").strip()
+    raw = _fold_apostrophes(text).strip()
     if "," in raw:
         last, _, rest = raw.partition(",")
         first = rest.strip().split()[0] if rest.strip() else ""
@@ -512,6 +533,129 @@ def _asked_latest_for_person(turn: ChatTurn | None) -> bool:
 def _asked_mail_for_person(turn: ChatTurn | None) -> bool:
     text = turn.user_text if turn else ""
     return bool(text and _MAIL_TURN_RE.search(text))
+
+
+def _person_from_reach_out(turn: ChatTurn | None) -> str | None:
+    """Name in 'when did Sean O'Brien last reach out / last email us'."""
+    text = turn.user_text if turn else ""
+    if not text:
+        return None
+    for pattern in _REACH_OUT_RES:
+        match = pattern.search(text)
+        if not match:
+            continue
+        name = _clean_person_name(match.group("name"))
+        if name and _usable_person_name(name):
+            return name
+    return None
+
+
+def _usable_person_name(name: str) -> bool:
+    folded = _fold_apostrophes(name)
+    if _looks_like_person_name(folded):
+        return True
+    return bool(_PERSON_TOKEN_RE.match(folded)) and len(folded) >= 3
+
+
+def _requestor_matches(query: str, stored: str | None) -> bool:
+    """Full-name match on a ticket requestor. A shared last name is not enough."""
+    if not (stored or "").strip():
+        return False
+    score = _contact_name_score(query, stored or "")
+    return score is not None and score <= 1
+
+
+def _requestor_queries(name: str) -> list[str]:
+    """Spellings Flow's ILIKE can hit: straight apostrophe, stripped, and O'Brien."""
+    straight = _APOSTROPHE_RE.sub("'", name.strip())
+    stripped = straight.replace("'", "")
+    curly = straight.replace("'", "\u2019")
+    variants = [straight]
+    if curly not in variants:
+        variants.append(curly)
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+    parts = stripped.split()
+    if len(parts) >= 2 and re.fullmatch(r"O[A-Za-z]{2,}", parts[-1]):
+        irish = " ".join([*parts[:-1], f"O'{parts[-1][1:]}"])
+        if irish not in variants:
+            variants.append(irish)
+    return variants
+
+
+def _format_reached_at(value: datetime) -> str:
+    hour = value.hour % 12 or 12
+    ampm = "AM" if value.hour < 12 else "PM"
+    return f"{value.strftime('%b')} {value.day}, {value.year} {hour}:{value.minute:02d} {ampm}"
+
+
+def answer_person_mail_question(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
+    """'When did {name} last reach out?' uses ticket requestor, not the contacts list.
+
+    Several people can share a last name. The requestor field is the match.
+    """
+    name = _person_from_reach_out(turn)
+    if not name:
+        return None
+    found: dict[int, TicketRecord] = {}
+    for query in _requestor_queries(name):
+        rows = source.list_tickets(requestor=query, stage="all", limit=100)
+        for row in rows:
+            if _requestor_matches(name, row.requestor_text):
+                found[row.id] = row
+    tickets = sorted(found.values(), key=lambda row: (row.last_activity_at, row.id), reverse=True)[:8]
+    if not tickets:
+        return ToolResult(
+            tool=LIST_MAIL,
+            source=source.source_name,
+            data=[],
+            row_ids=[],
+            reply=f"No ticket has {name} as the requestor.",
+        )
+    seen: set[int] = set()
+    mail_rows: list[MailRecord] = []
+    for ticket in tickets:
+        rows = source.list_mail(
+            client_code=ticket.client_code,
+            direction="inbound",
+            ticket_num=ticket.ticket_num,
+            limit=20,
+        )
+        for row in rows:
+            if row.id in seen:
+                continue
+            seen.add(row.id)
+            mail_rows.append(row)
+    mail_rows.sort(key=lambda row: (row.received_at or row.created_at, row.id), reverse=True)
+    named = [row for row in mail_rows if _requestor_matches(name, row.from_name)]
+    pick = (named or mail_rows)[0] if mail_rows else None
+    if pick is None:
+        labels = ", ".join(ticket_label(row.client_code, row.ticket_num) for row in tickets[:5])
+        who = (tickets[0].requestor_text or name).strip()
+        return ToolResult(
+            tool=LIST_MAIL,
+            source=source.source_name,
+            data=[_ticket_payload(row) for row in tickets],
+            row_ids=[row.id for row in tickets],
+            client_code=tickets[0].client_code.upper(),
+            reply=f"{who} is the requestor on {labels}, but there is no inbound mail on those tickets.",
+        )
+    who = next(
+        ((row.requestor_text or "").strip() for row in tickets if row.id == pick.ticket_id and row.requestor_text),
+        None,
+    ) or (pick.from_name or name).strip()
+    when = _format_reached_at(pick.received_at or pick.created_at)
+    subject = (pick.subject or "").strip() or "(no subject)"
+    label = ticket_label(pick.client_code, pick.ticket_num)
+    return ToolResult(
+        tool=LIST_MAIL,
+        source=source.source_name,
+        data=[_mail_payload(pick)],
+        row_ids=[pick.id],
+        client_code=pick.client_code.upper(),
+        note="Matched the ticket requestor field, then inbound mail on that ticket.",
+        reply=f"{who} last reached out on {when} — {label}, {subject}.",
+    )
 
 
 def answer_person_ticket_question(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
@@ -668,6 +812,9 @@ def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, 
 
 
 def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn | None = None) -> ToolResult:
+    mail_answer = answer_person_mail_question(source, turn)
+    if mail_answer is not None:
+        return mail_answer
     person = _person_name_from_turn(turn) or args.query
     looking_for_person = _looks_like_person_name(person) or _asked_tickets_for_person(turn)
     rows = (

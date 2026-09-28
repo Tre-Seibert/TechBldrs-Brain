@@ -351,6 +351,8 @@ class StubFlowSource:
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
+        ticket_id: int | None = None,
+        ticket_num: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]:
         code = _norm(client_code)
@@ -385,6 +387,10 @@ class StubFlowSource:
                 ticket_ok = allowed_ticket_ids is not None and mail.ticket_id in allowed_ticket_ids
                 if not from_ok and not ticket_ok:
                     continue
+            if ticket_id is not None and mail.ticket_id != ticket_id:
+                continue
+            if ticket_num and mail.ticket_num != ticket_num:
+                continue
             hits.append(mail)
         hits.sort(key=lambda m: (m.received_at or m.created_at, m.id), reverse=True)
         return hits[: _clamp_limit(limit)]

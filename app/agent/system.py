@@ -33,7 +33,7 @@ Rules:
   - "Latest ticket involving {person}" / "last ticket for {person}" → search_contact, then latest_ticket(requestor=their full name) or list_tickets(contact_id=that id, requestor=their full name, stage=live, limit=1). Not the whole client. Not WDON unless they said WDON.
   - "Tickets about {text}" → list_tickets(q=text, stage=live).
   - "Tickets open for {person}" / "tickets for Michael Sodl" → search_contact, then immediately list_tickets(contact_id=that id, requestor=their full name, stage=open). That is the requestor/contact, not the assignee and not every ticket at their client. Do not ask to proceed. Do not list the whole client.
-  - "When did {name} last reach out?" → search_contact then list_mail (inbound) using their email or contact_id.
+  - "When did {name} last reach out?" / "when did {name} last email us?" → tickets whose requestor field is that person, every client, stage=all. Do not search_contact. Do not stop because several contacts share a last name. Then inbound mail on those tickets.
   - "Emails from {CODE} to us?" → list_mail(client_code=CODE, direction=inbound).
   - "Do any open tickets need merged?" → find_similar_tickets(stage=open) with no assignee_code. Scan all open tickets, not the signed-in tech. If they named a client or tech, pass that.
 - Merging (the only write):

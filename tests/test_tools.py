@@ -20,6 +20,7 @@ from app.tools.handlers import (
     _contact_name_score,
     _damerau,
     _person_name_from_turn,
+    answer_person_mail_question,
     answer_person_ticket_question,
     find_similar_tickets,
     format_similar_list,
@@ -106,6 +107,59 @@ class ToolStubTests(unittest.TestCase):
         self.assertTrue(result.ok, result.error)
         self.assertIn("Michael Sodl", result.reply or "")
         self.assertNotIn("for ACME", result.reply or "")
+
+    def test_apostrophe_does_not_split_the_same_person(self) -> None:
+        self.assertEqual(_contact_name_score("Sean OBrien", "Sean O'Brien"), 0)
+        self.assertEqual(_contact_name_score("Sean O’Brien", "Sean O'Brien"), 0)
+        self.assertIsNone(_contact_name_score("Sean OBrien", "April O'Brien"))
+
+    def test_last_reach_out_uses_requestor_not_contacts(self) -> None:
+        turn = ChatTurn(user_text="when did Sean O'Brien last reach out?")
+        result = answer_person_mail_question(self.source, turn)
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Sean O'Brien last reached out on Sep 10, 2026 7:44 AM", result.reply or "")
+        self.assertIn("WDON-2621", result.reply or "")
+        self.assertIn("Create Payroll Email Address", result.reply or "")
+        self.assertNotIn("April", result.reply or "")
+        self.assertNotIn("contact", (result.reply or "").lower())
+        self.assertNotIn("WDON-2622", result.reply or "")
+
+    def test_last_email_ignores_missing_apostrophe(self) -> None:
+        result = answer_person_mail_question(
+            self.source,
+            ChatTurn(user_text="when did Sean OBrien last email us?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("WDON-2621", result.reply or "")
+        self.assertNotIn("April", result.reply or "")
+
+    def test_last_reach_out_does_not_ask_which_obrien(self) -> None:
+        result = search_contact(
+            self.source,
+            SearchContactArgs(query="Sean OBrien"),
+            ChatTurn(user_text="when did Sean O’Brien last reach out?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertNotIn("matches more than one", result.reply or "")
+        self.assertIn("WDON-2621", result.reply or "")
+
+    def test_client_mail_question_is_not_a_person_reach_out(self) -> None:
+        self.assertIsNone(
+            answer_person_mail_question(
+                self.source,
+                ChatTurn(user_text="Show all emails from WDON to our tenant"),
+            )
+        )
+
+    def test_debe_last_reach_out_is_her_inbound_mail(self) -> None:
+        result = answer_person_mail_question(
+            self.source,
+            ChatTurn(user_text="When did Debe last reach out?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("Debe Hernandez last reached out on Sep 18, 2026 9:40 AM", result.reply or "")
+        self.assertIn("WDON-1842", result.reply or "")
 
     def test_first_name_typo_scores_as_same_person(self) -> None:
         self.assertEqual(_damerau("Micahel", "Michael"), 1)

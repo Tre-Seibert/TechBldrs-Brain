@@ -230,6 +230,8 @@ class HttpFlowSource:
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
+        ticket_id: int | None = None,
+        ticket_num: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]:
         params: dict[str, Any] = {
@@ -241,6 +243,10 @@ class HttpFlowSource:
             params["email"] = email
         if contact_id is not None:
             params["contact_id"] = contact_id
+        if ticket_id is not None:
+            params["ticket_id"] = ticket_id
+        if ticket_num:
+            params["ticket_num"] = ticket_num
         data = self._get("/api/private/brain/mail", params)
         rows = data if isinstance(data, list) else []
         return [MailRecord.model_validate(row) for row in rows]

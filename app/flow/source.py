@@ -76,6 +76,8 @@ class FlowSource(Protocol):
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
+        ticket_id: int | None = None,
+        ticket_num: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]: ...
 
