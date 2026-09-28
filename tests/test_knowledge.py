@@ -3,12 +3,13 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.knowledge.source import KnowledgeHit, NullKnowledgeSource
+from app.knowledge.source import KnowledgeHit, KnowledgePoint, NullKnowledgeSource
 from app.tools.handlers import SearchKnowledgeArgs, search_knowledge
-from scripts.sync_knowledge import _chunk_text
+from scripts.sync_knowledge import _chunk_text, sync_time_entries
 
 
 class FakeKnowledgeSource:
@@ -47,6 +48,80 @@ class ChunkTextTests(unittest.TestCase):
     def test_empty_text_yields_no_chunks(self) -> None:
         self.assertEqual(_chunk_text(""), [])
         self.assertEqual(_chunk_text("\n\n  \n\n"), [])
+
+
+class RecordingKnowledgeSource:
+    """Captures every upsert call instead of hitting a real Qdrant."""
+
+    source_name = "recording"
+    configured = True
+
+    def __init__(self) -> None:
+        self.upserted: list[KnowledgePoint] = []
+
+    def search(self, *, query: str, client_code: str | None = None, limit: int = 5) -> list[KnowledgeHit]:
+        return []
+
+    def upsert(self, points: list[KnowledgePoint]) -> None:
+        self.upserted.extend(points)
+
+
+def _entry_row(entry_id: int, updated_at: str) -> dict:
+    return {
+        "id": entry_id,
+        "ticket_id": 9001,
+        "client_code": "WDON",
+        "ticket_label": "WDON-1842",
+        "subject": f"entry {entry_id}",
+        "body": "fix notes",
+        "updated_at": updated_at,
+    }
+
+
+class SyncTimeEntriesCursorTests(unittest.TestCase):
+    """Regression coverage for a real bug: updated_at alone is not a safe cursor
+    when more rows than one page share the exact same timestamp (bulk-imported
+    data) -- the sync job re-fetched the same page forever until after_id was added."""
+
+    def test_advances_past_a_tie_group_larger_than_one_page(self) -> None:
+        # 150 rows share one timestamp (simulates a bulk import), then one newer row.
+        # Paginated strictly in chunks of 100, like the real endpoint: page 1 is full
+        # (100, all tied) so pagination continues; page 2 is 51 (< 100) so it's last.
+        tied = [_entry_row(i, "2026-08-18 18:03:45") for i in range(1, 151)]
+        newer = [_entry_row(151, "2026-08-19 09:00:00")]
+        all_rows = tied + newer
+        pages = [all_rows[:100], all_rows[100:]]
+        calls: list[dict] = []
+
+        def fake_flow_get(flow, path, params):
+            calls.append(dict(params))
+            return pages[len(calls) - 1] if len(calls) <= len(pages) else []
+
+        with mock.patch("scripts.sync_knowledge._flow_get", side_effect=fake_flow_get):
+            knowledge = RecordingKnowledgeSource()
+            total, cursor, cursor_id = sync_time_entries(
+                mock.Mock(), knowledge, cursor=None, cursor_id=None
+            )
+
+        self.assertEqual(total, 151)
+        self.assertEqual(cursor, "2026-08-19 09:00:00")
+        self.assertEqual(cursor_id, 151)
+        # Each page's after_id must differ -- proof the cursor actually advanced,
+        # not the same params repeated forever.
+        after_ids = [c.get("after_id") for c in calls]
+        self.assertEqual(after_ids, [None, 100])
+
+    def test_no_progress_page_stops_instead_of_looping_forever(self) -> None:
+        stuck_page = [_entry_row(1, "2026-08-18 18:03:45")]
+
+        with mock.patch("scripts.sync_knowledge._flow_get", return_value=stuck_page):
+            knowledge = RecordingKnowledgeSource()
+            total, cursor, cursor_id = sync_time_entries(
+                mock.Mock(), knowledge, cursor="2026-08-18 18:03:45", cursor_id=1
+            )
+
+        self.assertEqual(total, 1)  # the one row is still embedded before the loop bails
+        self.assertEqual((cursor, cursor_id), ("2026-08-18 18:03:45", 1))
 
 
 class SearchKnowledgeHandlerTests(unittest.TestCase):

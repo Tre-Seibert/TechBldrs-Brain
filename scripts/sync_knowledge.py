@@ -97,58 +97,77 @@ def sync_itglue_documents(flow: httpx.Client, knowledge) -> int:
     return total_points
 
 
-def sync_time_entries(flow: httpx.Client, knowledge, *, cursor: str | None) -> tuple[int, str | None]:
+def sync_time_entries(
+    flow: httpx.Client, knowledge, *, cursor: str | None, cursor_id: int | None
+) -> tuple[int, str | None, int | None]:
+    """Pages via a compound (updated_at, id) cursor.
+
+    updated_at alone is not a safe cursor: many rows can share the exact same
+    timestamp (bulk-imported/migrated data), so advancing only by updated_at can
+    re-fetch the same page forever once a tie group exceeds one page. after_id
+    breaks the tie. Flow returns rows ordered (updated_at asc, id asc), so the
+    next cursor is always the last row's (updated_at, id).
+    """
     total_points = 0
     latest_seen = cursor
+    latest_id = cursor_id
     while True:
         params: dict[str, Any] = {"limit": 100}
         if latest_seen:
             params["updated_after"] = latest_seen
+        if latest_id is not None:
+            params["after_id"] = latest_id
         rows = _flow_get(flow, "/api/private/brain/time-entries/export", params) or []
         if not rows:
             break
         points: list[KnowledgePoint] = []
         for row in rows:
             text = "\n".join(part for part in (row.get("subject"), row.get("body")) if (part or "").strip())
-            if not text.strip():
-                continue
-            points.append(
-                KnowledgePoint(
-                    id=f"timeentry:{row['id']}",
-                    text=text,
-                    source_type="time_entry",
-                    source_label=row.get("ticket_label") or f"ticket {row.get('ticket_id')}",
-                    client_code=row.get("client_code"),
-                    updated_at=row.get("updated_at"),
+            if text.strip():
+                points.append(
+                    KnowledgePoint(
+                        id=f"timeentry:{row['id']}",
+                        text=text,
+                        source_type="time_entry",
+                        source_label=row.get("ticket_label") or f"ticket {row.get('ticket_id')}",
+                        client_code=row.get("client_code"),
+                        updated_at=row.get("updated_at"),
+                    )
                 )
-            )
-            latest_seen = row.get("updated_at") or latest_seen
         for start in range(0, len(points), _UPSERT_BATCH):
             knowledge.upsert(points[start : start + _UPSERT_BATCH])
         total_points += len(points)
-        print(f"  page: {len(rows)} entrie(s), {len(points)} synced, cursor now {latest_seen}")
+        last_row = rows[-1]
+        new_seen, new_id = last_row.get("updated_at"), last_row.get("id")
+        print(f"  page: {len(rows)} entrie(s), {len(points)} synced, cursor now {new_seen} (id>{new_id})")
+        if (new_seen, new_id) == (latest_seen, latest_id):
+            break  # safety net: no forward progress, stop instead of looping forever
+        latest_seen, latest_id = new_seen, new_id
         if len(rows) < 100:
             break
-    return total_points, latest_seen
+    return total_points, latest_seen, latest_id
 
 
 def _state_path(brain_data_dir: Path) -> Path:
     return brain_data_dir / "knowledge_sync_state.json"
 
 
-def _load_cursor(path: Path) -> str | None:
+def _load_cursor(path: Path) -> tuple[str | None, int | None]:
     if not path.exists():
-        return None
+        return None, None
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("time_entries_cursor")
+        state = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return None
+        return None, None
+    return state.get("time_entries_cursor"), state.get("time_entries_cursor_id")
 
 
-def _save_cursor(path: Path, cursor: str | None) -> None:
+def _save_cursor(path: Path, cursor: str | None, cursor_id: int | None) -> None:
     if cursor is None:
         return
-    path.write_text(json.dumps({"time_entries_cursor": cursor}), encoding="utf-8")
+    path.write_text(
+        json.dumps({"time_entries_cursor": cursor, "time_entries_cursor_id": cursor_id}), encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -181,10 +200,12 @@ def main() -> None:
         if not args.skip_time_entries:
             print("Syncing time entries...")
             state_path = _state_path(settings.brain_data_dir)
-            cursor = None if args.full else _load_cursor(state_path)
-            count, next_cursor = sync_time_entries(flow, knowledge, cursor=cursor)
-            _save_cursor(state_path, next_cursor)
-            print(f"Time entries: {count} chunk(s) synced. Next cursor: {next_cursor}")
+            cursor, cursor_id = (None, None) if args.full else _load_cursor(state_path)
+            count, next_cursor, next_cursor_id = sync_time_entries(
+                flow, knowledge, cursor=cursor, cursor_id=cursor_id
+            )
+            _save_cursor(state_path, next_cursor, next_cursor_id)
+            print(f"Time entries: {count} chunk(s) synced. Next cursor: {next_cursor} (id>{next_cursor_id})")
 
     print(f"Done in {(datetime.now() - started).total_seconds():.1f}s.")
 
