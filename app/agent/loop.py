@@ -25,14 +25,32 @@ from app.tools.handlers import (
 )
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
+    GET_CLIENT_DETAIL,
+    GET_MAIL_DETAIL,
+    GET_TICKET_DETAIL,
     LATEST_TICKET,
+    LIST_MACHINES,
     LIST_MAIL,
     LIST_TICKETS,
+    LIST_TIME_ENTRIES,
     SEARCH_CONTACT,
+    SEARCH_KNOWLEDGE,
     TOOL_NAMES,
 )
 
-_RELAY_TOOLS = {LIST_TICKETS, FIND_SIMILAR_TICKETS, LATEST_TICKET, LIST_MAIL, SEARCH_CONTACT}
+_RELAY_TOOLS = {
+    LIST_TICKETS,
+    FIND_SIMILAR_TICKETS,
+    LATEST_TICKET,
+    LIST_MAIL,
+    SEARCH_CONTACT,
+    SEARCH_KNOWLEDGE,
+    LIST_TIME_ENTRIES,
+    LIST_MACHINES,
+    GET_TICKET_DETAIL,
+    GET_MAIL_DETAIL,
+    GET_CLIENT_DETAIL,
+}
 _NO_TOOL_ENGLISH = (
     "I can only answer from Flow tools, and I did not get a usable result. "
     "Ask again with a person, technician, or client code."

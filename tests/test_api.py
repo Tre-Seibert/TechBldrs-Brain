@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.agent.loop import (
     _apply_english_reply,
     _ignored_client_tool_names,
+    _RELAY_TOOLS,
     chat_turn_from_messages,
     reply_without_invented_tickets,
 )
@@ -165,6 +166,23 @@ class ApiTests(unittest.TestCase):
     def test_health_reports_knowledge_source(self) -> None:
         response = self.client.get("/health")
         self.assertEqual(response.json()["knowledge_source"], "unconfigured")
+
+    def test_new_tools_are_relayed_not_treated_as_invented(self) -> None:
+        # Regression: a real reply from any of these can legitimately contain a
+        # hyphenated string (a machine name, invoice number, doc title...) that
+        # matches the invented-ticket-label pattern. Omitting a tool here means
+        # its correct, grounded answer gets silently replaced by the "I won't
+        # guess ticket numbers" refusal -- exactly what happened with
+        # search_knowledge before this was added.
+        must_be_relayed = {
+            "search_knowledge",
+            "list_time_entries",
+            "list_machines",
+            "get_ticket_detail",
+            "get_mail_detail",
+            "get_client_detail",
+        }
+        self.assertTrue(must_be_relayed.issubset(_RELAY_TOOLS), _RELAY_TOOLS)
 
     def test_merge_has_no_direct_tool_route(self) -> None:
         response = self.client.post(
