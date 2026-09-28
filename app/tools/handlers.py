@@ -50,6 +50,21 @@ _REACH_OUT_RES = (
         re.IGNORECASE,
     ),
 )
+_NEED_MERGED_RE = re.compile(
+    r"\b(?:need(?:s|ed)?(?:\s+to\s+be)?\s+merged|duplicates?\s+to\s+merge|should\s+(?:be\s+)?merged)\b",
+    re.IGNORECASE,
+)
+_MERGE_INTO_RE = re.compile(
+    r"\bmerge\s+[A-Za-z0-9]+-[A-Za-z0-9]+\s+into\s+[A-Za-z0-9]+-[A-Za-z0-9]+\b",
+    re.IGNORECASE,
+)
+_MERGE_SCOPE_RE = re.compile(
+    r"\b(?:assigned\s+to|for|at)\s+([A-Za-z][A-Za-z0-9.'-]{1,30})\b",
+    re.IGNORECASE,
+)
+_NOT_A_MERGE_SCOPE = frozenset(
+    {"me", "my", "any", "the", "all", "open", "our", "us", "to", "be", "a", "an", "some", "tickets", "ticket"}
+)
 _PERSON_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z.'-]*$")
 _APOSTROPHE_RE = re.compile(r"['\u2019\u2018\u02bc`´]")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
@@ -1168,11 +1183,60 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
     )
 
 
-def find_similar_tickets(source: FlowSource, args: FindSimilarTicketsArgs) -> ToolResult:
-    assignee, error = _resolve_assignee(source, args.assignee_code)
+def _merge_ask_scope(turn: ChatTurn | None) -> tuple[str | None, str | None] | None:
+    """None when this is not a 'need merged' question.
+
+    Otherwise (client_code, assignee). Both None means every open ticket.
+    """
+    text = (turn.user_text if turn else "").strip()
+    if not text or _MERGE_INTO_RE.search(text) or not _NEED_MERGED_RE.search(text):
+        return None
+    client: str | None = None
+    assignee: str | None = None
+    if _OWN_TICKETS_RE.search(text):
+        assignee = "me"
+    match = _MERGE_SCOPE_RE.search(text)
+    if match:
+        token = match.group(1).strip(" ?.!,")
+        if token and token.lower() not in _NOT_A_MERGE_SCOPE:
+            if token.isupper():
+                client = token
+                if _OWN_TICKETS_RE.search(text):
+                    assignee = "me"
+                else:
+                    assignee = None
+            else:
+                assignee = token
+    return client, assignee
+
+
+def answer_merge_suggestion(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
+    """Bypass the LLM so 'does any tickets need merged?' cannot invent an empty answer."""
+    scope = _merge_ask_scope(turn)
+    if scope is None:
+        return None
+    client, assignee = scope
+    return find_similar_tickets(
+        source,
+        FindSimilarTicketsArgs(client_code=client, assignee_code=assignee, stage="open"),
+    )
+
+
+def find_similar_tickets(
+    source: FlowSource,
+    args: FindSimilarTicketsArgs,
+    turn: ChatTurn | None = None,
+) -> ToolResult:
+    scope = _merge_ask_scope(turn)
+    if scope is not None:
+        client_code, assignee_raw = scope
+    else:
+        client_code = (args.client_code or "").strip().upper() or None
+        assignee_raw = args.assignee_code
+    assignee, error = _resolve_assignee(source, assignee_raw)
     if error:
         return _refuse(FIND_SIMILAR_TICKETS, source, error)
-    client = (args.client_code or "").strip().upper() or None
+    client = (client_code or "").strip().upper() or None
     stage = (args.stage or "").strip().lower() or "open"
     pairs = source.find_similar_tickets(
         ticket_id=args.ticket_id,
@@ -1329,7 +1393,7 @@ def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: Chat
     if name == LATEST_TICKET:
         return latest_ticket(source, LatestTicketArgs.model_validate(raw_args), turn)
     if name == FIND_SIMILAR_TICKETS:
-        return find_similar_tickets(source, FindSimilarTicketsArgs.model_validate(raw_args))
+        return find_similar_tickets(source, FindSimilarTicketsArgs.model_validate(raw_args), turn)
     if name == MERGE_TICKETS:
         return merge_tickets(source, MergeTicketsArgs.model_validate(raw_args), turn)
     if name == LIST_MAIL:

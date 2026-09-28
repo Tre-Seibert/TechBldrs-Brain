@@ -16,7 +16,11 @@ from app.config import Settings
 from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
 from app.tools import ChatTurn, openai_tools, run_tool
-from app.tools.handlers import answer_person_mail_question, answer_person_ticket_question
+from app.tools.handlers import (
+    answer_merge_suggestion,
+    answer_person_mail_question,
+    answer_person_ticket_question,
+)
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     LATEST_TICKET,
@@ -246,7 +250,9 @@ async def run_tool_loop(
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
-    direct = answer_person_mail_question(source, turn)
+    direct = answer_merge_suggestion(source, turn)
+    if direct is None:
+        direct = answer_person_mail_question(source, turn)
     if direct is None:
         direct = answer_person_ticket_question(source, turn)
     if direct is not None:

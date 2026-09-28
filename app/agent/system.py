@@ -35,7 +35,7 @@ Rules:
   - "Tickets open for {person}" / "tickets for Michael Sodl" → search_contact, then immediately list_tickets(contact_id=that id, requestor=their full name, stage=open). That is the requestor/contact, not the assignee and not every ticket at their client. Do not ask to proceed. Do not list the whole client.
   - "When did {name} last reach out?" / "when did {name} last email us?" → tickets whose requestor field is that person, every client, stage=all. Do not search_contact. Do not stop because several contacts share a last name. Then inbound mail on those tickets.
   - "Emails from {CODE} to us?" → list_mail(client_code=CODE, direction=inbound).
-  - "Do any open tickets need merged?" → find_similar_tickets(stage=open) with no assignee_code. Scan all open tickets, not the signed-in tech. If they named a client or tech, pass that.
+  - "Do any tickets need merged?" / "Does any tickets need merged?" → find_similar_tickets(stage=open) with no assignee_code. Scan all open tickets, not the signed-in tech. Never answer "nothing to merge" without that tool. If they named a client or tech, pass that.
 - Merging (the only write):
   1. Show the plan: keep {TARGET}, absorb {SOURCE}. Ask the user to reply restating both labels, e.g. "merge ZTB-1691 into ZTB-1680".
   2. Only when the user's latest message restates both labels, call merge_tickets with confirm=true, target_label, source_labels, and the matching ticket ids from earlier tool results.

@@ -20,6 +20,7 @@ from app.tools.handlers import (
     _contact_name_score,
     _damerau,
     _person_name_from_turn,
+    answer_merge_suggestion,
     answer_person_mail_question,
     answer_person_ticket_question,
     find_similar_tickets,
@@ -384,6 +385,34 @@ class ToolStubTests(unittest.TestCase):
         self.assertIn("similar_topic", pair["reasons"])
         self.assertIn("same_contact", pair["reasons"])
         self.assertEqual(self._ticket_ids(), {3100, 3105})
+
+    def test_does_any_tickets_need_merged_scans_all_open(self) -> None:
+        result = answer_merge_suggestion(
+            self.source,
+            ChatTurn(user_text="Does any tickets need merged?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("Possible merges in all open tickets", result.reply or "")
+        self.assertIn("Keep ACME-0041, absorb ACME-0045", result.reply or "")
+        self.assertNotIn("assigned to", (result.reply or "").lower())
+
+    def test_need_merged_for_a_client_stays_on_that_client(self) -> None:
+        result = answer_merge_suggestion(
+            self.source,
+            ChatTurn(user_text="What tickets need merged for ZINT?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("No likely duplicates in open tickets for ZINT", result.reply or "")
+        self.assertNotIn("ACME-0041", result.reply or "")
+
+    def test_merge_command_is_not_a_suggestion_question(self) -> None:
+        self.assertIsNone(
+            answer_merge_suggestion(
+                self.source,
+                ChatTurn(user_text="merge ACME-0045 into ACME-0041"),
+            )
+        )
 
     def test_find_similar_tickets_without_scope_scans_all_open(self) -> None:
         result = find_similar_tickets(self.source, FindSimilarTicketsArgs())
