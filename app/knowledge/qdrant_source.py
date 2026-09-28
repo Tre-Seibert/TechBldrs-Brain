@@ -42,9 +42,19 @@ class QdrantKnowledgeSource:
         self._qdrant_client = httpx.Client(base_url=self._qdrant_url, timeout=timeout)
         self._collection_ready = False
 
-    def _embed(self, text: str) -> list[float]:
+    def _embed(self, text: str, *, task: str) -> list[float]:
+        """task is 'search_query' or 'search_document'.
+
+        nomic-embed-text (the default EMBEDDING_MODEL) is trained with these task
+        prefixes; without them retrieval quality drops sharply -- queries and
+        documents land in a less-aligned part of the embedding space and ranking
+        gets noticeably worse, though search still technically "works" (returns
+        results, respects filters), which is what made this easy to miss initially.
+        If EMBEDDING_MODEL is ever swapped to something without this convention,
+        revisit whether prefixing still makes sense.
+        """
         response = self._embed_client.post(
-            "/embeddings", json={"model": self._embedding_model, "input": text[:8000]}
+            "/embeddings", json={"model": self._embedding_model, "input": f"{task}: {text}"[:8000]}
         )
         response.raise_for_status()
         payload = response.json()
@@ -71,7 +81,7 @@ class QdrantKnowledgeSource:
         needle = (query or "").strip()
         if not needle:
             return []
-        vector = self._embed(needle)
+        vector = self._embed(needle, task="search_query")
         self._ensure_collection(len(vector))
         body: dict[str, Any] = {"vector": vector, "limit": limit, "with_payload": True}
         if client_code:
@@ -97,7 +107,7 @@ class QdrantKnowledgeSource:
     def upsert(self, points: list[KnowledgePoint]) -> None:
         if not points:
             return
-        vectors = [self._embed(point.text) for point in points]
+        vectors = [self._embed(point.text, task="search_document") for point in points]
         self._ensure_collection(len(vectors[0]))
         qdrant_points = [
             {
