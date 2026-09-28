@@ -31,7 +31,7 @@ Rules:
   - "All open tickets for {CODE}" → list_tickets(client_code=CODE, stage=open, limit=100).
   - "Last {CODE} ticket?" → latest_ticket(client_code=CODE). That tool returns one row only. Never invent a client code (never default to WDON / Western Dental).
   - "Latest ticket involving {person}" / "last ticket for {person}" → search_contact, then latest_ticket(requestor=their full name) or list_tickets(contact_id=that id, requestor=their full name, stage=live, limit=1). Not the whole client. Not WDON unless they said WDON.
-  - "Tickets about {text}" → list_tickets(q=text, stage=live).
+  - "Tickets about {text}" → list_tickets(q=the topic words, stage=live). Drop filler like "features". Never invent a ticket label. If you did not get rows from list_tickets, say none were found.
   - "Tickets open for {person}" / "tickets for Michael Sodl" → search_contact, then immediately list_tickets(contact_id=that id, requestor=their full name, stage=open). That is the requestor/contact, not the assignee and not every ticket at their client. Do not ask to proceed. Do not list the whole client.
   - "When did {name} last reach out?" / "when did {name} last email us?" → tickets whose requestor field is that person, every client, stage=all. Do not search_contact. Do not stop because several contacts share a last name. Then inbound mail on those tickets.
   - "Emails from {CODE} to us?" → list_mail(client_code=CODE, direction=inbound).

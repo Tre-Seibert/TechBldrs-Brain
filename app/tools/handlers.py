@@ -34,6 +34,34 @@ _TICKET_PERSON_RES = (
     re.compile(r"\btickets?\b.*?\b(?:involving|from)\s+(?P<name>.+)", re.IGNORECASE | re.DOTALL),
     _TICKETS_FOR_RE,
 )
+_ABOUT_TICKET_RE = re.compile(
+    r"\btickets?\b(?:\s+\w+){0,6}?\s+(?:about|regarding|related to|mentioning)\s+(?P<q>.+)",
+    re.IGNORECASE,
+)
+_ABOUT_FILLER = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "any",
+        "some",
+        "feature",
+        "features",
+        "issue",
+        "issues",
+        "problem",
+        "problems",
+        "thing",
+        "things",
+        "stuff",
+        "update",
+        "updates",
+        "ticket",
+        "tickets",
+        "related",
+        "please",
+    }
+)
 _LATEST_TICKET_RE = re.compile(r"\b(?:latest|last|most recent)\s+tickets?\b", re.IGNORECASE)
 _MAIL_TURN_RE = re.compile(r"\b(emails?|mails?|reach out|inbox)\b", re.IGNORECASE)
 _REACH_OUT_RES = (
@@ -1208,6 +1236,49 @@ def _merge_ask_scope(turn: ChatTurn | None) -> tuple[str | None, str | None] | N
             else:
                 assignee = token
     return client, assignee
+
+
+def _about_query(turn: ChatTurn | None) -> str | None:
+    """Topic words in 'what tickets are about {text}'. Not a person's name."""
+    text = turn.user_text if turn else ""
+    if not text or _asked_latest_for_person(turn):
+        return None
+    match = _ABOUT_TICKET_RE.search(text)
+    if not match:
+        return None
+    words = [part.strip(" ?.!,") for part in re.split(r"\s+", match.group("q").strip()) if part.strip(" ?.!,")]
+    while words and words[-1].lower() in _ABOUT_FILLER:
+        words.pop()
+    while len(words) > 1 and words[0].lower() in _ABOUT_FILLER:
+        words.pop(0)
+    phrase = " ".join(words).strip()
+    if not phrase or _is_self_token(phrase):
+        return None
+    return phrase
+
+
+def _about_stage(turn: ChatTurn | None) -> str:
+    text = (turn.user_text if turn else "").lower()
+    if re.search(r"\barchived\b", text):
+        return "archived"
+    if re.search(r"\breview\b", text):
+        return "review"
+    if re.search(r"\bopen\b", text):
+        return "open"
+    return "live"
+
+
+def answer_tickets_about(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
+    """'What tickets are about X?' is a text search. The model must not invent labels."""
+    phrase = _about_query(turn)
+    if not phrase:
+        return None
+    return list_tickets(
+        source,
+        ListTicketsArgs(q=phrase, stage=_about_stage(turn), limit=100),
+        turn,
+        force_text_query=True,
+    )
 
 
 def answer_merge_suggestion(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:

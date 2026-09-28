@@ -4,7 +4,12 @@ import unittest
 
 from fastapi.testclient import TestClient
 
-from app.agent.loop import _apply_english_reply, _ignored_client_tool_names, chat_turn_from_messages
+from app.agent.loop import (
+    _apply_english_reply,
+    _ignored_client_tool_names,
+    chat_turn_from_messages,
+    reply_without_invented_tickets,
+)
 from app.main import app
 from app.tools import openai_tools
 
@@ -26,6 +31,20 @@ class ApiTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._cm.__exit__(None, None, None)
+
+    def test_invented_ticket_labels_are_dropped_without_a_tool_reply(self) -> None:
+        blocked = reply_without_invented_tickets(
+            "ZINT-5550: Enhance Flow Reporting for Better Data Export",
+            [],
+        )
+        self.assertIsNotNone(blocked)
+        self.assertNotIn("ZINT-5550", blocked or "")
+        self.assertIsNone(
+            reply_without_invented_tickets(
+                "ZINT-5466 is open.",
+                ["- ZINT-5466 — Flow Reporting"],
+            )
+        )
 
     def test_client_tools_are_not_forwarded(self) -> None:
         ignored = _ignored_client_tool_names(

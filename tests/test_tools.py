@@ -23,6 +23,7 @@ from app.tools.handlers import (
     answer_merge_suggestion,
     answer_person_mail_question,
     answer_person_ticket_question,
+    answer_tickets_about,
     find_similar_tickets,
     format_similar_list,
     latest_ticket,
@@ -290,6 +291,28 @@ class ToolStubTests(unittest.TestCase):
     def test_list_tickets_client_and_assignee(self) -> None:
         result = list_tickets(self.source, ListTicketsArgs(client_code="WDON", assignee_code="ts"))
         self.assertEqual(result.data, [])
+
+    def test_tickets_about_phrase_searches_text_not_invented_rows(self) -> None:
+        result = answer_tickets_about(
+            self.source,
+            ChatTurn(user_text="What tickets are about B Ellerby Email features?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-2619"])
+        self.assertIn("WDON-2619", result.reply or "")
+        self.assertNotIn("ZINT-5550", result.reply or "")
+
+    def test_tickets_about_a_person_name_stays_a_text_search(self) -> None:
+        result = answer_tickets_about(
+            self.source,
+            ChatTurn(user_text="What tickets are about Flow Reporting features?"),
+        )
+        self.assertIsNotNone(result)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data, [])
+        self.assertIn("No live tickets", result.reply or "")
+        self.assertNotRegex(result.reply or "", r"\b[A-Z]{2,8}-[A-Z0-9]{3,6}\b")
 
     def test_list_tickets_text_search(self) -> None:
         result = list_tickets(self.source, ListTicketsArgs(q="imaging"))

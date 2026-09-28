@@ -20,6 +20,7 @@ from app.tools.handlers import (
     answer_merge_suggestion,
     answer_person_mail_question,
     answer_person_ticket_question,
+    answer_tickets_about,
 )
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
@@ -36,6 +37,17 @@ _NO_TOOL_ENGLISH = (
     "Ask again with a person, technician, or client code."
 )
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
+_NO_INVENTED_TICKETS = (
+    "I can only list tickets a Flow search returned. I did not run that search, so I won't guess ticket numbers."
+)
+
+
+def reply_without_invented_tickets(content: str, relayed: list[str]) -> str | None:
+    """Ticket labels with no tool reply behind them are the model's invention."""
+    if relayed or not _TICKET_LABEL_RE.search(content or ""):
+        return None
+    return _NO_INVENTED_TICKETS
 _DROP_MESSAGE_KEYS = ("reasoning", "reasoning_content", "thinking", "thought")
 
 _log = logging.getLogger("tb_brain.agent")
@@ -255,6 +267,8 @@ async def run_tool_loop(
         direct = answer_person_mail_question(source, turn)
     if direct is None:
         direct = answer_person_ticket_question(source, turn)
+    if direct is None:
+        direct = answer_tickets_about(source, turn)
     if direct is not None:
         return _assistant_payload(
             direct.reply or direct.error or _NO_TOOL_ENGLISH,
@@ -294,6 +308,10 @@ async def run_tool_loop(
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 payload["model"] = resolved_model
+                if not relayed:
+                    blocked = reply_without_invented_tickets(str(message.get("content") or ""), relayed)
+                    if blocked:
+                        payload = _set_assistant_content(payload, blocked)
                 return _apply_english_reply(payload, relayed)
             chat.append(message)
             _log.info(
