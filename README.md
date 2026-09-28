@@ -36,12 +36,14 @@ app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
 app/tools/           search_contact, search_technician, list_tickets, latest_ticket,
                      find_similar_tickets, merge_tickets (gated write), list_mail,
                      list_time_entries, list_machines, get_ticket_detail,
-                     get_mail_detail, get_client_detail
-app/flow/            Flow-shaped schemas + stub fixtures + future HTTP client
+                     get_mail_detail, get_client_detail, search_knowledge
+app/flow/            Flow-shaped schemas + stub fixtures + HTTP client (FLOW_MODE=http)
+app/knowledge/       Qdrant + local-embedding client for search_knowledge (QDRANT_URL)
 app/agent/           OpenAI-compatible tool loop (LLM_BASE_URL)
+scripts/sync_knowledge.py   Embeds IT Glue docs + time-entry notes into Qdrant
 docs/open-webui.md   Lab UI notes
 docs/openclaw.md     Later gateway lock-down; do not install by default
-docker-compose.yml   Open WebUI only → host Ollama
+docker-compose.yml   Open WebUI + Qdrant → host Ollama
 ```
 
 ## Paths (this machine is on OneDrive)
@@ -71,10 +73,16 @@ flowchart LR
   webui -->|"lab default"| ollama[Ollama on host]
   webui -->|"tool loop optional"| brain[tb-brain FastAPI]
   brain --> ollama
-  brain --> tools["search / list / similar / gated merge"]
+  brain --> tools["Flow tools: search / list / similar / gated merge"]
   tools -->|"FLOW_MODE=stub"| fixtures[In-process fixtures]
-  tools -->|"later"| flowAPI["Flow read-only brain API"]
+  tools -->|"FLOW_MODE=http"| flowAPI["Flow read-only brain API"]
   flowAPI --> flowDB[(Flow MariaDB)]
+  brain --> knowledge["search_knowledge"]
+  knowledge --> qdrant[(Qdrant)]
+  knowledge --> ollama
+  sync["scripts/sync_knowledge.py"] --> flowAPI
+  sync --> itglue[IT Glue API]
+  sync --> qdrant
 ```
 
 - **Lab UI:** Open WebUI. See [docs/open-webui.md](docs/open-webui.md).
@@ -83,9 +91,9 @@ flowchart LR
 
 LLM traffic is OpenAI-compatible (`LLM_BASE_URL`, default `http://127.0.0.1:11434/v1`). Ollama today; any local OpenAI-compat endpoint after a hardware upgrade.
 
-Flow reuse (later, when asked): Microsoft Graph, Datto RMM (`app/services/datto_rmm.py`), IT Glue (`app/services/itglue.py`), `api_key_required`, `PRIVATE_API_TOKEN` (`/api/private`). Prefer a **read-only Flow brain API** or a **SELECT-only DB user**. The model never sees SQL.
+Flow reuse: `PRIVATE_API_TOKEN` (`/api/private/brain/*`, `api_key_required`) is how tb-brain reaches Flow at all — no direct DB access, the model never sees SQL. IT Glue (`app/services/itglue.py`) is now reused read-only for SOP documents (`/brain/itglue/documents`), never passwords. Still later, when asked: Microsoft Graph, Datto RMM (`app/services/datto_rmm.py`).
 
-Flow routes (1.3.14+):
+Flow routes (1.3.14+, see `app/routes/private_api.py` for the full current list):
 
 ```text
 GET /api/private/brain/contacts?q=&client_code=&limit=
@@ -133,6 +141,21 @@ docker compose up -d
 
 Open `http://127.0.0.1:3000`. Details in [docs/open-webui.md](docs/open-webui.md).
 
+### 4) Knowledge search (optional)
+
+```powershell
+ollama pull nomic-embed-text
+docker compose up -d   # also starts Qdrant on 127.0.0.1:6333
+```
+
+Set `QDRANT_URL=http://127.0.0.1:6333` in `.env`, restart tb-brain, then populate the index (needs `FLOW_MODE=http`):
+
+```powershell
+python scripts\sync_knowledge.py
+```
+
+No live sync yet — rerun after IT Glue docs or time entries change. `QDRANT_URL` empty disables `search_knowledge` gracefully.
+
 ### Tests (stub fixtures)
 
 ```powershell
@@ -148,13 +171,16 @@ Read from Flow `app/models/`:
 - **tickets** — `ticket_num` is 4 chars; display label `{client_code}-{ticket_num}`; envelope subject `|{CODE}|{NUM}| {requestor} {topic}`; activity via `last_activity_at`
 - **mail** — always has `ticket_id`; `direction` is `inbound` | `outbound` | `imported`; `from_address` / `received_at` / `subject` / `body`
 
-Phase 0 `FLOW_MODE=stub` uses in-process fixtures with those shapes (fake people, real client_code WDON so the example questions work). Do not put production Flow tokens in git. `FLOW_MODE=http` calls Flow 1.3.14+ `/api/private/brain/*`. Stay on stub until that build is live.
+`FLOW_MODE=stub` uses in-process fixtures with those shapes (fake people, real client_code WDON so the example questions work) — good for local dev/tests. `FLOW_MODE=http` calls Flow's live `/api/private/brain/*` (production, `flow.techbldrs.com`). Do not put production Flow tokens in git.
+
+## Knowledge search (search_knowledge)
+
+Free-text search over IT Glue SOP/runbook documents and past Flow time-entry fix notes, embedded into Qdrant (local, via `docker-compose.yml`) with a local Ollama embedding model (default `nomic-embed-text`). For "how do we usually fix X" / "why did we do X" questions that the structured ticket/mail/contact tools can't answer. Separate from Flow's structured data — never a RAG dump of tickets themselves. IT Glue passwords are never fetched; document content is redacted for inline "password:"-style lines as a best-effort safety net, not a guarantee. `QDRANT_URL` empty disables the tool gracefully. Run `scripts\sync_knowledge.py` to populate/refresh the index (no live sync yet).
 
 ## Out of scope (this phase)
 
 - Installing OpenClaw
-- Wiring production Flow credentials
-- Qdrant / SOP RAG
+- Qdrant / SOP RAG beyond IT Glue documents + time-entry notes (see above) — no ticket/mail/contact RAG
 - Graph fallback for unfiled mail
-- Datto / IT Glue tools
-- Any write action
+- Datto tools; IT Glue beyond read-only SOP documents (no passwords, no writes)
+- Any write action beyond merge_tickets

@@ -15,6 +15,7 @@ from app.agent.system import SYSTEM_PROMPT, signed_in_prompt_line
 from app.config import Settings
 from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
+from app.knowledge.source import KnowledgeSource
 from app.tools import ChatTurn, openai_tools, run_tool
 from app.tools.handlers import (
     answer_merge_suggestion,
@@ -256,6 +257,7 @@ async def run_tool_loop(
     actor_verified: bool = False,
     client_tools: list[Any] | None = None,
     extra_body: dict[str, Any] | None = None,
+    knowledge: KnowledgeSource | None = None,
 ) -> dict[str, Any]:
     ignored = _ignored_client_tool_names(client_tools)
     if ignored:
@@ -332,6 +334,7 @@ async def run_tool_loop(
                     actor_verified=actor_verified,
                     settings=settings,
                     turn=turn,
+                    knowledge=knowledge,
                 )
                 if result.reply and name in _RELAY_TOOLS:
                     relayed.append(result.reply)

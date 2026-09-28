@@ -26,6 +26,7 @@ EXPECTED_TOOLS = [
     "get_ticket_detail",
     "get_mail_detail",
     "get_client_detail",
+    "search_knowledge",
 ]
 
 
@@ -151,6 +152,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["data"]["contract_minutes"], 600)
+
+    def test_tool_search_knowledge_without_qdrant_is_graceful(self) -> None:
+        # QDRANT_URL is unset in the test environment; the tool must degrade,
+        # not 500, and the FastAPI response is still 200 (ok=false in the body).
+        response = self.client.post("/tools/search_knowledge", json={"query": "how do we fix VPN dropouts"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertIn("not set up", body["error"])
+
+    def test_health_reports_knowledge_source(self) -> None:
+        response = self.client.get("/health")
+        self.assertEqual(response.json()["knowledge_source"], "unconfigured")
 
     def test_merge_has_no_direct_tool_route(self) -> None:
         response = self.client.post(

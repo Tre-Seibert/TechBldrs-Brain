@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.audit import log_tool_call
 from app.config import Settings
 from app.flow.source import FlowNotConfigured, FlowRequestError, FlowSource, FlowWriteRefused
+from app.knowledge.source import KnowledgeSource
 from app.tools.handlers import ChatTurn, ToolResult, dispatch
 from app.tools.registry import openai_tools
 
@@ -22,10 +23,11 @@ def run_tool(
     settings: Settings,
     actor_verified: bool = False,
     turn: ChatTurn | None = None,
+    knowledge: KnowledgeSource | None = None,
 ) -> ToolResult:
     client_code = _client_code_from_args(arguments)
     try:
-        result = dispatch(source, name, arguments, turn)
+        result = dispatch(source, name, arguments, turn, knowledge=knowledge)
     except (FlowNotConfigured, FlowRequestError, FlowWriteRefused) as exc:
         result = ToolResult(
             ok=False,

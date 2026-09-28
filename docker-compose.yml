@@ -4,9 +4,16 @@
 # Runtime data uses a named Docker volume (tb-brain-open-webui), not a bind
 # mount into this OneDrive repo.
 #
+# Also runs Qdrant for search_knowledge (IT Glue SOPs + past fix notes). Its data
+# is a named Docker volume (tb-brain-qdrant), same rule as Open WebUI's — never a
+# bind mount into this OneDrive repo. Set QDRANT_URL=http://127.0.0.1:6333 in
+# tb-brain's own .env to use it; leave empty and search_knowledge stays disabled.
+#
 # Prerequisites:
 #   1. .\scripts\run.ps1 listening on the host at http://127.0.0.1:8765
-#   2. Ollama on the host for tb-brain's LLM_BASE_URL. Do not store models in this repo.
+#   2. Ollama on the host for tb-brain's LLM_BASE_URL and EMBEDDING_MODEL.
+#      ollama pull nomic-embed-text (or set EMBEDDING_MODEL to whatever you pulled).
+#      Do not store models in this repo.
 #
 #   docker compose up -d
 #   http://localhost:3000
@@ -47,6 +54,17 @@ services:
       - open-webui-data:/app/backend/data
     restart: unless-stopped
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: tb-brain-qdrant
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
 volumes:
   open-webui-data:
     name: tb-brain-open-webui
+  qdrant-data:
+    name: tb-brain-qdrant

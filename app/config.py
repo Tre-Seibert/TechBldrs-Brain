@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     flow_api_token: str = Field(default="")
     flow_database_url: str = Field(default="")
 
+    # --- Knowledge (SOP/runbook search). Empty QDRANT_URL disables search_knowledge
+    # gracefully -- see app/knowledge/source.py NullKnowledgeSource.
+    qdrant_url: str = Field(default="")
+    knowledge_collection: str = Field(default="tb_knowledge")
+    embedding_model: str = Field(default="nomic-embed-text")
+
     @property
     def audit_log_dir(self) -> Path:
         return self.brain_data_dir / "logs"

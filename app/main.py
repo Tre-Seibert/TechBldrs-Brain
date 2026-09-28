@@ -14,6 +14,8 @@ from app.config import Settings, get_settings
 from app.flow.factory import build_flow_source
 from app.flow.source import FlowNotConfigured, FlowSource
 from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
+from app.knowledge.factory import build_knowledge_source
+from app.knowledge.source import KnowledgeSource
 from app.tools import openai_tools, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
@@ -26,6 +28,7 @@ from app.tools.handlers import (
     ListTicketsArgs,
     ListTimeEntriesArgs,
     SearchContactArgs,
+    SearchKnowledgeArgs,
     SearchTechnicianArgs,
 )
 from app.tools.registry import (
@@ -39,6 +42,7 @@ from app.tools.registry import (
     LIST_TICKETS,
     LIST_TIME_ENTRIES,
     SEARCH_CONTACT,
+    SEARCH_KNOWLEDGE,
     SEARCH_TECHNICIAN,
     TOOL_NAMES,
     WRITE_TOOL_NAMES,
@@ -71,11 +75,13 @@ async def lifespan(app: FastAPI):
     except FlowNotConfigured as exc:
         _log.warning("flow source not ready: %s", exc)
         app.state.flow = build_flow_source(Settings(flow_mode="stub"))
+    app.state.knowledge = build_knowledge_source(settings)
     _log.info(
-        "tb-brain %s FLOW_MODE=%s LLM_BASE_URL=%s tools=%s",
+        "tb-brain %s FLOW_MODE=%s LLM_BASE_URL=%s knowledge=%s tools=%s",
         __version__,
         settings.flow_mode_normalized,
         settings.llm_base_url,
+        app.state.knowledge.source_name,
         ",".join(TOOL_NAMES),
     )
     yield
@@ -88,8 +94,9 @@ app = FastAPI(
         "MSP tool-calling agent over Flow, read-only by default. "
         "Tools: search_contact, search_technician, list_tickets, latest_ticket, "
         "find_similar_tickets, list_mail, list_time_entries, list_machines, get_ticket_detail, "
-        "get_mail_detail, get_client_detail; merge_tickets is chat-only behind a confirm gate. "
-        "Not a RAG dump of tickets."
+        "get_mail_detail, get_client_detail, search_knowledge (IT Glue SOPs + past fix notes); "
+        "merge_tickets is chat-only behind a confirm gate. Structured Flow data is never RAG — "
+        "search_knowledge is scoped to SOP/runbook text only."
     ),
     lifespan=lifespan,
 )
@@ -114,6 +121,14 @@ def _source(request: Request) -> FlowSource:
             source = build_flow_source(Settings(flow_mode="stub"))
         request.app.state.flow = source
     return source
+
+
+def _knowledge(request: Request) -> KnowledgeSource:
+    knowledge = getattr(request.app.state, "knowledge", None)
+    if knowledge is None:
+        knowledge = build_knowledge_source(_settings(request))
+        request.app.state.knowledge = knowledge
+    return knowledge
 
 
 def _resolve_actor(
@@ -164,6 +179,7 @@ def health(request: Request) -> dict[str, Any]:
         "flow_mode": settings.flow_mode_normalized,
         "flow_source": getattr(source, "source_name", "unknown"),
         "llm_base_url": settings.llm_base_url,
+        "knowledge_source": _knowledge(request).source_name,
         "tools": list(TOOL_NAMES),
         "write_tools": list(WRITE_TOOL_NAMES),
     }
@@ -211,6 +227,7 @@ async def chat_completions(
                 actor_verified=resolved.verified,
                 client_tools=body.tools,
                 extra_body=extra,
+                knowledge=_knowledge(request),
             )
         except AgentError as exc:
             raise HTTPException(status_code=502, detail=_english_only(str(exc))) from exc
@@ -248,6 +265,7 @@ def _run_tool_endpoint(
             actor=resolved.label,
             actor_verified=resolved.verified,
             settings=_settings(request),
+            knowledge=_knowledge(request),
         )
     return result.model_dump()
 
@@ -447,6 +465,24 @@ def tool_get_client_detail(
     return _run_tool_endpoint(
         request,
         GET_CLIENT_DETAIL,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/search_knowledge", operation_id=SEARCH_KNOWLEDGE)
+def tool_search_knowledge(
+    request: Request,
+    args: SearchKnowledgeArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        SEARCH_KNOWLEDGE,
         args.model_dump(),
         x_brain_actor=x_brain_actor,
         x_openwebui_user_jwt=x_openwebui_user_jwt,

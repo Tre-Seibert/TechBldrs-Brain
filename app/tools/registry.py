@@ -21,6 +21,7 @@ LIST_MACHINES = "list_machines"
 GET_TICKET_DETAIL = "get_ticket_detail"
 GET_MAIL_DETAIL = "get_mail_detail"
 GET_CLIENT_DETAIL = "get_client_detail"
+SEARCH_KNOWLEDGE = "search_knowledge"
 
 TOOL_NAMES = (
     SEARCH_CONTACT,
@@ -35,6 +36,7 @@ TOOL_NAMES = (
     GET_TICKET_DETAIL,
     GET_MAIL_DETAIL,
     GET_CLIENT_DETAIL,
+    SEARCH_KNOWLEDGE,
 )
 WRITE_TOOL_NAMES = (MERGE_TICKETS,)
 
@@ -307,6 +309,23 @@ _GET_CLIENT_DETAIL_SCHEMA: dict[str, Any] = {
 }
 
 
+_SEARCH_KNOWLEDGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Free-text question, e.g. 'how do we fix VPN dropouts on a FortiGate'.",
+        },
+        "client_code": {
+            "type": "string",
+            "description": "Optional: only search this client's IT Glue docs and time-entry notes.",
+        },
+        "limit": {"type": "integer", "description": "Max results (default 5, max 10)."},
+    },
+    "required": ["query"],
+}
+
+
 def _fn(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
@@ -390,6 +409,14 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Client account info: contract minutes, balance, support/antivirus/spam-filter renewal "
         "dates. Not for tickets/contacts/mail — use the ticket/contact/mail tools for those.",
         _GET_CLIENT_DETAIL_SCHEMA,
+    ),
+    _fn(
+        SEARCH_KNOWLEDGE,
+        "Free-text search over IT Glue SOP/runbook documents and past time-entry fix notes. "
+        "Use for 'how do we usually fix X', 'why did we do X', or anything that is not a "
+        "structured filter the ticket/mail/contact tools already cover. Not for finding a "
+        "specific ticket, contact, or mail row — use the other tools for that.",
+        _SEARCH_KNOWLEDGE_SCHEMA,
     ),
 ]
 
