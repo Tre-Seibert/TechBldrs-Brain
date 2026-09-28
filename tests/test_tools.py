@@ -10,9 +10,14 @@ from app.identity import current_actor_email, current_signed_in_email
 from app.tools import ChatTurn, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
+    GetClientDetailArgs,
+    GetMailDetailArgs,
+    GetTicketDetailArgs,
     LatestTicketArgs,
+    ListMachinesArgs,
     ListMailArgs,
     ListTicketsArgs,
+    ListTimeEntriesArgs,
     MergeTicketsArgs,
     SearchContactArgs,
     SearchTechnicianArgs,
@@ -26,9 +31,14 @@ from app.tools.handlers import (
     answer_tickets_about,
     find_similar_tickets,
     format_similar_list,
+    get_client_detail,
+    get_mail_detail,
+    get_ticket_detail,
     latest_ticket,
+    list_machines,
     list_mail,
     list_tickets,
+    list_time_entries,
     merge_tickets,
     search_contact,
     search_technician,
@@ -527,6 +537,53 @@ class ToolStubTests(unittest.TestCase):
         mail = list_mail(self.source, ListMailArgs(client_code="WDON", direction="all"))
         codes = {row["client_code"] for row in mail.data}
         self.assertEqual(codes, {"WDON"})
+
+    def test_list_time_entries_by_ticket(self) -> None:
+        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_id=9001))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.row_ids, [70001])
+        self.assertEqual(result.data[0]["minutes"], 45)
+        self.assertIn("On-site: imaging workstation repair", result.reply or "")
+
+    def test_list_time_entries_by_client_and_assignee(self) -> None:
+        result = list_time_entries(self.source, ListTimeEntriesArgs(client_code="ACME", assignee_code="ts"))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.row_ids, [70002])
+        result_wrong_tech = list_time_entries(self.source, ListTimeEntriesArgs(client_code="ACME", assignee_code="tr"))
+        self.assertEqual(result_wrong_tech.data, [])
+
+    def test_list_time_entries_requires_ticket_or_client(self) -> None:
+        with self.assertRaises(ValueError):
+            ListTimeEntriesArgs(assignee_code="ts")
+
+    def test_list_machines_for_client(self) -> None:
+        result = list_machines(self.source, ListMachinesArgs(client_code="WDON"))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["machine_name"] for row in result.data], ["WDON-FS-01", "WDON-IMG-01"])
+
+    def test_get_ticket_detail_returns_log_and_notes(self) -> None:
+        result = get_ticket_detail(self.source, GetTicketDetailArgs(ticket_id=9001))
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("boot drive replaced", result.data["log_text"])
+        self.assertIn("Recurring boot failures", result.data["notes_text"])
+
+    def test_get_ticket_detail_unknown_id_refuses(self) -> None:
+        result = get_ticket_detail(self.source, GetTicketDetailArgs(ticket_id=999999))
+        self.assertFalse(result.ok)
+        self.assertIn("not found", result.error or "")
+
+    def test_get_mail_detail_returns_full_body_not_snippet(self) -> None:
+        result = get_mail_detail(self.source, GetMailDetailArgs(mail_id=50003))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data["body"], "Machine is back up. Thanks — Debe")
+        self.assertNotIn("snippet", result.data)
+
+    def test_get_client_detail_returns_contract_fields(self) -> None:
+        result = get_client_detail(self.source, GetClientDetailArgs(client_code="WDON"))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data["contract_minutes"], 600)
+        self.assertEqual(result.data["balance"], 120)
+        self.assertIn("Contract minutes: 600", result.reply or "")
 
 
 class MergeGateTests(unittest.TestCase):

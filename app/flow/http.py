@@ -22,7 +22,18 @@ from typing import Any
 
 import httpx
 
-from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord
+from app.flow.schemas import (
+    ClientDetail,
+    ContactRecord,
+    MachineRecord,
+    MailDetail,
+    MailRecord,
+    SimilarTicketPair,
+    TechnicianRecord,
+    TicketDetail,
+    TicketRecord,
+    TimeEntryRecord,
+)
 from app.flow.source import FlowNotConfigured, FlowRequestError, FlowWriteRefused
 from app.identity import current_actor_email
 
@@ -250,3 +261,50 @@ class HttpFlowSource:
         data = self._get("/api/private/brain/mail", params)
         rows = data if isinstance(data, list) else []
         return [MailRecord.model_validate(row) for row in rows]
+
+    def get_ticket(self, *, ticket_id: int) -> TicketDetail:
+        data = self._get(f"/api/private/brain/tickets/{ticket_id}", {})
+        return TicketDetail.model_validate(data)
+
+    def get_mail(self, *, mail_id: int) -> MailDetail:
+        data = self._get(f"/api/private/brain/mail/{mail_id}", {})
+        return MailDetail.model_validate(data)
+
+    def get_client(self, *, client_code: str) -> ClientDetail:
+        code = (client_code or "").strip().upper()
+        data = self._get(f"/api/private/brain/clients/{code}", {})
+        return ClientDetail.model_validate(data)
+
+    def list_time_entries(
+        self,
+        *,
+        ticket_id: int | None = None,
+        client_code: str | None = None,
+        tech_user_id: int | None = None,
+        sort: str = "start_at",
+        order: str = "desc",
+        limit: int = 25,
+    ) -> list[TimeEntryRecord]:
+        params: dict[str, Any] = {"sort": sort, "order": order, "limit": limit}
+        if ticket_id is not None:
+            params["ticket_id"] = ticket_id
+        if client_code:
+            params["client_code"] = client_code
+        if tech_user_id is not None:
+            params["tech_user_id"] = tech_user_id
+        data = self._get("/api/private/brain/time-entries", params)
+        rows = data if isinstance(data, list) else []
+        return [TimeEntryRecord.model_validate(row) for row in rows]
+
+    def list_machines(
+        self,
+        *,
+        client_code: str,
+        sort: str = "machine_name",
+        order: str = "asc",
+        limit: int = 100,
+    ) -> list[MachineRecord]:
+        params: dict[str, Any] = {"client_code": client_code, "sort": sort, "order": order, "limit": limit}
+        data = self._get("/api/private/brain/machines", params)
+        rows = data if isinstance(data, list) else []
+        return [MachineRecord.model_validate(row) for row in rows]

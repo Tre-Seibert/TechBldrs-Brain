@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.flow.schemas import ClientRecord, ContactRecord, MailRecord, TechnicianRecord, TicketRecord
+from app.flow.schemas import (
+    ClientRecord,
+    ContactRecord,
+    MachineRecord,
+    MailRecord,
+    TechnicianRecord,
+    TicketRecord,
+    TimeEntryRecord,
+)
 
 # Naive datetimes match Flow's DateTime columns (no timezone in MariaDB models).
 _DT = datetime
@@ -450,3 +458,107 @@ MAIL: list[MailRecord] = [
         snippet="[Parsed Inbound] Newer mail from a different O'Brien.",
     ),
 ]
+
+# tech_user_id 1 = ts (Tre Seibert), 2 = tr (Tom Rivera) — matches TECHNICIANS ids above.
+TIME_ENTRIES: list[TimeEntryRecord] = [
+    TimeEntryRecord(
+        id=70001,
+        ticket_id=9001,
+        client_code="WDON",
+        ticket_num="1842",
+        tech_user_id=2,
+        start_at=_DT(2026, 9, 18, 9, 0, 0),
+        end_at=_DT(2026, 9, 18, 9, 41, 0),
+        bill_start_at=_DT(2026, 9, 18, 9, 0, 0),
+        bill_end_at=_DT(2026, 9, 18, 9, 45, 0),
+        work_date=_DT(2026, 9, 18, 0, 0, 0),
+        actual_minutes=41,
+        minutes=45,
+        subject="On-site: imaging workstation repair",
+        body="Replaced failed boot drive on WDON-IMG-01 and restored image.",
+        billable=True,
+        reviewed=True,
+        invoice_desc="WDON imaging repair",
+        created_at=_DT(2026, 9, 18, 9, 45, 0),
+    ),
+    TimeEntryRecord(
+        id=70002,
+        ticket_id=3100,
+        client_code="ACME",
+        ticket_num="0041",
+        tech_user_id=1,
+        start_at=_DT(2026, 9, 19, 16, 0, 0),
+        end_at=_DT(2026, 9, 19, 16, 20, 0),
+        bill_start_at=_DT(2026, 9, 19, 16, 0, 0),
+        bill_end_at=_DT(2026, 9, 19, 16, 30, 0),
+        work_date=_DT(2026, 9, 19, 0, 0, 0),
+        actual_minutes=20,
+        minutes=30,
+        subject="Remote: VPN tunnel troubleshooting",
+        body="Checked firewall logs; tunnel drops correlate with DHCP lease renewal.",
+        billable=True,
+        job="JOB-9",
+        invoice_num="INV-441",
+        invoice_desc="ACME VPN troubleshooting",
+        activity_tags=["network_vpn"],
+        created_at=_DT(2026, 9, 19, 16, 30, 0),
+    ),
+]
+
+MACHINES: list[MachineRecord] = [
+    MachineRecord(
+        id=80001,
+        client_id=41,
+        client_code="WDON",
+        machine_name="WDON-IMG-01",
+        machine_support="Managed",
+        source="datto",
+        web_remote_url="https://remote.example/wdon-img-01",
+        last_seen_at=_DT(2026, 9, 18, 9, 0, 0),
+        created_at=_DT(2026, 1, 5, 0, 0, 0),
+    ),
+    MachineRecord(
+        id=80002,
+        client_id=41,
+        client_code="WDON",
+        machine_name="WDON-FS-01",
+        machine_support="Managed",
+        source="datto",
+        last_seen_at=_DT(2026, 9, 20, 6, 0, 0),
+        created_at=_DT(2026, 1, 5, 0, 0, 0),
+    ),
+    MachineRecord(
+        id=80010,
+        client_id=7,
+        client_code="ACME",
+        machine_name="ACME-WKS-14",
+        machine_support="Managed",
+        source="datto",
+        last_seen_at=_DT(2026, 9, 22, 7, 0, 0),
+        created_at=_DT(2026, 2, 1, 0, 0, 0),
+    ),
+]
+
+# Extra detail-only fields for get_ticket/get_mail/get_client, keyed by id/code.
+# Rows not listed here fall back to the base record + None/blank detail fields.
+TICKET_DETAIL_EXTRAS: dict[int, dict] = {
+    9001: {
+        "hrs_actual_total": 0.75,
+        "hrs_billable_total": 0.75,
+        "hrs_gratis_total": 0.0,
+        "log_text": (
+            "2026-09-17 14:05 Ticket opened by Debe Hernandez.\n"
+            "2026-09-18 09:41 On-site repair completed, boot drive replaced."
+        ),
+        "notes_text": "Recurring boot failures on this workstation; consider replacement.",
+        "assignee_user_id": 2,
+    },
+}
+
+MAIL_DETAIL_EXTRAS: dict[int, dict] = {
+    50003: {"body": "Machine is back up. Thanks — Debe", "importance": "normal"},
+}
+
+CLIENT_DETAIL_EXTRAS: dict[str, dict] = {
+    "WDON": {"contract_minutes": 600, "balance": 120, "account": "Managed Services"},
+}

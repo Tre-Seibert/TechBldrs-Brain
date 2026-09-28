@@ -21,6 +21,11 @@ EXPECTED_TOOLS = [
     "find_similar_tickets",
     "merge_tickets",
     "list_mail",
+    "list_time_entries",
+    "list_machines",
+    "get_ticket_detail",
+    "get_mail_detail",
+    "get_client_detail",
 ]
 
 
@@ -110,6 +115,42 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(body["read_only"])
         self.assertEqual(body["data"][0]["keep"]["ticket_label"], "ACME-0041")
         self.assertEqual(body["data"][0]["absorb"]["ticket_label"], "ACME-0045")
+
+    def test_tool_list_time_entries_by_ticket(self) -> None:
+        response = self.client.post("/tools/list_time_entries", json={"ticket_id": 9001})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"], body["error"])
+        self.assertEqual(body["row_ids"], [70001])
+
+    def test_tool_list_time_entries_without_scope_is_422(self) -> None:
+        response = self.client.post("/tools/list_time_entries", json={"assignee_code": "ts"})
+        self.assertEqual(response.status_code, 422)
+
+    def test_tool_list_machines(self) -> None:
+        response = self.client.post("/tools/list_machines", json={"client_code": "WDON"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(len(body["data"]), 2)
+
+    def test_tool_get_ticket_detail(self) -> None:
+        response = self.client.post("/tools/get_ticket_detail", json={"ticket_id": 9001})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIn("boot drive replaced", body["data"]["log_text"])
+
+    def test_tool_get_mail_detail(self) -> None:
+        response = self.client.post("/tools/get_mail_detail", json={"mail_id": 50003})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["data"]["body"], "Machine is back up. Thanks — Debe")
+        self.assertNotIn("snippet", body["data"])
+
+    def test_tool_get_client_detail(self) -> None:
+        response = self.client.post("/tools/get_client_detail", json={"client_code": "WDON"})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["data"]["contract_minutes"], 600)
 
     def test_merge_has_no_direct_tool_route(self) -> None:
         response = self.client.post(

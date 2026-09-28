@@ -34,7 +34,9 @@ WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outboun
 ```text
 app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
 app/tools/           search_contact, search_technician, list_tickets, latest_ticket,
-                     find_similar_tickets, merge_tickets (gated write), list_mail
+                     find_similar_tickets, merge_tickets (gated write), list_mail,
+                     list_time_entries, list_machines, get_ticket_detail,
+                     get_mail_detail, get_client_detail
 app/flow/            Flow-shaped schemas + stub fixtures + future HTTP client
 app/agent/           OpenAI-compatible tool loop (LLM_BASE_URL)
 docs/open-webui.md   Lab UI notes

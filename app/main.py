@@ -17,17 +17,27 @@ from app.identity import ResolvedActor, current_actor_email, current_signed_in_e
 from app.tools import openai_tools, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
+    GetClientDetailArgs,
+    GetMailDetailArgs,
+    GetTicketDetailArgs,
     LatestTicketArgs,
+    ListMachinesArgs,
     ListMailArgs,
     ListTicketsArgs,
+    ListTimeEntriesArgs,
     SearchContactArgs,
     SearchTechnicianArgs,
 )
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
+    GET_CLIENT_DETAIL,
+    GET_MAIL_DETAIL,
+    GET_TICKET_DETAIL,
     LATEST_TICKET,
+    LIST_MACHINES,
     LIST_MAIL,
     LIST_TICKETS,
+    LIST_TIME_ENTRIES,
     SEARCH_CONTACT,
     SEARCH_TECHNICIAN,
     TOOL_NAMES,
@@ -77,7 +87,8 @@ app = FastAPI(
     description=(
         "MSP tool-calling agent over Flow, read-only by default. "
         "Tools: search_contact, search_technician, list_tickets, latest_ticket, "
-        "find_similar_tickets, list_mail; merge_tickets is chat-only behind a confirm gate. "
+        "find_similar_tickets, list_mail, list_time_entries, list_machines, get_ticket_detail, "
+        "get_mail_detail, get_client_detail; merge_tickets is chat-only behind a confirm gate. "
         "Not a RAG dump of tickets."
     ),
     lifespan=lifespan,
@@ -346,6 +357,96 @@ def tool_list_mail(
     return _run_tool_endpoint(
         request,
         LIST_MAIL,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/list_time_entries", operation_id=LIST_TIME_ENTRIES)
+def tool_list_time_entries(
+    request: Request,
+    args: ListTimeEntriesArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        LIST_TIME_ENTRIES,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/list_machines", operation_id=LIST_MACHINES)
+def tool_list_machines(
+    request: Request,
+    args: ListMachinesArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        LIST_MACHINES,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/get_ticket_detail", operation_id=GET_TICKET_DETAIL)
+def tool_get_ticket_detail(
+    request: Request,
+    args: GetTicketDetailArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        GET_TICKET_DETAIL,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/get_mail_detail", operation_id=GET_MAIL_DETAIL)
+def tool_get_mail_detail(
+    request: Request,
+    args: GetMailDetailArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        GET_MAIL_DETAIL,
+        args.model_dump(),
+        x_brain_actor=x_brain_actor,
+        x_openwebui_user_jwt=x_openwebui_user_jwt,
+        x_openwebui_user_email=x_openwebui_user_email,
+    )
+
+
+@app.post("/tools/get_client_detail", operation_id=GET_CLIENT_DETAIL)
+def tool_get_client_detail(
+    request: Request,
+    args: GetClientDetailArgs,
+    x_brain_actor: str | None = Header(default=None),
+    x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
+    x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+) -> dict[str, Any]:
+    return _run_tool_endpoint(
+        request,
+        GET_CLIENT_DETAIL,
         args.model_dump(),
         x_brain_actor=x_brain_actor,
         x_openwebui_user_jwt=x_openwebui_user_jwt,

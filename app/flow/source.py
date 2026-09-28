@@ -9,7 +9,18 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord
+from app.flow.schemas import (
+    ClientDetail,
+    ContactRecord,
+    MachineRecord,
+    MailDetail,
+    MailRecord,
+    SimilarTicketPair,
+    TechnicianRecord,
+    TicketDetail,
+    TicketRecord,
+    TimeEntryRecord,
+)
 
 
 class FlowSource(Protocol):
@@ -80,6 +91,32 @@ class FlowSource(Protocol):
         ticket_num: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]: ...
+
+    def get_ticket(self, *, ticket_id: int) -> TicketDetail: ...
+
+    def get_mail(self, *, mail_id: int) -> MailDetail: ...
+
+    def get_client(self, *, client_code: str) -> ClientDetail: ...
+
+    def list_time_entries(
+        self,
+        *,
+        ticket_id: int | None = None,
+        client_code: str | None = None,
+        tech_user_id: int | None = None,
+        sort: str = "start_at",
+        order: str = "desc",
+        limit: int = 25,
+    ) -> list[TimeEntryRecord]: ...
+
+    def list_machines(
+        self,
+        *,
+        client_code: str,
+        sort: str = "machine_name",
+        order: str = "asc",
+        limit: int = 100,
+    ) -> list[MachineRecord]: ...
 
 
 class FlowNotConfigured(RuntimeError):

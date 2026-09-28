@@ -42,6 +42,36 @@ class ClientRecord(BaseModel):
     m365_default_domain: str | None = None
 
 
+class ClientDetail(ClientRecord):
+    """Fuller client read: contract/balance/renewal fields. Never itglue passwords."""
+
+    file_as: str | None = None
+    account: str | None = None
+    client_rating: str | None = None
+    contract_minutes: int | None = None
+    balance: int | None = None
+    tot_tkt_time_0: str | None = None
+    tot_tkt_time_1: str | None = None
+    tot_tkt_time_2: str | None = None
+    tot_tkt_time_3: str | None = None
+    accounting_flag: str | None = None
+    o365_email_enabled: bool = False
+    o365_storage_enabled: bool = False
+    business_address: str | None = None
+    business_phone: str | None = None
+    business_phone_2: str | None = None
+    business_fax: str | None = None
+    email: str | None = None
+    web_page: str | None = None
+    itglue_url: str | None = None
+    m365_tenant_id: str | None = None
+    support_renewal: str | None = None
+    antivirus_renewal: str | None = None
+    spam_filter_renewal: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class ContactRecord(BaseModel):
     id: int
     client_id: int | None = None
@@ -97,6 +127,21 @@ class TicketRecord(BaseModel):
         return ticket_label(self.client_code, self.ticket_num)
 
 
+class TicketDetail(TicketRecord):
+    """Fuller ticket read: log/notes text and hours. list_tickets/latest_ticket stay lean."""
+
+    hrs_duration: float | None = None
+    hrs_first_touch: float | None = None
+    hrs_estimate_total: float | None = None
+    hrs_actual_total: float | None = None
+    hrs_billable_total: float | None = None
+    hrs_gratis_total: float | None = None
+    log_text: str | None = None
+    notes_text: str | None = None
+    assignee_user_id: int | None = None
+    updated_at: datetime | None = None
+
+
 class TechnicianRecord(BaseModel):
     """Flow users row, allowlisted fields only (never entra_* tokens)."""
 
@@ -133,6 +178,71 @@ class MailRecord(BaseModel):
     @property
     def ticket_label(self) -> str:
         return ticket_label(self.client_code, self.ticket_num)
+
+
+class MailAttachmentRecord(BaseModel):
+    id: int
+    filename: str
+    content_type: str | None = None
+    size_bytes: int = 0
+    is_inline: bool = False
+    content_id: str | None = None
+
+
+class MailDetail(MailRecord):
+    """Fuller mail read: full body + attachment metadata. list_mail stays snippet-only."""
+
+    body: str | None = None
+    approval: bool | None = None
+    importance: str | None = None
+    cc_label: str | None = None
+    updated_at: datetime | None = None
+    attachments: list[MailAttachmentRecord] = Field(default_factory=list)
+
+
+class TimeEntryRecord(BaseModel):
+    id: int
+    ticket_id: int
+    client_code: str
+    ticket_num: str
+    tech_user_id: int
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    bill_start_at: datetime | None = None
+    bill_end_at: datetime | None = None
+    work_date: datetime | None = None
+    actual_minutes: int = 0
+    minutes: int = 0
+    subject: str = ""
+    body: str | None = None
+    billable: bool = False
+    gratis: bool = False
+    communication_type: str | None = None
+    quoted: bool = False
+    reviewed: bool = False
+    job: str | None = None
+    invoice_num: str | None = None
+    invoice_desc: str | None = None
+    activity_tags: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime | None = None
+
+    @property
+    def ticket_label(self) -> str:
+        return ticket_label(self.client_code, self.ticket_num)
+
+
+class MachineRecord(BaseModel):
+    id: int
+    client_id: int
+    client_code: str
+    machine_name: str
+    machine_support: str | None = None
+    source: str | None = None
+    web_remote_url: str | None = None
+    last_seen_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
 
 
 class ToolEnvelope(BaseModel):

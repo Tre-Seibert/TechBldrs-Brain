@@ -7,14 +7,31 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
-from app.flow.source import FlowSource
+from app.flow.schemas import (
+    ClientDetail,
+    ContactRecord,
+    MachineRecord,
+    MailDetail,
+    MailRecord,
+    SimilarTicketPair,
+    TechnicianRecord,
+    TicketDetail,
+    TicketRecord,
+    TimeEntryRecord,
+    ticket_label,
+)
+from app.flow.source import FlowRequestError, FlowSource
 from app.identity import current_signed_in_email
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
+    GET_CLIENT_DETAIL,
+    GET_MAIL_DETAIL,
+    GET_TICKET_DETAIL,
     LATEST_TICKET,
+    LIST_MACHINES,
     LIST_MAIL,
     LIST_TICKETS,
+    LIST_TIME_ENTRIES,
     MERGE_TICKETS,
     SEARCH_CONTACT,
     SEARCH_TECHNICIAN,
@@ -248,6 +265,36 @@ class ListMailArgs(BaseModel):
     limit: int = 25
 
 
+class ListTimeEntriesArgs(BaseModel):
+    ticket_id: int | None = None
+    client_code: str | None = None
+    assignee_code: str | None = None
+    limit: int = 25
+
+    @model_validator(mode="after")
+    def _need_scope(self) -> ListTimeEntriesArgs:
+        if self.ticket_id is None and not (self.client_code or "").strip():
+            raise ValueError("ticket_id or client_code is required")
+        return self
+
+
+class ListMachinesArgs(BaseModel):
+    client_code: str
+    limit: int = 100
+
+
+class GetTicketDetailArgs(BaseModel):
+    ticket_id: int
+
+
+class GetMailDetailArgs(BaseModel):
+    mail_id: int
+
+
+class GetClientDetailArgs(BaseModel):
+    client_code: str
+
+
 class ToolResult(BaseModel):
     ok: bool = True
     tool: str
@@ -362,6 +409,86 @@ def _mail_payload(row: MailRecord) -> dict[str, Any]:
         "subject": row.subject,
         "received_at": received.isoformat(sep=" "),
         "snippet": row.snippet,
+    }
+
+
+def _time_entry_payload(row: TimeEntryRecord) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "ticket_id": row.ticket_id,
+        "ticket_label": row.ticket_label,
+        "client_code": row.client_code,
+        "tech_user_id": row.tech_user_id,
+        "work_date": row.work_date.isoformat(sep=" ") if row.work_date else None,
+        "start_at": row.start_at.isoformat(sep=" ") if row.start_at else None,
+        "end_at": row.end_at.isoformat(sep=" ") if row.end_at else None,
+        "actual_minutes": row.actual_minutes,
+        "minutes": row.minutes,
+        "subject": row.subject,
+        "body": row.body,
+        "billable": row.billable,
+        "gratis": row.gratis,
+        "job": row.job,
+        "invoice_num": row.invoice_num,
+        "invoice_desc": row.invoice_desc,
+        "activity_tags": row.activity_tags,
+    }
+
+
+def _machine_payload(row: MachineRecord) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "client_code": row.client_code,
+        "machine_name": row.machine_name,
+        "machine_support": row.machine_support,
+        "source": row.source,
+        "web_remote_url": row.web_remote_url,
+        "last_seen_at": row.last_seen_at.isoformat(sep=" ") if row.last_seen_at else None,
+    }
+
+
+def _ticket_detail_payload(row: TicketDetail) -> dict[str, Any]:
+    payload = _ticket_payload(row)
+    payload.update(
+        {
+            "log_text": row.log_text,
+            "notes_text": row.notes_text,
+            "hrs_estimate_total": row.hrs_estimate_total,
+            "hrs_actual_total": row.hrs_actual_total,
+            "hrs_billable_total": row.hrs_billable_total,
+            "hrs_gratis_total": row.hrs_gratis_total,
+        }
+    )
+    return payload
+
+
+def _mail_detail_payload(row: MailDetail) -> dict[str, Any]:
+    payload = _mail_payload(row)
+    payload.pop("snippet", None)
+    payload["body"] = row.body
+    payload["attachments"] = [
+        {"filename": att.filename, "content_type": att.content_type, "size_bytes": att.size_bytes}
+        for att in row.attachments
+    ]
+    return payload
+
+
+def _client_detail_payload(row: ClientDetail) -> dict[str, Any]:
+    return {
+        "client_code": row.client_code,
+        "name": row.name,
+        "full_company_name": row.full_company_name,
+        "status": row.status,
+        "account": row.account,
+        "client_rating": row.client_rating,
+        "contract_minutes": row.contract_minutes,
+        "balance": row.balance,
+        "support_renewal": row.support_renewal,
+        "antivirus_renewal": row.antivirus_renewal,
+        "spam_filter_renewal": row.spam_filter_renewal,
+        "business_phone": row.business_phone,
+        "email": row.email,
+        "web_page": row.web_page,
     }
 
 
@@ -1454,6 +1581,141 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
     )
 
 
+def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResult:
+    assignee, error = _resolve_assignee(source, args.assignee_code)
+    if error:
+        return _refuse(LIST_TIME_ENTRIES, source, error)
+    tech_user_id = None
+    if assignee:
+        matches = source.search_technician(query=assignee, limit=5)
+        pick = next((m for m in matches if (m.assignee_code or "").lower() == assignee), None)
+        if pick is None:
+            return _refuse(LIST_TIME_ENTRIES, source, f"No active technician matches {assignee!r}.")
+        tech_user_id = pick.id
+    client = (args.client_code or "").strip().upper() or None
+    try:
+        rows = source.list_time_entries(
+            ticket_id=args.ticket_id,
+            client_code=client,
+            tech_user_id=tech_user_id,
+            limit=args.limit,
+        )
+    except FlowRequestError as exc:
+        return _refuse(LIST_TIME_ENTRIES, source, str(exc))
+    data = [_time_entry_payload(r) for r in rows]
+    total_minutes = sum(r.minutes for r in rows)
+    scope = (f"ticket {args.ticket_id}" if args.ticket_id else client) or "that scope"
+    lines = [f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'} for {scope} ({total_minutes} min total).", ""]
+    if not data:
+        lines.append("None found.")
+    for row in data:
+        billed = "billable" if row["billable"] else ("gratis" if row["gratis"] else "non-billable")
+        when = row["work_date"] or row["start_at"] or ""
+        lines.append(f"- {when} — {row['subject']} ({row['minutes']} min, {billed})")
+    return ToolResult(
+        tool=LIST_TIME_ENTRIES,
+        source=source.source_name,
+        data=data,
+        row_ids=[r.id for r in rows],
+        client_code=client,
+        reply="\n".join(lines).rstrip(),
+    )
+
+
+def list_machines(source: FlowSource, args: ListMachinesArgs) -> ToolResult:
+    client = args.client_code.strip().upper()
+    rows = source.list_machines(client_code=client, limit=args.limit)
+    data = [_machine_payload(r) for r in rows]
+    lines = [f"{len(data)} machine(s) for {client}.", ""]
+    if not data:
+        lines.append("None found.")
+    for row in data:
+        seen = row.get("last_seen_at") or "never"
+        lines.append(f"- {row['machine_name']} ({row.get('machine_support') or 'support unknown'}, last seen {seen})")
+    return ToolResult(
+        tool=LIST_MACHINES,
+        source=source.source_name,
+        data=data,
+        row_ids=[r.id for r in rows],
+        client_code=client,
+        reply="\n".join(lines).rstrip(),
+    )
+
+
+def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResult:
+    try:
+        row = source.get_ticket(ticket_id=args.ticket_id)
+    except FlowRequestError as exc:
+        return _refuse(GET_TICKET_DETAIL, source, str(exc))
+    data = _ticket_detail_payload(row)
+    lines = [f"{data['ticket_label']} — {data['topic']} ({data['status']}, {data['category']})"]
+    if row.log_text:
+        lines.append(f"Log: {row.log_text}")
+    if row.notes_text:
+        lines.append(f"Notes: {row.notes_text}")
+    if row.hrs_actual_total is not None:
+        lines.append(f"Hours logged: {row.hrs_actual_total}")
+    return ToolResult(
+        tool=GET_TICKET_DETAIL,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id],
+        client_code=row.client_code.upper(),
+        reply="\n".join(lines).rstrip(),
+    )
+
+
+def get_mail_detail(source: FlowSource, args: GetMailDetailArgs) -> ToolResult:
+    try:
+        row = source.get_mail(mail_id=args.mail_id)
+    except FlowRequestError as exc:
+        return _refuse(GET_MAIL_DETAIL, source, str(exc))
+    data = _mail_detail_payload(row)
+    who = (row.from_name or row.from_address or "unknown").strip()
+    lines = [f"{data['ticket_label']} — {data['subject'] or '(no subject)'} from {who}", "", row.body or "(no body)"]
+    if row.attachments:
+        lines.append("")
+        lines.append("Attachments: " + ", ".join(att.filename for att in row.attachments))
+    return ToolResult(
+        tool=GET_MAIL_DETAIL,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id],
+        client_code=row.client_code.upper(),
+        reply="\n".join(lines).rstrip(),
+    )
+
+
+def get_client_detail(source: FlowSource, args: GetClientDetailArgs) -> ToolResult:
+    try:
+        row = source.get_client(client_code=args.client_code)
+    except FlowRequestError as exc:
+        return _refuse(GET_CLIENT_DETAIL, source, str(exc))
+    data = _client_detail_payload(row)
+    lines = [f"{row.client_code} — {row.name or row.full_company_name or ''}".rstrip(" —")]
+    if row.contract_minutes is not None:
+        lines.append(f"Contract minutes: {row.contract_minutes}")
+    if row.balance is not None:
+        lines.append(f"Balance: {row.balance}")
+    if row.account:
+        lines.append(f"Account: {row.account}")
+    for label, value in (
+        ("Support renewal", row.support_renewal),
+        ("Antivirus renewal", row.antivirus_renewal),
+        ("Spam filter renewal", row.spam_filter_renewal),
+    ):
+        if value:
+            lines.append(f"{label}: {value}")
+    return ToolResult(
+        tool=GET_CLIENT_DETAIL,
+        source=source.source_name,
+        data=data,
+        row_ids=[],
+        client_code=row.client_code.upper(),
+        reply="\n".join(lines).rstrip(),
+    )
+
+
 def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: ChatTurn | None = None) -> ToolResult:
     if name == SEARCH_CONTACT:
         return search_contact(source, SearchContactArgs.model_validate(raw_args), turn)
@@ -1469,6 +1731,16 @@ def dispatch(source: FlowSource, name: str, raw_args: dict[str, Any], turn: Chat
         return merge_tickets(source, MergeTicketsArgs.model_validate(raw_args), turn)
     if name == LIST_MAIL:
         return list_mail(source, ListMailArgs.model_validate(raw_args))
+    if name == LIST_TIME_ENTRIES:
+        return list_time_entries(source, ListTimeEntriesArgs.model_validate(raw_args))
+    if name == LIST_MACHINES:
+        return list_machines(source, ListMachinesArgs.model_validate(raw_args))
+    if name == GET_TICKET_DETAIL:
+        return get_ticket_detail(source, GetTicketDetailArgs.model_validate(raw_args))
+    if name == GET_MAIL_DETAIL:
+        return get_mail_detail(source, GetMailDetailArgs.model_validate(raw_args))
+    if name == GET_CLIENT_DETAIL:
+        return get_client_detail(source, GetClientDetailArgs.model_validate(raw_args))
     return ToolResult(
         ok=False,
         tool=name,

@@ -5,8 +5,31 @@ from datetime import datetime
 from itertools import combinations
 from typing import Any
 
-from app.flow.fixtures import CLIENTS, CONTACTS, MAIL, TECHNICIANS, TICKETS
-from app.flow.schemas import ContactRecord, MailRecord, SimilarTicketPair, TechnicianRecord, TicketRecord, ticket_label
+from app.flow.fixtures import (
+    CLIENT_DETAIL_EXTRAS,
+    CLIENTS,
+    CONTACTS,
+    MACHINES,
+    MAIL,
+    MAIL_DETAIL_EXTRAS,
+    TECHNICIANS,
+    TICKET_DETAIL_EXTRAS,
+    TICKETS,
+    TIME_ENTRIES,
+)
+from app.flow.schemas import (
+    ClientDetail,
+    ContactRecord,
+    MachineRecord,
+    MailDetail,
+    MailRecord,
+    SimilarTicketPair,
+    TechnicianRecord,
+    TicketDetail,
+    TicketRecord,
+    TimeEntryRecord,
+    ticket_label,
+)
 from app.flow.source import FlowRequestError
 
 
@@ -397,3 +420,65 @@ class StubFlowSource:
 
     def client_codes(self) -> list[str]:
         return [c.client_code for c in CLIENTS]
+
+    def get_ticket(self, *, ticket_id: int) -> TicketDetail:
+        ticket = next((t for t in self._tickets if t.id == ticket_id), None)
+        if ticket is None:
+            raise FlowRequestError(f"Flow 404: ticket {ticket_id} not found")
+        extra = TICKET_DETAIL_EXTRAS.get(ticket_id, {})
+        return TicketDetail(**ticket.model_dump(), **extra)
+
+    def get_mail(self, *, mail_id: int) -> MailDetail:
+        mail = next((m for m in MAIL if m.id == mail_id), None)
+        if mail is None:
+            raise FlowRequestError(f"Flow 404: mail {mail_id} not found")
+        data = mail.model_dump()
+        data.pop("snippet", None)
+        extra = MAIL_DETAIL_EXTRAS.get(mail_id, {})
+        return MailDetail(**data, **extra)
+
+    def get_client(self, *, client_code: str) -> ClientDetail:
+        code = _norm(client_code)
+        client = next((c for c in CLIENTS if _norm(c.client_code) == code), None)
+        if client is None:
+            raise FlowRequestError(f"Flow 404: client {client_code!r} not found")
+        extra = CLIENT_DETAIL_EXTRAS.get(client.client_code, {})
+        return ClientDetail(**client.model_dump(), **extra)
+
+    def list_time_entries(
+        self,
+        *,
+        ticket_id: int | None = None,
+        client_code: str | None = None,
+        tech_user_id: int | None = None,
+        sort: str = "start_at",
+        order: str = "desc",
+        limit: int = 25,
+    ) -> list[TimeEntryRecord]:
+        if ticket_id is None and not (client_code or "").strip():
+            raise FlowRequestError("Flow 400: ticket_id or client_code is required")
+        code = _norm(client_code)
+        rows = [
+            entry
+            for entry in TIME_ENTRIES
+            if (ticket_id is None or entry.ticket_id == ticket_id)
+            and (not code or _norm(entry.client_code) == code)
+            and (tech_user_id is None or entry.tech_user_id == tech_user_id)
+        ]
+        rows.sort(key=lambda entry: (entry.start_at or entry.created_at, entry.id), reverse=(order != "asc"))
+        return rows[: _clamp_limit(limit)]
+
+    def list_machines(
+        self,
+        *,
+        client_code: str,
+        sort: str = "machine_name",
+        order: str = "asc",
+        limit: int = 100,
+    ) -> list[MachineRecord]:
+        code = _norm(client_code)
+        if not code:
+            return []
+        rows = [m for m in MACHINES if _norm(m.client_code) == code]
+        rows.sort(key=lambda m: (m.machine_name or "", m.id), reverse=(order == "desc"))
+        return rows[: _clamp_limit(limit, default=100)]

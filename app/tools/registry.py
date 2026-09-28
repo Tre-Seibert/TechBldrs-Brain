@@ -16,6 +16,11 @@ LATEST_TICKET = "latest_ticket"
 FIND_SIMILAR_TICKETS = "find_similar_tickets"
 MERGE_TICKETS = "merge_tickets"
 LIST_MAIL = "list_mail"
+LIST_TIME_ENTRIES = "list_time_entries"
+LIST_MACHINES = "list_machines"
+GET_TICKET_DETAIL = "get_ticket_detail"
+GET_MAIL_DETAIL = "get_mail_detail"
+GET_CLIENT_DETAIL = "get_client_detail"
 
 TOOL_NAMES = (
     SEARCH_CONTACT,
@@ -25,6 +30,11 @@ TOOL_NAMES = (
     FIND_SIMILAR_TICKETS,
     MERGE_TICKETS,
     LIST_MAIL,
+    LIST_TIME_ENTRIES,
+    LIST_MACHINES,
+    GET_TICKET_DETAIL,
+    GET_MAIL_DETAIL,
+    GET_CLIENT_DETAIL,
 )
 WRITE_TOOL_NAMES = (MERGE_TICKETS,)
 
@@ -241,6 +251,62 @@ _LIST_MAIL_SCHEMA: dict[str, Any] = {
 }
 
 
+_LIST_TIME_ENTRIES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ticket_id": {"type": "integer", "description": "tickets.id to list time entries for."},
+        "client_code": {"type": "string", "description": "Flow client_code (e.g. WDON). ticket_id or client_code is required."},
+        "assignee_code": {
+            "type": "string",
+            "description": (
+                "Optional: narrow to one technician's entries. Two-letter code from search_technician, "
+                "or 'me' for the signed-in technician."
+            ),
+        },
+        "limit": {"type": "integer", "description": "Max rows (default 25, max 100)."},
+    },
+}
+
+_LIST_MACHINES_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "client_code": {"type": "string", "description": "Flow client_code (e.g. WDON)."},
+        "limit": {"type": "integer", "description": "Max rows (default 100, max 100)."},
+    },
+    "required": ["client_code"],
+}
+
+_GET_TICKET_DETAIL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ticket_id": {
+            "type": "integer",
+            "description": "tickets.id from an earlier list_tickets/latest_ticket/find_similar_tickets result.",
+        },
+    },
+    "required": ["ticket_id"],
+}
+
+_GET_MAIL_DETAIL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "mail_id": {
+            "type": "integer",
+            "description": "mail.id from an earlier list_mail result.",
+        },
+    },
+    "required": ["mail_id"],
+}
+
+_GET_CLIENT_DETAIL_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "client_code": {"type": "string", "description": "Flow client_code (e.g. WDON)."},
+    },
+    "required": ["client_code"],
+}
+
+
 def _fn(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
     return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
@@ -292,6 +358,38 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "List Flow mail rows already filed on tickets for a client. direction=inbound is mail from "
         "that client to the TechBldrs tenant. Does not call Microsoft Graph.",
         _LIST_MAIL_SCHEMA,
+    ),
+    _fn(
+        LIST_TIME_ENTRIES,
+        "List billable/gratis time entries. Needs ticket_id or client_code (at least one) — "
+        "assignee_code alone is not enough. 'How much time on ticket X' -> ticket_id. "
+        "'Time logged for client Y (by tech Z)' -> client_code (+ assignee_code).",
+        _LIST_TIME_ENTRIES_SCHEMA,
+    ),
+    _fn(
+        LIST_MACHINES,
+        "List a client's machines/workstations from Flow (not Datto RMM directly). "
+        "'What machines does client Y have' -> client_code=Y.",
+        _LIST_MACHINES_SCHEMA,
+    ),
+    _fn(
+        GET_TICKET_DETAIL,
+        "Fuller read of one ticket: full log/notes text and hours, beyond what list_tickets/"
+        "latest_ticket return. Only call after another tool already gave you the ticket_id — "
+        "never to find a ticket in the first place.",
+        _GET_TICKET_DETAIL_SCHEMA,
+    ),
+    _fn(
+        GET_MAIL_DETAIL,
+        "Full body of one mail row list_mail already found (list_mail only returns a snippet). "
+        "Only call with a mail_id from a prior list_mail result.",
+        _GET_MAIL_DETAIL_SCHEMA,
+    ),
+    _fn(
+        GET_CLIENT_DETAIL,
+        "Client account info: contract minutes, balance, support/antivirus/spam-filter renewal "
+        "dates. Not for tickets/contacts/mail — use the ticket/contact/mail tools for those.",
+        _GET_CLIENT_DETAIL_SCHEMA,
     ),
 ]
 
