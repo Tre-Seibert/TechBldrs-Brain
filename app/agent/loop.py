@@ -18,6 +18,7 @@ from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
 from app.tools import ChatTurn, openai_tools, run_tool
 from app.tools.handlers import (
+    answer_longest_time_worked,
     answer_merge_suggestion,
     answer_person_mail_question,
     answer_person_ticket_question,
@@ -289,6 +290,8 @@ async def run_tool_loop(
         direct = answer_person_ticket_question(source, turn)
     if direct is None:
         direct = answer_tickets_about(source, turn)
+    if direct is None:
+        direct = answer_longest_time_worked(source, turn)
     if direct is not None:
         return _assistant_payload(
             direct.reply or direct.error or _NO_TOOL_ENGLISH,

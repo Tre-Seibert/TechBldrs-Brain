@@ -154,9 +154,23 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
                 "Do not pass stage=live for 'tickets assigned to {tech}'."
             ),
         },
+        "sort": {
+            "type": "string",
+            "enum": ["last_activity_at", "hrs_actual_total"],
+            "description": (
+                "hrs_actual_total ranks by time worked (actual hours logged). "
+                "Which open ticket has the longest time worked? → stage=open, "
+                "sort=hrs_actual_total, order=desc, limit=1. No assignee or client."
+            ),
+        },
+        "order": {
+            "type": "string",
+            "enum": ["asc", "desc"],
+            "description": "desc puts the longest time worked first when sort=hrs_actual_total.",
+        },
         "limit": {
             "type": "integer",
-            "description": "Max rows (default 100, max 100). Use 100 when the user says all.",
+            "description": "Max rows (default 100, max 100). Use 100 when the user says all. Use 1 for the single longest.",
         },
     },
 }

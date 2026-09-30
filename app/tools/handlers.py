@@ -117,6 +117,13 @@ _APOSTROPHE_RE = re.compile(r"['\u2019\u2018\u02bc`´]")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
 _BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
 _OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
+_LONGEST_TIME_RE = re.compile(
+    r"\btickets?\b.*\b(?:longest|most|highest|greatest)\b.*\b(?:time|hours)\b"
+    r"|\b(?:longest|most|highest|greatest)\b.*\b(?:time|hours)\b.*\btickets?\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
+_LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
 _INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
 _CATEGORY_ALIASES = {
     "urgent": "0 Urgent",
@@ -205,6 +212,8 @@ class ListTicketsArgs(BaseModel):
     last_activity_after: str | None = None
     requestor: str | None = None
     stage: str | None = None
+    sort: str | None = None
+    order: str | None = None
     limit: int = 100
 
     @model_validator(mode="after")
@@ -236,6 +245,8 @@ class ListTicketsArgs(BaseModel):
             value is not None
             for value in (self.contact_id, self.complete, self.project)
         ) or self.overdue:
+            return self
+        if (self.stage or "").strip().lower() in _LIST_STAGES:
             return self
         raise ValueError(
             "assignee_code, client_code, q, ticket_num, category, reason, or another ticket filter is required"
@@ -346,7 +357,7 @@ def _technician_payload(row: TechnicianRecord) -> dict[str, Any]:
 
 
 def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
-    return {
+    payload = {
         "id": row.id,
         "client_id": row.client_id,
         "client_code": row.client_code,
@@ -372,6 +383,9 @@ def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
         "due_at": row.due_at.isoformat(sep=" ") if row.due_at else None,
         "closed_at": row.closed_at.isoformat(sep=" ") if row.closed_at else None,
     }
+    if row.hrs_actual_total is not None:
+        payload["hrs_actual_total"] = row.hrs_actual_total
+    return payload
 
 
 def _similar_payload(pair: SimilarTicketPair) -> dict[str, Any]:
@@ -536,6 +550,9 @@ def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | 
         extra = f"{client} · {status} · {category} · {assignee}" if client else f"{status} · {category} · {assignee}"
         if reason:
             extra = f"{extra} · {reason}"
+        hours = row.get("hrs_actual_total")
+        if isinstance(hours, (int, float)):
+            extra = f"{extra} · {_format_hours(float(hours))}"
         lines.append(f"- {label} — {topic} ({extra})")
     if note:
         lines.extend(["", note])
@@ -1241,6 +1258,8 @@ def list_tickets(
         last_activity_after=(args.last_activity_after or "").strip() or None,
         requestor=requestor,
         stage=stage,
+        sort=(args.sort or "last_activity_at").strip() or "last_activity_at",
+        order=(args.order or "desc").strip() or "desc",
         limit=limit,
     )
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
@@ -1401,6 +1420,84 @@ def _about_stage(turn: ChatTurn | None) -> str:
     if re.search(r"\bopen\b", text):
         return "open"
     return "live"
+
+
+def _format_hours(hours: float) -> str:
+    text = f"{hours:.2f}".rstrip("0").rstrip(".")
+    return f"{text} hour" if text == "1" else f"{text} hours"
+
+
+def _longest_time_stage(text: str) -> str:
+    if re.search(r"\barchived\b", text, re.IGNORECASE):
+        return "archived"
+    if re.search(r"\breview\b", text, re.IGNORECASE) and not re.search(r"\bopen\b", text, re.IGNORECASE):
+        return "review"
+    if re.search(r"\bopen\b", text, re.IGNORECASE):
+        return "open"
+    return "live"
+
+
+def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
+    """Bypass the LLM so 'which open ticket has the longest time worked?' cannot ask for a filter."""
+    text = (turn.user_text if turn else "").strip()
+    if not text or not _LONGEST_TIME_RE.search(text) or _TICKET_LABEL_RE.search(text):
+        return None
+    stage = _longest_time_stage(text)
+    try:
+        rows = source.list_tickets(stage=stage, sort="hrs_actual_total", order="desc", limit=500)
+    except FlowRequestError as exc:
+        return _refuse(LIST_TICKETS, source, str(exc))
+    stage_label = "open" if stage == "open" else stage
+    if not rows:
+        return ToolResult(
+            tool=LIST_TICKETS,
+            source=source.source_name,
+            data=[],
+            row_ids=[],
+            reply=f"No {stage_label} tickets.",
+        )
+    known = [row for row in rows if row.hrs_actual_total is not None]
+    if not known:
+        return ToolResult(
+            tool=LIST_TICKETS,
+            source=source.source_name,
+            data=[_ticket_payload(row) for row in rows[:20]],
+            row_ids=[row.id for row in rows[:20]],
+            reply=(
+                f"Flow returned {len(rows)} {stage_label} ticket(s) without hours logged, "
+                "so I can't tell which has the longest time worked."
+            ),
+        )
+    top_hours = known[0].hrs_actual_total or 0.0
+    if top_hours <= 0:
+        return ToolResult(
+            tool=LIST_TICKETS,
+            source=source.source_name,
+            data=[],
+            row_ids=[],
+            reply=f"No {stage_label} ticket has time worked.",
+        )
+    winners = [row for row in known if abs((row.hrs_actual_total or 0.0) - top_hours) < 0.001]
+    data = [_ticket_payload(row) for row in winners]
+    hours_text = _format_hours(top_hours)
+    labels = " and ".join(row.get("ticket_label") or "?" for row in data)
+    if len(winners) == 1:
+        heading = f"{labels} has the longest time worked among {stage_label} tickets: {hours_text}."
+    else:
+        heading = f"{labels} are tied for the longest time worked among {stage_label} tickets: {hours_text}."
+    note = None
+    if len(rows) >= 500:
+        note = "Ranked 500 tickets. More may exist."
+    if source.source_name == "stub":
+        note = "Lab fixtures, not production Flow." + (f" {note}" if note else "")
+    return ToolResult(
+        tool=LIST_TICKETS,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id for row in winners],
+        note=note,
+        reply=format_ticket_list(data, heading=heading, note=note),
+    )
 
 
 def answer_tickets_about(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:

@@ -115,6 +115,7 @@ class TicketRecord(BaseModel):
     closed_at: datetime | None = None
     archived: bool = False
     archived_at: datetime | None = None
+    hrs_actual_total: float | None = None
 
     @field_validator("subject", "topic", "requestor_text", "status", "category", mode="before")
     @classmethod
@@ -133,7 +134,6 @@ class TicketDetail(TicketRecord):
     hrs_duration: float | None = None
     hrs_first_touch: float | None = None
     hrs_estimate_total: float | None = None
-    hrs_actual_total: float | None = None
     hrs_billable_total: float | None = None
     hrs_gratis_total: float | None = None
     log_text: str | None = None

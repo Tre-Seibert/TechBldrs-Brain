@@ -97,6 +97,21 @@ def _person_hit(ticket: TicketRecord, *, contact_id: int | None, requestor: str 
     return any(name and (name in stored or stored in name) for name in names)
 
 
+_LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
+
+
+def _worked_hours(ticket: TicketRecord) -> float:
+    """Actual hours logged. Detail extras win, then summed time-entry minutes."""
+    if ticket.hrs_actual_total is not None:
+        return float(ticket.hrs_actual_total)
+    extra = TICKET_DETAIL_EXTRAS.get(ticket.id) or {}
+    stored = extra.get("hrs_actual_total")
+    if stored is not None:
+        return float(stored)
+    minutes = sum(entry.actual_minutes for entry in TIME_ENTRIES if entry.ticket_id == ticket.id)
+    return minutes / 60.0
+
+
 def _stage_match(ticket: TicketRecord, stage: str | None) -> bool:
     wanted = _norm(stage) or "live"
     current = _ticket_stage(ticket)
@@ -247,6 +262,7 @@ class StubFlowSource:
                 last_after_dt,
                 contact_id is not None,
                 (requestor or "").strip(),
+                _norm(stage) in _LIST_STAGES,
             )
         )
         if not has_scope:
@@ -293,6 +309,15 @@ class StubFlowSource:
             and (not overdue or (t.due_at is not None and t.due_at < now and not t.complete))
         ]
         reverse = (order or "desc").lower() != "asc"
+        if _norm(sort) == "hrs_actual_total":
+            ranked = [
+                ticket.model_copy(update={"hrs_actual_total": _worked_hours(ticket)}) for ticket in matches
+            ]
+            ranked.sort(
+                key=lambda ticket: (ticket.hrs_actual_total or 0.0, ticket.last_activity_at, ticket.id),
+                reverse=reverse,
+            )
+            return ranked[: _clamp_limit(limit, default=100, maximum=500)]
         matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)
         return matches[: _clamp_limit(limit, default=100)]
 
@@ -426,7 +451,9 @@ class StubFlowSource:
         if ticket is None:
             raise FlowRequestError(f"Flow 404: ticket {ticket_id} not found")
         extra = TICKET_DETAIL_EXTRAS.get(ticket_id, {})
-        return TicketDetail(**ticket.model_dump(), **extra)
+        data = ticket.model_dump()
+        data.update(extra)
+        return TicketDetail(**data)
 
     def get_mail(self, *, mail_id: int) -> MailDetail:
         mail = next((m for m in MAIL if m.id == mail_id), None)

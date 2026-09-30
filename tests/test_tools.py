@@ -25,6 +25,7 @@ from app.tools.handlers import (
     _contact_name_score,
     _damerau,
     _person_name_from_turn,
+    answer_longest_time_worked,
     answer_merge_suggestion,
     answer_person_mail_question,
     answer_person_ticket_question,
@@ -331,6 +332,34 @@ class ToolStubTests(unittest.TestCase):
     def test_list_tickets_requires_a_scope(self) -> None:
         with self.assertRaises(ValueError):
             ListTicketsArgs(status="Open")
+
+    def test_list_tickets_stage_alone_is_enough(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(stage="open"))
+        self.assertTrue(result.ok, result.error)
+        self.assertTrue(result.data)
+        self.assertTrue(all(row["category"] != "9 REVIEW" for row in result.data))
+
+    def test_longest_time_worked_is_the_open_ticket_with_the_most_hours(self) -> None:
+        result = answer_longest_time_worked(
+            self.source,
+            ChatTurn(user_text="Which open ticket has the longest time worked"),
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"])
+        self.assertEqual(result.data[0]["hrs_actual_total"], 0.75)
+        self.assertIn("0.75 hours", result.reply or "")
+        self.assertIn("Lab fixtures", result.reply or "")
+        self.assertNotIn("ACME-0050", result.reply or "")
+
+    def test_time_on_one_ticket_is_not_a_longest_time_question(self) -> None:
+        self.assertIsNone(
+            answer_longest_time_worked(
+                self.source,
+                ChatTurn(user_text="How much time was logged on ticket WDON-1842?"),
+            )
+        )
 
     def test_list_tickets_urgent_is_category_not_my_open_list(self) -> None:
         token = current_signed_in_email.set("tseibert@techbldrs.example")
