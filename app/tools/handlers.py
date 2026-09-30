@@ -1427,6 +1427,14 @@ def _format_hours(hours: float) -> str:
     return f"{text} hour" if text == "1" else f"{text} hours"
 
 
+def _is_placeholder_category(category: str | None) -> bool:
+    """'Place Holder' is a catch-all bucket ticket (e.g. a running "Meetings" ticket that
+    accumulates unrelated time entries for years) -- never the intended answer to "which
+    ticket took the longest," with or without the user saying so explicitly."""
+    normalized = re.sub(r"[\s_-]+", "", (category or "").strip().lower())
+    return normalized == "placeholder"
+
+
 def _longest_time_stage(text: str) -> str:
     if re.search(r"\barchived\b", text, re.IGNORECASE):
         return "archived"
@@ -1456,7 +1464,10 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
             row_ids=[],
             reply=f"No {stage_label} tickets.",
         )
-    known = [row for row in rows if row.hrs_actual_total is not None]
+    excluded_placeholders = sum(1 for row in rows if _is_placeholder_category(row.category))
+    known = [
+        row for row in rows if row.hrs_actual_total is not None and not _is_placeholder_category(row.category)
+    ]
     if not known:
         return ToolResult(
             tool=LIST_TICKETS,
@@ -1464,8 +1475,8 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
             data=[_ticket_payload(row) for row in rows[:20]],
             row_ids=[row.id for row in rows[:20]],
             reply=(
-                f"Flow returned {len(rows)} {stage_label} ticket(s) without hours logged, "
-                "so I can't tell which has the longest time worked."
+                f"Flow returned {len(rows)} {stage_label} ticket(s) without hours logged "
+                "(excluding placeholder tickets), so I can't tell which has the longest time worked."
             ),
         )
     top_hours = known[0].hrs_actual_total or 0.0
@@ -1486,8 +1497,10 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
     else:
         heading = f"{labels} are tied for the longest time worked among {stage_label} tickets: {hours_text}."
     note = None
+    if excluded_placeholders:
+        note = f"Excluded {excluded_placeholders} placeholder ticket(s) (e.g. a catch-all 'Meetings' bucket)."
     if len(rows) >= 500:
-        note = "Ranked 500 tickets. More may exist."
+        note = f"{note} Ranked 500 tickets. More may exist." if note else "Ranked 500 tickets. More may exist."
     if source.source_name == "stub":
         note = "Lab fixtures, not production Flow." + (f" {note}" if note else "")
     return ToolResult(

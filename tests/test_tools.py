@@ -353,6 +353,22 @@ class ToolStubTests(unittest.TestCase):
         self.assertIn("Lab fixtures", result.reply or "")
         self.assertNotIn("ACME-0050", result.reply or "")
 
+    def test_longest_time_worked_excludes_placeholder_tickets(self) -> None:
+        # Regression: ZTB-0006 is a "Place Holder" catch-all ticket with 559.53 hours --
+        # by far the most of any fixture ticket, but never the intended answer to "which
+        # ticket took the longest," with or without the user saying "not a placeholder."
+        for question in (
+            "Which open ticket has the longest time worked",
+            "Which open ticket has the longest time worked that isn't a placeholder ticket",
+        ):
+            result = answer_longest_time_worked(self.source, ChatTurn(user_text=question))
+            self.assertIsNotNone(result, question)
+            assert result is not None
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"], question)
+            self.assertNotIn("ZTB-0006", result.reply or "", question)
+            self.assertIn("Excluded 1 placeholder ticket", result.reply or "", question)
+
     def test_time_on_one_ticket_is_not_a_longest_time_question(self) -> None:
         self.assertIsNone(
             answer_longest_time_worked(

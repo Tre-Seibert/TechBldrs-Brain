@@ -324,6 +324,23 @@ TICKETS: list[TicketRecord] = [
         last_activity_at=_DT(2026, 9, 11, 8, 5, 0),
         archived_at=_DT(2026, 9, 11, 9, 0, 0),
     ),
+    # A catch-all bucket ticket, not a real single piece of work -- the case
+    # answer_longest_time_worked must exclude even though its hours dwarf everything else.
+    TicketRecord(
+        id=9999,
+        client_id=7,
+        client_code="ZTB",
+        ticket_num="0006",
+        subject="|ZTB|0006| Meetings",
+        topic="Meetings",
+        status="New",
+        category="Place Holder",
+        reason="Internal",
+        requestor_text="",
+        created_at=_DT(2024, 1, 1, 8, 0, 0),
+        last_activity_at=_DT(2026, 9, 29, 8, 0, 0),
+        hrs_actual_total=559.53,
+    ),
 ]
 
 # Flow users rows (assignees), allowlisted fields only.
