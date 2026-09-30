@@ -1271,6 +1271,11 @@ def list_tickets(
     ):
         stage = "live"
     limit = 1 if _asked_latest_for_person(turn) else args.limit
+    resolved_sort = (args.sort or "last_activity_at").strip() or "last_activity_at"
+    # Placeholder tickets get filtered out *after* fetching below, which would just
+    # shrink an already-capped page -- overfetch here so trimming to the caller's
+    # real limit still happens after that filter, not before it.
+    fetch_limit = max(limit, 100) if (resolved_sort == "hrs_actual_total" and not category) else limit
     rows = source.list_tickets(
         client_code=client,
         assignee_code=assignee,
@@ -1295,10 +1300,17 @@ def list_tickets(
         last_activity_after=(args.last_activity_after or "").strip() or None,
         requestor=requestor,
         stage=stage,
-        sort=(args.sort or "last_activity_at").strip() or "last_activity_at",
+        sort=resolved_sort,
         order=(args.order or "desc").strip() or "desc",
-        limit=limit,
+        limit=fetch_limit,
     )
+    if resolved_sort == "hrs_actual_total" and not category:
+        # A catch-all bucket ticket (e.g. a running "Meetings" ticket) always wins a
+        # by-hours ranking otherwise -- never the real answer, whether the model got
+        # here through answer_longest_time_worked's own phrasing or by calling this
+        # tool directly for some other "which ticket took the most X" question.
+        # Skipped only if the user is deliberately asking for that category by name.
+        rows = [r for r in rows if not _is_placeholder_category(r.category)][:limit]
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     scoped = client or (codes[0] if len(codes) == 1 else None)
     note = f"{len(rows)} ticket(s)."

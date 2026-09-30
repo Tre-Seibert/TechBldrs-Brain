@@ -339,6 +339,30 @@ class ToolStubTests(unittest.TestCase):
         self.assertTrue(result.data)
         self.assertTrue(all(row["category"] != "9 REVIEW" for row in result.data))
 
+    def test_list_tickets_sorted_by_hours_excludes_placeholders_too(self) -> None:
+        # Regression: the LLM can call list_tickets(sort=hrs_actual_total) directly for
+        # any "which ticket took the most X" phrasing that answer_longest_time_worked's
+        # own regex correctly declines (e.g. "most challenging to resolve" has no
+        # time/hours/worked/logged word) -- that path had no placeholder filtering at
+        # all, so the "Meetings" catch-all ticket won by default.
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(stage="open", sort="hrs_actual_total", order="desc", limit=1),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data[0]["ticket_label"], "ZTST-0091")
+        self.assertNotIn("ZTST-0006", result.reply or "")
+
+    def test_list_tickets_can_still_find_the_placeholder_by_category(self) -> None:
+        # The hrs_actual_total exclusion is an escape hatch, not a ban -- asking for
+        # the placeholder category by name must still find it.
+        result = list_tickets(
+            self.source,
+            ListTicketsArgs(stage="all", category="Place Holder", sort="hrs_actual_total", limit=5),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("ZTST-0006", [row["ticket_label"] for row in result.data])
+
     def test_longest_time_worked_honors_an_explicit_single_result_request(self) -> None:
         # Regression: the top-10 default ignored an explicit "only include one
         # ticket" request entirely and always returned 10 anyway.
