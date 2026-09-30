@@ -369,6 +369,35 @@ class ToolStubTests(unittest.TestCase):
             self.assertNotIn("ZTB-0006", result.reply or "", question)
             self.assertIn("Excluded 1 placeholder ticket", result.reply or "", question)
 
+    def test_next_longest_excludes_the_previously_named_ticket(self) -> None:
+        first = answer_longest_time_worked(
+            self.source,
+            ChatTurn(user_text="Which open ticket has the longest time worked"),
+        )
+        assert first is not None
+        second = answer_longest_time_worked(
+            self.source,
+            ChatTurn(
+                user_text="What's the next longest ticket worked?",
+                previous_assistant_text=first.reply or "",
+            ),
+        )
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertTrue(second.ok, second.error)
+        self.assertEqual([row["ticket_label"] for row in second.data], ["ACME-0041"])
+        self.assertNotIn("WDON-1842", second.reply or "")
+        self.assertIn("next-longest", second.reply or "")
+
+    def test_next_longest_without_prior_context_is_not_a_match(self) -> None:
+        # "next longest" only makes sense as a follow-up to a real prior answer.
+        self.assertIsNone(
+            answer_longest_time_worked(
+                self.source,
+                ChatTurn(user_text="What's the next longest ticket worked?", previous_assistant_text=""),
+            )
+        )
+
     def test_time_on_one_ticket_is_not_a_longest_time_question(self) -> None:
         self.assertIsNone(
             answer_longest_time_worked(

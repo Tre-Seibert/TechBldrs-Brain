@@ -122,6 +122,12 @@ _LONGEST_TIME_RE = re.compile(
     r"|\b(?:longest|most|highest|greatest)\b.*\b(?:time|hours)\b.*\btickets?\b",
     re.IGNORECASE | re.DOTALL,
 )
+_NEXT_LONGEST_RE = re.compile(
+    r"\b(?:next|another|second|2nd|third|3rd|fourth|4th|fifth|5th)\b.{0,25}\b(?:longest|highest|most)\b"
+    r".{0,25}\bticket",
+    re.IGNORECASE | re.DOTALL,
+)
+_STAGE_WORD_RE = re.compile(r"\b(?:open|archived|review)\b", re.IGNORECASE)
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
 _INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
@@ -1446,11 +1452,22 @@ def _longest_time_stage(text: str) -> str:
 
 
 def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
-    """Bypass the LLM so 'which open ticket has the longest time worked?' cannot ask for a filter."""
+    """Bypass the LLM so 'which open ticket has the longest time worked?' cannot ask for a filter.
+
+    Also handles a same-topic follow-up ("what's the next longest?"): it only fires when the
+    previous assistant reply actually named a longest-time-worked ticket, and excludes whatever
+    that reply already named from this answer's ranking.
+    """
     text = (turn.user_text if turn else "").strip()
-    if not text or not _LONGEST_TIME_RE.search(text) or _TICKET_LABEL_RE.search(text):
+    if not text or _TICKET_LABEL_RE.search(text):
         return None
-    stage = _longest_time_stage(text)
+    previous_text = (turn.previous_assistant_text if turn else "") or ""
+    is_follow_up = bool(_NEXT_LONGEST_RE.search(text)) and "longest time worked" in previous_text.lower()
+    if not is_follow_up and not _LONGEST_TIME_RE.search(text):
+        return None
+    exclude_labels = set(_TICKET_LABEL_RE.findall(previous_text)) if is_follow_up else set()
+    stage_source = text if (_STAGE_WORD_RE.search(text) or not is_follow_up) else previous_text
+    stage = _longest_time_stage(stage_source)
     try:
         rows = source.list_tickets(stage=stage, sort="hrs_actual_total", order="desc", limit=500)
     except FlowRequestError as exc:
@@ -1466,7 +1483,11 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
         )
     excluded_placeholders = sum(1 for row in rows if _is_placeholder_category(row.category))
     known = [
-        row for row in rows if row.hrs_actual_total is not None and not _is_placeholder_category(row.category)
+        row
+        for row in rows
+        if row.hrs_actual_total is not None
+        and not _is_placeholder_category(row.category)
+        and row.label not in exclude_labels
     ]
     if not known:
         return ToolResult(
@@ -1476,7 +1497,8 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
             row_ids=[row.id for row in rows[:20]],
             reply=(
                 f"Flow returned {len(rows)} {stage_label} ticket(s) without hours logged "
-                "(excluding placeholder tickets), so I can't tell which has the longest time worked."
+                "(excluding placeholder tickets" + (" and already-named ones" if exclude_labels else "")
+                + "), so I can't tell which has the longest time worked."
             ),
         )
     top_hours = known[0].hrs_actual_total or 0.0
@@ -1492,10 +1514,11 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
     data = [_ticket_payload(row) for row in winners]
     hours_text = _format_hours(top_hours)
     labels = " and ".join(row.get("ticket_label") or "?" for row in data)
+    rank_phrase = "the next-longest" if is_follow_up else "the longest"
     if len(winners) == 1:
-        heading = f"{labels} has the longest time worked among {stage_label} tickets: {hours_text}."
+        heading = f"{labels} has {rank_phrase} time worked among {stage_label} tickets: {hours_text}."
     else:
-        heading = f"{labels} are tied for the longest time worked among {stage_label} tickets: {hours_text}."
+        heading = f"{labels} are tied for {rank_phrase} time worked among {stage_label} tickets: {hours_text}."
     note = None
     if excluded_placeholders:
         note = f"Excluded {excluded_placeholders} placeholder ticket(s) (e.g. a catch-all 'Meetings' bucket)."
