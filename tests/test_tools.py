@@ -339,6 +339,36 @@ class ToolStubTests(unittest.TestCase):
         self.assertTrue(result.data)
         self.assertTrue(all(row["category"] != "9 REVIEW" for row in result.data))
 
+    def test_longest_time_worked_honors_an_explicit_single_result_request(self) -> None:
+        # Regression: the top-10 default ignored an explicit "only include one
+        # ticket" request entirely and always returned 10 anyway.
+        for question in (
+            "Whats the longest worked open ticket? Only include one ticket in your response, the longest.",
+            "What's the single longest open ticket worked?",
+            "Just the one ticket with the most hours, please.",
+        ):
+            result = answer_longest_time_worked(self.source, ChatTurn(user_text=question))
+            self.assertIsNotNone(result, question)
+            assert result is not None
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(len(result.data), 1, question)
+            self.assertEqual(result.data[0]["ticket_label"], "ZTST-0091", question)
+            self.assertIn("has the longest time worked", result.reply or "", question)
+
+    def test_longest_time_worked_honors_an_explicit_top_n_request(self) -> None:
+        result = answer_longest_time_worked(
+            self.source,
+            ChatTurn(user_text="Top 3 open tickets by longest time worked"),
+        )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(
+            [row["ticket_label"] for row in result.data],
+            ["ZTST-0091", "ZTST-0092", "ZTST-0093"],
+        )
+        self.assertIn("Top 3", result.reply or "")
+
     def test_longest_time_worked_returns_a_ranked_top_list(self) -> None:
         result = answer_longest_time_worked(
             self.source,

@@ -142,6 +142,23 @@ _VAGUE_CONTINUATION_RE = re.compile(
     re.IGNORECASE,
 )
 _STAGE_WORD_RE = re.compile(r"\b(?:open|archived|review)\b", re.IGNORECASE)
+_SINGLE_RESULT_RE = re.compile(
+    r"\b(?:only|just)\b.{0,20}\b(?:one|1|single)\b|\bonly\s+the\s+longest\b|\bsingle\b",
+    re.IGNORECASE,
+)
+_TOP_N_RE = re.compile(r"\btop\s+(\d{1,2})\b", re.IGNORECASE)
+
+
+def _longest_time_page_size(text: str, default: int) -> int:
+    """How many ranked tickets to show: an explicit "only one"/"top N" in the
+    question wins over the default, so the deterministic bypass doesn't ignore
+    an explicit count the way it ignored other qualifiers before."""
+    if _SINGLE_RESULT_RE.search(text):
+        return 1
+    match = _TOP_N_RE.search(text)
+    if match:
+        return max(1, min(int(match.group(1)), 20))
+    return default
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
 _INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
@@ -1524,10 +1541,17 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
                 + "), so I can't rank them by time worked."
             ),
         )
-    top = ranked[: _LONGEST_TIME_PAGE_SIZE]
+    page_size = _longest_time_page_size(text, _LONGEST_TIME_PAGE_SIZE)
+    top = ranked[:page_size]
     data = [_ticket_payload(row) for row in top]
     heading_verb = "Next" if is_follow_up else "Top"
-    heading = f"{heading_verb} {len(top)} {stage_label} ticket(s), ranked by longest time worked:"
+    ticket_word = "ticket" if len(top) == 1 else "tickets"
+    heading = (
+        f"{top[0].label} has {'the next-longest' if is_follow_up else 'the longest'} time worked "
+        f"among {stage_label} tickets: {_format_hours(top[0].hrs_actual_total or 0.0)}."
+        if len(top) == 1
+        else f"{heading_verb} {len(top)} {stage_label} {ticket_word}, ranked by longest time worked:"
+    )
     note_bits = []
     if excluded_placeholders:
         note_bits.append(f"Excluded {excluded_placeholders} placeholder ticket(s) (e.g. a catch-all 'Meetings' bucket).")
