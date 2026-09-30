@@ -357,6 +357,21 @@ class ToolStubTests(unittest.TestCase):
         self.assertIn("Lab fixtures", result.reply or "")
         self.assertNotIn("ACME-0050", result.reply or "")
 
+    def test_longest_time_worked_matches_phrasings_regardless_of_word_order(self) -> None:
+        # Regression: an earlier order-dependent regex required "ticket ... longest ...
+        # time/hours" in that order, so phrasings like "longest ticket worked" (no literal
+        # "time"/"hours" word, and "longest" before "ticket") matched nothing at all.
+        for question in (
+            "What's the longest ticket worked?",
+            "Which ticket has the most hours?",
+            "Highest hours logged on an open ticket?",
+        ):
+            result = answer_longest_time_worked(self.source, ChatTurn(user_text=question))
+            self.assertIsNotNone(result, question)
+            assert result is not None
+            self.assertTrue(result.ok, result.error)
+            self.assertEqual(result.data[0]["ticket_label"], "ZTST-0091", question)
+
     def test_longest_time_worked_excludes_placeholder_tickets(self) -> None:
         # Regression: ZTST-0006 is a "Place Holder" catch-all ticket with 559.53 hours --
         # by far the most of any fixture ticket, but never belongs in this ranking,
@@ -424,14 +439,18 @@ class ToolStubTests(unittest.TestCase):
             )
         )
 
-    def test_next_longest_without_prior_context_is_not_a_match(self) -> None:
-        # "next longest" only makes sense as a follow-up to a real prior answer.
-        self.assertIsNone(
-            answer_longest_time_worked(
-                self.source,
-                ChatTurn(user_text="What's the next longest ticket worked?", previous_assistant_text=""),
-            )
+    def test_next_longest_without_prior_context_falls_back_to_a_fresh_ranking(self) -> None:
+        # "next longest ticket worked" still contains "longest"/"ticket"/"worked", so
+        # with no prior ranking to follow up on, it's read as an ordinary fresh question
+        # rather than matching nothing and falling through to the LLM with no filter.
+        result = answer_longest_time_worked(
+            self.source,
+            ChatTurn(user_text="What's the next longest ticket worked?", previous_assistant_text=""),
         )
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data[0]["ticket_label"], "ZTST-0091")
 
     def test_time_on_one_ticket_is_not_a_longest_time_question(self) -> None:
         self.assertIsNone(

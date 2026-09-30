@@ -117,20 +117,26 @@ _APOSTROPHE_RE = re.compile(r"['\u2019\u2018\u02bc`´]")
 _URGENT_RE = re.compile(r"\burgent\b", re.IGNORECASE)
 _BILLABLE_RE = re.compile(r"\bbillable\b", re.IGNORECASE)
 _OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
-_LONGEST_TIME_RE = re.compile(
-    r"\btickets?\b.*\b(?:longest|most|highest|greatest)\b.*\b(?:time|hours)\b"
-    r"|\b(?:longest|most|highest|greatest)\b.*\b(?:time|hours)\b.*\btickets?\b",
-    re.IGNORECASE | re.DOTALL,
+_RANK_WORD_RE = re.compile(r"\b(?:longest|most|highest|greatest)\b", re.IGNORECASE)
+_WORK_AMOUNT_WORD_RE = re.compile(r"\b(?:time|hours?|worked|logged)\b", re.IGNORECASE)
+_TICKET_WORD_RE = re.compile(r"\btickets?\b", re.IGNORECASE)
+_ORDINAL_WORD_RE = re.compile(
+    r"\b(?:next|another|second|2nd|third|3rd|fourth|4th|fifth|5th)\b", re.IGNORECASE
 )
-_NEXT_LONGEST_RE = re.compile(
-    r"\b(?:next|another|second|2nd|third|3rd|fourth|4th|fifth|5th)\b.{0,25}\b(?:longest|highest|most)\b"
-    r".{0,25}\bticket",
-    re.IGNORECASE | re.DOTALL,
-)
+
+
+def _is_longest_time_question(text: str) -> bool:
+    """Word-order-independent on purpose: "longest time worked", "most hours logged",
+    and "longest ticket worked" all mean the same thing here, in any order. An earlier,
+    order-dependent regex kept missing real phrasings (each fix just uncovered the next
+    one) because natural language doesn't commit to one fixed word order."""
+    return bool(
+        _RANK_WORD_RE.search(text) and _WORK_AMOUNT_WORD_RE.search(text) and _TICKET_WORD_RE.search(text)
+    )
 # Short, vague continuations ("How about after that?") that only mean anything because
 # the previous reply was specifically a longest-time-worked ranking -- checked separately
-# from _NEXT_LONGEST_RE and length-capped so a longer, unrelated message that happens to
-# contain e.g. "next" isn't misread as a ranking follow-up.
+# from the ordinal+rank-word follow-up check below and length-capped so a longer,
+# unrelated message that happens to contain e.g. "next" isn't misread as a follow-up.
 _VAGUE_CONTINUATION_RE = re.compile(
     r"\b(?:after that|and then|then what|next one|another one|keep going|what'?s next|and the next)\b",
     re.IGNORECASE,
@@ -1477,9 +1483,10 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
     previous_text = (turn.previous_assistant_text if turn else "") or ""
     prior_is_ranking = "longest time worked" in previous_text.lower()
     is_follow_up = prior_is_ranking and bool(
-        _NEXT_LONGEST_RE.search(text) or (len(text) <= 50 and _VAGUE_CONTINUATION_RE.search(text))
+        (_ORDINAL_WORD_RE.search(text) and _RANK_WORD_RE.search(text))
+        or (len(text) <= 50 and _VAGUE_CONTINUATION_RE.search(text))
     )
-    if not is_follow_up and not _LONGEST_TIME_RE.search(text):
+    if not is_follow_up and not _is_longest_time_question(text):
         return None
     exclude_labels = set(_TICKET_LABEL_RE.findall(previous_text)) if is_follow_up else set()
     stage_source = text if (_STAGE_WORD_RE.search(text) or not is_follow_up) else previous_text
