@@ -127,6 +127,14 @@ _NEXT_LONGEST_RE = re.compile(
     r".{0,25}\bticket",
     re.IGNORECASE | re.DOTALL,
 )
+# Short, vague continuations ("How about after that?") that only mean anything because
+# the previous reply was specifically a longest-time-worked ranking -- checked separately
+# from _NEXT_LONGEST_RE and length-capped so a longer, unrelated message that happens to
+# contain e.g. "next" isn't misread as a ranking follow-up.
+_VAGUE_CONTINUATION_RE = re.compile(
+    r"\b(?:after that|and then|then what|next one|another one|keep going|what'?s next|and the next)\b",
+    re.IGNORECASE,
+)
 _STAGE_WORD_RE = re.compile(r"\b(?:open|archived|review)\b", re.IGNORECASE)
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
@@ -1462,7 +1470,10 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
     if not text or _TICKET_LABEL_RE.search(text):
         return None
     previous_text = (turn.previous_assistant_text if turn else "") or ""
-    is_follow_up = bool(_NEXT_LONGEST_RE.search(text)) and "longest time worked" in previous_text.lower()
+    prior_is_ranking = "longest time worked" in previous_text.lower()
+    is_follow_up = prior_is_ranking and bool(
+        _NEXT_LONGEST_RE.search(text) or (len(text) <= 50 and _VAGUE_CONTINUATION_RE.search(text))
+    )
     if not is_follow_up and not _LONGEST_TIME_RE.search(text):
         return None
     exclude_labels = set(_TICKET_LABEL_RE.findall(previous_text)) if is_follow_up else set()

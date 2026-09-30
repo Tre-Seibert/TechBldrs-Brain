@@ -389,6 +389,35 @@ class ToolStubTests(unittest.TestCase):
         self.assertNotIn("WDON-1842", second.reply or "")
         self.assertIn("next-longest", second.reply or "")
 
+    def test_vague_continuation_after_a_ranking_reply_is_a_follow_up(self) -> None:
+        # "How about after that?" says nothing about tickets or hours on its own --
+        # it only means anything because the previous reply was a longest-time-worked
+        # ranking. Chains a third step (excludes both prior winners).
+        first = answer_longest_time_worked(
+            self.source,
+            ChatTurn(user_text="Which open ticket has the longest time worked"),
+        )
+        assert first is not None
+        second = answer_longest_time_worked(
+            self.source,
+            ChatTurn(
+                user_text="How about after that?",
+                previous_assistant_text=first.reply or "",
+            ),
+        )
+        self.assertIsNotNone(second)
+        assert second is not None
+        self.assertTrue(second.ok, second.error)
+        self.assertEqual([row["ticket_label"] for row in second.data], ["ACME-0041"])
+
+    def test_vague_continuation_with_unrelated_prior_reply_is_not_a_match(self) -> None:
+        self.assertIsNone(
+            answer_longest_time_worked(
+                self.source,
+                ChatTurn(user_text="How about after that?", previous_assistant_text="7 open ticket(s) for ts"),
+            )
+        )
+
     def test_next_longest_without_prior_context_is_not_a_match(self) -> None:
         # "next longest" only makes sense as a follow-up to a real prior answer.
         self.assertIsNone(
