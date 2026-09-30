@@ -1459,12 +1459,17 @@ def _longest_time_stage(text: str) -> str:
     return "live"
 
 
+_LONGEST_TIME_PAGE_SIZE = 10
+
+
 def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> ToolResult | None:
     """Bypass the LLM so 'which open ticket has the longest time worked?' cannot ask for a filter.
 
-    Also handles a same-topic follow-up ("what's the next longest?"): it only fires when the
-    previous assistant reply actually named a longest-time-worked ticket, and excludes whatever
-    that reply already named from this answer's ranking.
+    Returns a ranked top-N list up front, not just the single #1 -- most "what's next"
+    follow-ups are already answered by the list, without needing a second question. Still
+    supports a genuine "show me more" follow-up ("next longest", "how about after that")
+    beyond what was already shown; it only fires when the previous assistant reply actually
+    was one of these rankings, and excludes every ticket that reply already named.
     """
     text = (turn.user_text if turn else "").strip()
     if not text or _TICKET_LABEL_RE.search(text):
@@ -1493,14 +1498,14 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
             reply=f"No {stage_label} tickets.",
         )
     excluded_placeholders = sum(1 for row in rows if _is_placeholder_category(row.category))
-    known = [
+    ranked = [
         row
         for row in rows
-        if row.hrs_actual_total is not None
+        if (row.hrs_actual_total or 0.0) > 0
         and not _is_placeholder_category(row.category)
         and row.label not in exclude_labels
     ]
-    if not known:
+    if not ranked:
         return ToolResult(
             tool=LIST_TICKETS,
             source=source.source_name,
@@ -1508,40 +1513,32 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
             row_ids=[row.id for row in rows[:20]],
             reply=(
                 f"Flow returned {len(rows)} {stage_label} ticket(s) without hours logged "
-                "(excluding placeholder tickets" + (" and already-named ones" if exclude_labels else "")
-                + "), so I can't tell which has the longest time worked."
+                "(excluding placeholder tickets" + (" and already-shown ones" if exclude_labels else "")
+                + "), so I can't rank them by time worked."
             ),
         )
-    top_hours = known[0].hrs_actual_total or 0.0
-    if top_hours <= 0:
-        return ToolResult(
-            tool=LIST_TICKETS,
-            source=source.source_name,
-            data=[],
-            row_ids=[],
-            reply=f"No {stage_label} ticket has time worked.",
-        )
-    winners = [row for row in known if abs((row.hrs_actual_total or 0.0) - top_hours) < 0.001]
-    data = [_ticket_payload(row) for row in winners]
-    hours_text = _format_hours(top_hours)
-    labels = " and ".join(row.get("ticket_label") or "?" for row in data)
-    rank_phrase = "the next-longest" if is_follow_up else "the longest"
-    if len(winners) == 1:
-        heading = f"{labels} has {rank_phrase} time worked among {stage_label} tickets: {hours_text}."
-    else:
-        heading = f"{labels} are tied for {rank_phrase} time worked among {stage_label} tickets: {hours_text}."
-    note = None
+    top = ranked[: _LONGEST_TIME_PAGE_SIZE]
+    data = [_ticket_payload(row) for row in top]
+    heading_verb = "Next" if is_follow_up else "Top"
+    heading = f"{heading_verb} {len(top)} {stage_label} ticket(s), ranked by longest time worked:"
+    note_bits = []
     if excluded_placeholders:
-        note = f"Excluded {excluded_placeholders} placeholder ticket(s) (e.g. a catch-all 'Meetings' bucket)."
+        note_bits.append(f"Excluded {excluded_placeholders} placeholder ticket(s) (e.g. a catch-all 'Meetings' bucket).")
+    if len(ranked) > len(top):
+        note_bits.append(
+            f"{len(ranked) - len(top)} more with time logged weren't shown -- "
+            "ask again (e.g. \"what's next\") to see them."
+        )
     if len(rows) >= 500:
-        note = f"{note} Ranked 500 tickets. More may exist." if note else "Ranked 500 tickets. More may exist."
+        note_bits.append("Ranked 500 tickets. More may exist.")
     if source.source_name == "stub":
-        note = "Lab fixtures, not production Flow." + (f" {note}" if note else "")
+        note_bits.insert(0, "Lab fixtures, not production Flow.")
+    note = " ".join(note_bits) or None
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
         data=data,
-        row_ids=[row.id for row in winners],
+        row_ids=[row.id for row in top],
         note=note,
         reply=format_ticket_list(data, heading=heading, note=note),
     )

@@ -339,7 +339,7 @@ class ToolStubTests(unittest.TestCase):
         self.assertTrue(result.data)
         self.assertTrue(all(row["category"] != "9 REVIEW" for row in result.data))
 
-    def test_longest_time_worked_is_the_open_ticket_with_the_most_hours(self) -> None:
+    def test_longest_time_worked_returns_a_ranked_top_list(self) -> None:
         result = answer_longest_time_worked(
             self.source,
             ChatTurn(user_text="Which open ticket has the longest time worked"),
@@ -347,16 +347,20 @@ class ToolStubTests(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertTrue(result.ok, result.error)
-        self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"])
-        self.assertEqual(result.data[0]["hrs_actual_total"], 0.75)
-        self.assertIn("0.75 hours", result.reply or "")
+        # Descending by hrs_actual_total: 42.0, 18.5, 6.25, 0.75, 0.5.
+        self.assertEqual(
+            [row["ticket_label"] for row in result.data],
+            ["ZTST-0091", "ZTST-0092", "ZTST-0093", "WDON-1842", "ACME-0041"],
+        )
+        self.assertEqual(result.data[0]["hrs_actual_total"], 42.0)
+        self.assertIn("Top 5", result.reply or "")
         self.assertIn("Lab fixtures", result.reply or "")
         self.assertNotIn("ACME-0050", result.reply or "")
 
     def test_longest_time_worked_excludes_placeholder_tickets(self) -> None:
-        # Regression: ZTB-0006 is a "Place Holder" catch-all ticket with 559.53 hours --
-        # by far the most of any fixture ticket, but never the intended answer to "which
-        # ticket took the longest," with or without the user saying "not a placeholder."
+        # Regression: ZTST-0006 is a "Place Holder" catch-all ticket with 559.53 hours --
+        # by far the most of any fixture ticket, but never belongs in this ranking,
+        # with or without the user saying "not a placeholder."
         for question in (
             "Which open ticket has the longest time worked",
             "Which open ticket has the longest time worked that isn't a placeholder ticket",
@@ -365,16 +369,17 @@ class ToolStubTests(unittest.TestCase):
             self.assertIsNotNone(result, question)
             assert result is not None
             self.assertTrue(result.ok, result.error)
-            self.assertEqual([row["ticket_label"] for row in result.data], ["WDON-1842"], question)
-            self.assertNotIn("ZTB-0006", result.reply or "", question)
+            self.assertNotIn("ZTST-0006", result.reply or "", question)
             self.assertIn("Excluded 1 placeholder ticket", result.reply or "", question)
 
-    def test_next_longest_excludes_the_previously_named_ticket(self) -> None:
+    def test_next_longest_excludes_everything_already_shown(self) -> None:
         first = answer_longest_time_worked(
             self.source,
             ChatTurn(user_text="Which open ticket has the longest time worked"),
         )
         assert first is not None
+        # All 5 known-hours fixture tickets are already on the first page, so a
+        # follow-up correctly finds nothing left, rather than repeating one of them.
         second = answer_longest_time_worked(
             self.source,
             ChatTurn(
@@ -385,14 +390,15 @@ class ToolStubTests(unittest.TestCase):
         self.assertIsNotNone(second)
         assert second is not None
         self.assertTrue(second.ok, second.error)
-        self.assertEqual([row["ticket_label"] for row in second.data], ["ACME-0041"])
-        self.assertNotIn("WDON-1842", second.reply or "")
-        self.assertIn("next-longest", second.reply or "")
+        # Nothing left to rank -- must say so, not repeat or invent a "next" winner.
+        self.assertIn("can't rank them", second.reply or "")
 
     def test_vague_continuation_after_a_ranking_reply_is_a_follow_up(self) -> None:
         # "How about after that?" says nothing about tickets or hours on its own --
         # it only means anything because the previous reply was a longest-time-worked
-        # ranking. Chains a third step (excludes both prior winners).
+        # ranking. All 5 known-hours fixture tickets are already on the first page,
+        # so this also proves the follow-up path runs (not skipped) and correctly
+        # finds nothing left, rather than repeating one of them.
         first = answer_longest_time_worked(
             self.source,
             ChatTurn(user_text="Which open ticket has the longest time worked"),
@@ -408,7 +414,7 @@ class ToolStubTests(unittest.TestCase):
         self.assertIsNotNone(second)
         assert second is not None
         self.assertTrue(second.ok, second.error)
-        self.assertEqual([row["ticket_label"] for row in second.data], ["ACME-0041"])
+        self.assertIn("can't rank them", second.reply or "")
 
     def test_vague_continuation_with_unrelated_prior_reply_is_not_a_match(self) -> None:
         self.assertIsNone(
