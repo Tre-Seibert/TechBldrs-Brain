@@ -1,4 +1,4 @@
-"""Ask tb-brain questions from the terminal (no Open WebUI needed).
+r"""Ask tb-brain questions from the terminal (no Open WebUI needed).
 
     python scripts/ask.py                      # interactive; remembers the conversation
     python scripts/ask.py "What are my open tickets?"   # one question
@@ -65,7 +65,7 @@ def main() -> int:
         try:
             health = client.get(f"{base}/health").json()
         except httpx.HTTPError as exc:
-            print(f"tb-brain is not reachable at {base}: {exc}\nStart it with .\scripts\run.ps1", file=sys.stderr)
+            print(f"tb-brain is not reachable at {base}: {exc}\nStart it with .\\scripts\\run.ps1", file=sys.stderr)
             return 2
         stub = health.get("flow_source") == "stub"
         email = args.as_email if args.as_email is not None else (STUB_EMAIL if stub else REAL_EMAIL)
