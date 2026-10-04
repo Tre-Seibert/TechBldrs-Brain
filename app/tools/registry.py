@@ -483,7 +483,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Never count or add up rows from other tools yourself. Examples: problem a client has most -> "
         "entity=tickets, group_by=cause, client_code=X. Who contacts us most from X -> entity=tickets, "
         "group_by=requestor, client_code=X. Most open tickets by client -> entity=tickets, group_by=client, "
-        "stage=open. Hours billed to X this month -> entity=time, group_by=client, billable=true, client_code=X, "
+        "stage=open. Longest ticket worked last week/this month -> entity=time, group_by=ticket, metric=hours, "
+        "after/before (the all-time longest uses list_tickets sort=hrs_actual_total instead). "
+        "Hours billed to X this month -> entity=time, group_by=client, billable=true, client_code=X, "
         "after/before. My hours yesterday -> entity=time, group_by=tech, assignee_code=me, after/before.",
         _TICKET_STATS_SCHEMA,
     ),
