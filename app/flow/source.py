@@ -61,6 +61,8 @@ class FlowSource(Protocol):
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
         requestor: str | None = None,
+        needs_response: bool | None = None,
+        unassigned: bool | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -83,12 +85,14 @@ class FlowSource(Protocol):
     def list_mail(
         self,
         *,
-        client_code: str,
+        client_code: str | None = None,
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
         ticket_id: int | None = None,
         ticket_num: str | None = None,
+        received_after: str | None = None,
+        received_before: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]: ...
 
@@ -104,10 +108,31 @@ class FlowSource(Protocol):
         ticket_id: int | None = None,
         client_code: str | None = None,
         tech_user_id: int | None = None,
+        work_after: str | None = None,
+        work_before: str | None = None,
+        billable: bool | None = None,
+        reviewed: bool | None = None,
         sort: str = "start_at",
         order: str = "desc",
         limit: int = 25,
     ) -> list[TimeEntryRecord]: ...
+
+    def ticket_stats(
+        self,
+        *,
+        entity: str = "tickets",
+        group_by: str = "client",
+        metric: str = "count",
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        tech_user_id: int | None = None,
+        stage: str = "all",
+        direction: str = "inbound",
+        billable: bool | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]: ...
 
     def list_machines(
         self,

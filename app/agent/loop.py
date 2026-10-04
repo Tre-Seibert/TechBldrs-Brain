@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import json
 import logging
 import re
@@ -36,6 +38,7 @@ from app.tools.registry import (
     LIST_TIME_ENTRIES,
     SEARCH_CONTACT,
     SEARCH_KNOWLEDGE,
+    TICKET_STATS,
     TOOL_NAMES,
 )
 
@@ -47,6 +50,7 @@ _RELAY_TOOLS = {
     SEARCH_CONTACT,
     SEARCH_KNOWLEDGE,
     LIST_TIME_ENTRIES,
+    TICKET_STATS,
     LIST_MACHINES,
     GET_TICKET_DETAIL,
     GET_MAIL_DETAIL,
@@ -88,16 +92,23 @@ _ROUTERS = (
 assert tuple(name for name, _ in _ROUTERS) == ROUTER_NAMES
 
 
-def direct_answer(source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()) -> ToolResult | None:
-    """Pattern-matched answer that skips the LLM, or None to let the model handle the question."""
+def _direct_answer_named(
+    source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()
+) -> tuple[str, ToolResult] | None:
     for name, router in _ROUTERS:
         if name in disabled:
             continue
         result = router(source, turn)
         if result is not None:
             _log.info("router answered router=%s", name, extra={"event": "agent.router", "router": name})
-            return result
+            return name, result
     return None
+
+
+def direct_answer(source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()) -> ToolResult | None:
+    """Pattern-matched answer that skips the LLM, or None to let the model handle the question."""
+    hit = _direct_answer_named(source, turn, disabled)
+    return hit[1] if hit else None
 
 
 def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
@@ -168,15 +179,20 @@ def _signed_in_line(source: FlowSource) -> str:
     return signed_in_prompt_line(name, code, email)
 
 
+def _today_line() -> str:
+    now = datetime.now()
+    return f"Today is {now.strftime('%A %Y-%m-%d')} (server local time). Use it for 'today', 'yesterday', 'this month', 'last week'."
+
+
 def _ensure_system(messages: list[dict[str, Any]], *, source: FlowSource) -> list[dict[str, Any]]:
-    prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source)
+    prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
         content = str(first.get("content") or "")
         if "tb-brain" not in content:
             first["content"] = prompt + "\n\n" + content
         else:
-            first["content"] = content.rstrip() + "\n- " + _signed_in_line(source)
+            first["content"] = content.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
         return [first, *messages[1:]]
     return [{"role": "system", "content": prompt}, *messages]
 
@@ -306,12 +322,16 @@ async def run_tool_loop(
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
-    direct = direct_answer(source, turn, settings.disabled_router_set)
-    if direct is not None:
-        return _assistant_payload(
+    hit = _direct_answer_named(source, turn, settings.disabled_router_set)
+    if hit is not None:
+        router_name, direct = hit
+        payload = _assistant_payload(
             direct.reply or direct.error or _NO_TOOL_ENGLISH,
             settings.llm_model.strip() or "tb-brain",
         )
+        payload["x_tb_brain"] = {"router": router_name, "tool_calls": []}
+        return payload
+    trace: list[dict[str, Any]] = []
     chat = _ensure_system(list(messages), source=source)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
@@ -350,7 +370,9 @@ async def run_tool_loop(
                     blocked = reply_without_invented_tickets(str(message.get("content") or ""), relayed)
                     if blocked:
                         payload = _set_assistant_content(payload, blocked)
-                return _apply_english_reply(payload, relayed)
+                payload = _apply_english_reply(payload, relayed)
+                payload["x_tb_brain"] = {"router": None, "tool_calls": trace}
+                return payload
             chat.append(message)
             _log.info(
                 "agent tool_calls iteration=%s count=%s",
@@ -372,6 +394,7 @@ async def run_tool_loop(
                     turn=turn,
                     knowledge=knowledge,
                 )
+                trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in _RELAY_TOOLS:
                     relayed.append(result.reply)
                 chat.append(

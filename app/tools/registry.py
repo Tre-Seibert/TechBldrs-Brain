@@ -17,6 +17,7 @@ FIND_SIMILAR_TICKETS = "find_similar_tickets"
 MERGE_TICKETS = "merge_tickets"
 LIST_MAIL = "list_mail"
 LIST_TIME_ENTRIES = "list_time_entries"
+TICKET_STATS = "ticket_stats"
 LIST_MACHINES = "list_machines"
 GET_TICKET_DETAIL = "get_ticket_detail"
 GET_MAIL_DETAIL = "get_mail_detail"
@@ -32,6 +33,7 @@ TOOL_NAMES = (
     MERGE_TICKETS,
     LIST_MAIL,
     LIST_TIME_ENTRIES,
+    TICKET_STATS,
     LIST_MACHINES,
     GET_TICKET_DETAIL,
     GET_MAIL_DETAIL,
@@ -82,7 +84,21 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
         },
         "client_code": {
             "type": "string",
-            "description": "Flow client_code (e.g. ZINT).",
+            "description": (
+                "Flow client_code (e.g. ZINT). Several codes comma-separated (ZTB,ZINT) are searched together. "
+                "'internal' means all internal clients (ZTB, ZINT, ZAWE, ZFRIENDS)."
+            ),
+        },
+        "needs_response": {
+            "type": "boolean",
+            "description": (
+                "true = the newest mail on the ticket is inbound (the client wrote last and we have not replied). "
+                "'What do I need to respond to?' -> assignee_code=me, stage=open, needs_response=true."
+            ),
+        },
+        "unassigned": {
+            "type": "boolean",
+            "description": "true = tickets with no assignee.",
         },
         "q": {
             "type": "string",
@@ -243,7 +259,15 @@ _LIST_MAIL_SCHEMA: dict[str, Any] = {
     "properties": {
         "client_code": {
             "type": "string",
-            "description": "Flow client_code whose ticket-attached mail to list.",
+            "description": "Flow client_code whose ticket-attached mail to list. Optional when contact_id, email, or a date range is given.",
+        },
+        "received_after": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD). Mail received on or after this date. 'Today' = today's date.",
+        },
+        "received_before": {
+            "type": "string",
+            "description": "ISO date (YYYY-MM-DD). Mail received before this date (exclusive).",
         },
         "direction": {
             "type": "string",
@@ -263,7 +287,6 @@ _LIST_MAIL_SCHEMA: dict[str, Any] = {
         },
         "limit": {"type": "integer", "description": "Max rows (default 25, max 100)."},
     },
-    "required": ["client_code"],
 }
 
 
@@ -279,8 +302,55 @@ _LIST_TIME_ENTRIES_SCHEMA: dict[str, Any] = {
                 "or 'me' for the signed-in technician."
             ),
         },
+        "work_after": {"type": "string", "description": "ISO date (YYYY-MM-DD). Work on or after this date."},
+        "work_before": {"type": "string", "description": "ISO date (YYYY-MM-DD). Work before this date (exclusive)."},
+        "billable": {"type": "boolean", "description": "true = only billable entries."},
+        "reviewed": {"type": "boolean", "description": "false = entries not yet reviewed."},
         "limit": {"type": "integer", "description": "Max rows (default 25, max 100)."},
     },
+}
+
+_TICKET_STATS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entity": {
+            "type": "string",
+            "enum": ["tickets", "time", "mail"],
+            "description": "What to count: tickets (live + archived), time entries (hours), or inbound mail.",
+        },
+        "group_by": {
+            "type": "string",
+            "description": (
+                "tickets: client, cause, reason, category, assignee, status, requestor, topic. "
+                "time: client, tech, ticket, billable, reviewed. mail: sender, client, ticket."
+            ),
+        },
+        "metric": {
+            "type": "string",
+            "enum": ["count", "hours"],
+            "description": "Rank by row count or by hours (tickets: hours worked; time: minutes logged).",
+        },
+        "client_code": {"type": "string", "description": "Optional Flow client_code (e.g. BUCK)."},
+        "assignee_code": {
+            "type": "string",
+            "description": "Optional technician code or 'me' (tickets, or time entries by that tech).",
+        },
+        "stage": {
+            "type": "string",
+            "enum": ["open", "review", "live", "archived", "all"],
+            "description": "tickets only. Default all (open + review + archived).",
+        },
+        "direction": {
+            "type": "string",
+            "enum": ["inbound", "outbound", "all"],
+            "description": "mail only. Default inbound (client to us).",
+        },
+        "billable": {"type": "boolean", "description": "time only: true = billable entries only."},
+        "after": {"type": "string", "description": "ISO date (YYYY-MM-DD), inclusive. Tickets: created. Time: worked. Mail: received."},
+        "before": {"type": "string", "description": "ISO date (YYYY-MM-DD), exclusive."},
+        "limit": {"type": "integer", "description": "How many top groups to return (default 10, max 100)."},
+    },
+    "required": ["entity", "group_by"],
 }
 
 _LIST_MACHINES_SCHEMA: dict[str, Any] = {
@@ -394,10 +464,21 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         LIST_TIME_ENTRIES,
-        "List billable/gratis time entries. Needs ticket_id or client_code (at least one) — "
-        "assignee_code alone is not enough. 'How much time on ticket X' -> ticket_id. "
-        "'Time logged for client Y (by tech Z)' -> client_code (+ assignee_code).",
+        "List individual time entries. Needs ticket_id, client_code, assignee_code, or a work_after/work_before "
+        "range. 'What did I work on last week' -> assignee_code=me + dates. 'Time entries not reviewed' -> "
+        "reviewed=false. For totals ('how many hours') use ticket_stats instead of adding rows yourself.",
         _LIST_TIME_ENTRIES_SCHEMA,
+    ),
+    _fn(
+        TICKET_STATS,
+        "Counts and hour totals grouped by something, computed by Flow. Use for 'how many', 'how many hours', "
+        "'which client/person/cause has the most', 'who contacts us most', 'what problem does X face most'. "
+        "Never count or add up rows from other tools yourself. Examples: problem a client has most -> "
+        "entity=tickets, group_by=cause, client_code=X. Who contacts us most from X -> entity=tickets, "
+        "group_by=requestor, client_code=X. Most open tickets by client -> entity=tickets, group_by=client, "
+        "stage=open. Hours billed to X this month -> entity=time, group_by=client, billable=true, client_code=X, "
+        "after/before. My hours yesterday -> entity=time, group_by=tech, assignee_code=me, after/before.",
+        _TICKET_STATS_SCHEMA,
     ),
     _fn(
         LIST_MACHINES,

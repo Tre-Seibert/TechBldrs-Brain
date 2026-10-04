@@ -23,6 +23,7 @@ EXPECTED_TOOLS = [
     "merge_tickets",
     "list_mail",
     "list_time_entries",
+    "ticket_stats",
     "list_machines",
     "get_ticket_detail",
     "get_mail_detail",
@@ -69,6 +70,14 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ignored, ["update_task"])
         names = [tool["function"]["name"] for tool in openai_tools()]
         self.assertEqual(names, EXPECTED_TOOLS)
+
+    def test_router_answer_reports_which_router_in_x_tb_brain(self) -> None:
+        response = self.client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Which open ticket has the longest time worked"}]},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["x_tb_brain"], {"router": "longest_time", "tool_calls": []})
 
     def test_models_advertises_tb_brain(self) -> None:
         response = self.client.get("/v1/models")
@@ -126,7 +135,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(body["row_ids"], [70001])
 
     def test_tool_list_time_entries_without_scope_is_422(self) -> None:
-        response = self.client.post("/tools/list_time_entries", json={"assignee_code": "ts"})
+        response = self.client.post("/tools/list_time_entries", json={"limit": 5})
         self.assertEqual(response.status_code, 422)
 
     def test_tool_list_machines(self) -> None:
@@ -177,6 +186,7 @@ class ApiTests(unittest.TestCase):
         must_be_relayed = {
             "search_knowledge",
             "list_time_entries",
+            "ticket_stats",
             "list_machines",
             "get_ticket_detail",
             "get_mail_detail",

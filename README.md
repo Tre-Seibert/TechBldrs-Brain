@@ -35,7 +35,8 @@ WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outboun
 app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
 app/tools/           search_contact, search_technician, list_tickets, latest_ticket,
                      find_similar_tickets, merge_tickets (gated write), list_mail,
-                     list_time_entries, list_machines, get_ticket_detail,
+                     list_time_entries, ticket_stats (counts/hours grouped by Flow, never summed by the
+                     model), list_machines, get_ticket_detail,
                      get_mail_detail, get_client_detail, search_knowledge
 app/flow/            Flow-shaped schemas + stub fixtures + HTTP client (FLOW_MODE=http)
 app/knowledge/       Qdrant + local-embedding client for search_knowledge (QDRANT_URL)
@@ -140,6 +141,19 @@ docker compose up -d
 ```
 
 Open `http://127.0.0.1:3000`. Details in [docs/open-webui.md](docs/open-webui.md).
+
+### Eval
+
+```powershell
+python scripts/eval.py run --label q4-routers-on                       # router regression set (28)
+python scripts/eval.py run --questions eval/flow_cases.json --label flow  # real tech questions (48)
+python scripts/eval.py compare eval/results/A.json eval/results/B.json
+```
+
+`eval/flow_cases.json` scores the tool calls the model made (the server reports them in the
+response's `x_tb_brain` block), not just the reply text. Format is in the `scripts/eval.py` docstring.
+Run it with `FLOW_MODE=stub`; `--as-email` picks who "me" is (default Tre, `ts`).
+`eval/flow_questions_draft.md` is the human-readable source for those cases.
 
 ### 4) Knowledge search (optional)
 

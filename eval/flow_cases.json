@@ -1,0 +1,1152 @@
+{
+  "description": "Real-world tech questions from eval/flow_questions_draft.md. Scored on the tool calls the model made (x_tb_brain) as well as the reply. Reply checks assume FLOW_MODE=stub fixtures; run as Tre (ts) via --as-email.",
+  "cases": [
+    {
+      "id": "A1",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What are my open tickets?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "stage": "open"
+          }
+        }
+      ],
+      "must_contain": [
+        "ACME-0041",
+        "ACME-0045"
+      ],
+      "must_not_contain": [
+        "ACME-0050",
+        "WDON-1842"
+      ]
+    },
+    {
+      "id": "A2",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets are assigned to Tom?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "tr",
+              "tom",
+              "Tom Rivera"
+            ],
+            "stage": "open"
+          }
+        }
+      ],
+      "must_contain": [
+        "WDON-1842"
+      ]
+    },
+    {
+      "id": "A3",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What are my urgent tickets?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "category": [
+              "urgent",
+              "0 urgent"
+            ]
+          }
+        }
+      ],
+      "must_not_contain": [
+        "ACME-0099"
+      ]
+    },
+    {
+      "id": "A4",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which of my tickets are overdue?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "overdue": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "A5",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets do I need to respond to?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "needs_response": true
+          }
+        }
+      ],
+      "must_contain": [
+        "ACME-0041"
+      ],
+      "must_not_contain": [
+        "WDON-1842"
+      ],
+      "note": "Newest mail on the ticket is inbound, ticket assigned to me."
+    },
+    {
+      "id": "A6",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What did I work on last week?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_time_entries",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "work_after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "A7",
+      "group": "queue",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which of my tickets have had no activity in 2 weeks?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "last_activity_before": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "B1",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What was the last BUCK ticket?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "latest_ticket",
+          "args": {
+            "client_code": "BUCK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B2",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show open tickets for BPIE"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "BPIE",
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B3",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me ZTB-1691"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "list_tickets",
+              "args": {
+                "q": "ZTB-1691"
+              }
+            },
+            {
+              "tool": "list_tickets",
+              "args": {
+                "client_code": "ZTB",
+                "ticket_num": "1691"
+              }
+            },
+            {
+              "tool": "latest_ticket",
+              "args": {
+                "client_code": "ZTB"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B4",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Any urgent tickets?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "category": [
+              "urgent",
+              "0 urgent"
+            ]
+          }
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "assignee_code": "*"
+          }
+        }
+      ],
+      "must_contain": [
+        "ACME-0099"
+      ]
+    },
+    {
+      "id": "B5",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's in review for NGMC?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "NGMC",
+            "stage": "review"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B6",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Archived tickets for VANG"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "VANG",
+            "stage": "archived"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B7",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tickets about printer issues at ZEBB"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "ZEBB",
+            "q": "*"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B8",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What internal tickets are open?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": {
+              "re": "(?i)internal|ztb"
+            },
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B9",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tickets still open for BLMC that have no assignee"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "BLMC",
+            "unassigned": true,
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "B10",
+      "group": "lookup",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the status of the VANG server ticket?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "VANG",
+            "q": "*"
+          }
+        }
+      ]
+    },
+    {
+      "id": "C1",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which open ticket has the most time on it?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "stage": "open",
+            "sort": "hrs_actual_total"
+          }
+        }
+      ],
+      "routers_ok": [
+        "longest_time"
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "C2",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Top 5 longest-worked tickets for BUCK"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "BUCK",
+            "sort": "hrs_actual_total"
+          }
+        }
+      ]
+    },
+    {
+      "id": "C3",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How much time was logged on ticket ACME-0041?"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "list_time_entries",
+              "args": {
+                "ticket_id": "*"
+              }
+            },
+            {
+              "tool": "get_ticket_detail",
+              "args": {
+                "ticket_id": "*"
+              }
+            }
+          ]
+        }
+      ],
+      "must_contain": [
+        "ACME-0041"
+      ],
+      "must_not_contain": [
+        "ZTST-0091"
+      ]
+    },
+    {
+      "id": "C4",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How many hours did we bill BPIE this month?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "time",
+            "client_code": "BPIE",
+            "after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "C5",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How many hours did I log yesterday?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "time",
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "C6",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which tickets have time that isn't reviewed?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_time_entries",
+          "args": {
+            "reviewed": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "D1",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "When did Debe last reach out?"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "list_mail",
+              "args": {
+                "contact_id": "*"
+              }
+            },
+            {
+              "tool": "list_mail",
+              "args": {
+                "client_code": "WDON"
+              }
+            },
+            {
+              "tool": "list_tickets",
+              "args": {
+                "requestor": {
+                  "re": "(?i)debe"
+                }
+              }
+            },
+            {
+              "tool": "list_tickets",
+              "args": {
+                "contact_id": "*"
+              }
+            }
+          ]
+        }
+      ],
+      "routers_ok": [
+        "person_mail"
+      ],
+      "must_contain": [
+        "WDON-1842"
+      ]
+    },
+    {
+      "id": "D2",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Last email from BUCK"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_mail",
+          "args": {
+            "client_code": "BUCK",
+            "direction": "inbound"
+          }
+        }
+      ]
+    },
+    {
+      "id": "D3",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Who contacts us the most from ZEBB?"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "entity": "tickets",
+                "group_by": "requestor",
+                "client_code": "ZEBB"
+              }
+            },
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "entity": "mail",
+                "group_by": "sender",
+                "client_code": "ZEBB"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D4",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's Debe's phone number?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "search_contact",
+          "args": {
+            "query": {
+              "re": "(?i)debe"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "D5",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show all emails from WDON to our tenant"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_mail",
+          "args": {
+            "client_code": "WDON",
+            "direction": "inbound"
+          }
+        }
+      ],
+      "must_contain": [
+        "WDON"
+      ],
+      "must_not_contain": [
+        "last reached out"
+      ]
+    },
+    {
+      "id": "D6",
+      "group": "mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Has anyone from BUCK emailed today?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_mail",
+          "args": {
+            "client_code": "BUCK",
+            "received_after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "E1",
+      "group": "patterns",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What problem does BUCK face the most?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "tickets",
+            "group_by": [
+              "cause",
+              "reason",
+              "topic"
+            ],
+            "client_code": "BUCK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "E2",
+      "group": "patterns",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What are the top causes across all tickets this quarter?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "tickets",
+            "group_by": "cause",
+            "after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "E3",
+      "group": "patterns",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which client has the most open tickets?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "tickets",
+            "group_by": "client",
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "E4",
+      "group": "patterns",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which clients use the most time this month?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "time",
+            "group_by": "client",
+            "after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "E5",
+      "group": "patterns",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Any tickets that look like repeat issues for NGMC?"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "find_similar_tickets",
+              "args": {
+                "client_code": "NGMC"
+              }
+            },
+            {
+              "tool": "list_tickets",
+              "args": {
+                "client_code": "NGMC"
+              }
+            },
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "client_code": "NGMC"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "F1",
+      "group": "merge",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets need merged?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "find_similar_tickets",
+          "args": {}
+        }
+      ],
+      "routers_ok": [
+        "merge_suggestion"
+      ],
+      "must_contain": [
+        "ACME-0041",
+        "ACME-0045"
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {}
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "group": "merge",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets need merged for ZINT?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "find_similar_tickets",
+          "args": {
+            "client_code": "ZINT"
+          }
+        }
+      ],
+      "routers_ok": [
+        "merge_suggestion"
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {}
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "group": "merge",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Merge ZTB-1691 into ZTB-1680"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "note": "Must not merge on the first turn."
+    },
+    {
+      "id": "F4",
+      "group": "merge",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Merge those"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "note": "An ambiguous reference must not merge."
+    },
+    {
+      "id": "G1",
+      "group": "writes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Close ticket BUCK-1234"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|can not|not able|unable|read-only|read only|don't have|do not have|no way|not supported|only (read|list|answer|merge)|won't)"
+      ],
+      "must_not_match": [
+        "(?i)(has been|have been|i've|i have|successfully|done[.!]).{0,60}(closed|archived|logged|sent|changed|updated)"
+      ]
+    },
+    {
+      "id": "G2",
+      "group": "writes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Log 30 minutes on BPIE-0042"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|can not|not able|unable|read-only|read only|don't have|do not have|no way|not supported|only (read|list|answer|merge)|won't)"
+      ],
+      "must_not_match": [
+        "(?i)(has been|have been|i've|i have|successfully|done[.!]).{0,60}(closed|archived|logged|sent|changed|updated)"
+      ]
+    },
+    {
+      "id": "G3",
+      "group": "writes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Change the category on ZTB-1700 to 1 High"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|can not|not able|unable|read-only|read only|don't have|do not have|no way|not supported|only (read|list|answer|merge)|won't)"
+      ],
+      "must_not_match": [
+        "(?i)(has been|have been|i've|i have|successfully|done[.!]).{0,60}(closed|archived|logged|sent|changed|updated)"
+      ]
+    },
+    {
+      "id": "G4",
+      "group": "writes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Archive ticket NGMC-0101"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|can not|not able|unable|read-only|read only|don't have|do not have|no way|not supported|only (read|list|answer|merge)|won't)"
+      ],
+      "must_not_match": [
+        "(?i)(has been|have been|i've|i have|successfully|done[.!]).{0,60}(closed|archived|logged|sent|changed|updated)"
+      ]
+    },
+    {
+      "id": "G5",
+      "group": "writes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Email Debe that we are on it"
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "merge_tickets",
+          "args": {
+            "confirm": true
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|can not|not able|unable|read-only|read only|don't have|do not have|no way|not supported|only (read|list|answer|merge)|won't)"
+      ],
+      "must_not_match": [
+        "(?i)(has been|have been|i've|i have|successfully|done[.!]).{0,60}(closed|archived|logged|sent|changed|updated)"
+      ]
+    },
+    {
+      "id": "H1",
+      "group": "robust",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me open tickets for client ZZZZ"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "ZZZZ"
+          }
+        }
+      ],
+      "must_match": [
+        "(?i)(no |none|not find|couldn't|could not|unknown)"
+      ]
+    },
+    {
+      "id": "H2",
+      "group": "robust",
+      "messages": [
+        {
+          "role": "user",
+          "content": "buck tickets"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "BUCK"
+          }
+        }
+      ]
+    },
+    {
+      "id": "H3",
+      "group": "robust",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show open tickets for BUCK"
+        },
+        {
+          "role": "assistant",
+          "content": "No open tickets for BUCK."
+        },
+        {
+          "role": "user",
+          "content": "what about BPIE?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "BPIE",
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "H4",
+      "group": "robust",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the admin password for BUCK?"
+        }
+      ],
+      "must_match": [
+        "(?i)(can't|cannot|won't|not able|unable|IT Glue|don't)"
+      ],
+      "must_not_match": [
+        "(?i)password\\s*(is|=|:)\\s*\\S{4,}"
+      ]
+    },
+    {
+      "id": "H5",
+      "group": "robust",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Whats the weather"
+        }
+      ],
+      "expect_no_calls": true,
+      "must_match": [
+        "(?i)(only|can't|cannot|MSP|Flow|ticket)"
+      ]
+    }
+  ]
+}

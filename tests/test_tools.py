@@ -21,6 +21,7 @@ from app.tools.handlers import (
     MergeTicketsArgs,
     SearchContactArgs,
     SearchTechnicianArgs,
+    TicketStatsArgs,
     _asked_latest_for_person,
     _contact_name_score,
     _damerau,
@@ -43,6 +44,7 @@ from app.tools.handlers import (
     merge_tickets,
     search_contact,
     search_technician,
+    ticket_stats,
 )
 
 _PLAN = "Keep ACME-0041 and absorb ACME-0045? Reply 'merge ACME-0045 into ACME-0041' to confirm."
@@ -736,7 +738,10 @@ class ToolStubTests(unittest.TestCase):
 
     def test_list_time_entries_requires_ticket_or_client(self) -> None:
         with self.assertRaises(ValueError):
-            ListTimeEntriesArgs(assignee_code="ts")
+            ListTimeEntriesArgs(limit=5)
+        # a technician alone is a scope now (resolved to tech_user_id), as is a date range
+        ListTimeEntriesArgs(assignee_code="ts")
+        ListTimeEntriesArgs(work_after="2026-09-01")
 
     def test_list_machines_for_client(self) -> None:
         result = list_machines(self.source, ListMachinesArgs(client_code="WDON"))
@@ -878,3 +883,114 @@ class MergeGateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewCapabilityTests(unittest.TestCase):
+    """Tools the model needs for real questions: sort-only lists, needs-response, stats, dates."""
+
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def _labels(self, result) -> list[str]:
+        self.assertTrue(result.ok, result.error)
+        return [row["ticket_label"] for row in result.data]
+
+    def test_sort_only_list_is_valid_and_defaults_to_open(self) -> None:
+        args = ListTicketsArgs(sort="hrs_actual_total", order="desc", limit=1)
+        result = list_tickets(self.source, args)
+        self.assertEqual(self._labels(result), ["ZTST-0091"])
+
+    def test_needs_response_is_newest_mail_inbound(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(needs_response=True, stage="open"))
+        labels = self._labels(result)
+        self.assertIn("WDON-1842", labels)  # newest mail is Debe's inbound
+        self.assertIn("ACME-0041", labels)
+        self.assertNotIn("ACME-0099", labels)  # no mail at all
+
+    def test_unassigned_filter(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(unassigned=True, client_code="ZTST", stage="open"))
+        self.assertEqual(
+            sorted(self._labels(result)), ["ZTST-0006", "ZTST-0091", "ZTST-0092", "ZTST-0093"]
+        )
+
+    def test_comma_codes_and_internal_alias_fan_out(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(client_code="WDON,ACME", stage="open", limit=100))
+        labels = self._labels(result)
+        self.assertIn("WDON-1842", labels)
+        self.assertIn("ACME-0041", labels)
+        self.assertEqual(len(labels), len(set(labels)))
+        internal = list_tickets(self.source, ListTicketsArgs(client_code="internal", stage="open"))
+        self.assertTrue(internal.ok, internal.error)
+        self.assertEqual(internal.data, [])
+
+    def test_list_mail_by_contact_without_client_code(self) -> None:
+        debe = self.source.search_contact(query="Debe")[0]
+        result = list_mail(self.source, ListMailArgs(contact_id=debe.id))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual({row["ticket_label"] for row in result.data}, {"WDON-1842"})
+
+    def test_list_mail_date_range_without_client_code(self) -> None:
+        result = list_mail(self.source, ListMailArgs(received_after="2026-09-17", received_before="2026-09-18"))
+        self.assertEqual({row["id"] for row in result.data}, {50001})
+
+    def test_list_mail_needs_some_scope(self) -> None:
+        with self.assertRaises(ValueError):
+            ListMailArgs()
+
+    def test_list_time_entries_by_tech_and_dates(self) -> None:
+        result = list_time_entries(
+            self.source,
+            ListTimeEntriesArgs(assignee_code="ts", work_after="2026-09-19", work_before="2026-09-20"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["id"] for row in result.data], [70002])
+
+    def test_list_time_entries_unreviewed(self) -> None:
+        result = list_time_entries(self.source, ListTimeEntriesArgs(reviewed=False))
+        self.assertEqual([row["id"] for row in result.data], [70002])
+
+    def test_stats_tickets_by_requestor_for_client(self) -> None:
+        result = ticket_stats(
+            self.source, TicketStatsArgs(entity="tickets", group_by="requestor", client_code="ACME")
+        )
+        self.assertTrue(result.ok, result.error)
+        top = result.data["rows"][0]
+        self.assertEqual((top["key"], top["count"]), ("Riley Chen", 5))  # includes archived ACME-0010
+        self.assertIn("Riley Chen", result.reply)
+
+    def test_stats_time_by_client_in_range_reports_hours(self) -> None:
+        result = ticket_stats(
+            self.source,
+            TicketStatsArgs(entity="time", group_by="client", billable=True, after="2026-09-01", before="2026-10-01"),
+        )
+        self.assertTrue(result.ok, result.error)
+        by_key = {row["key"]: row for row in result.data["rows"]}
+        self.assertEqual(by_key["WDON"]["billed_minutes"], 45)
+        self.assertEqual(by_key["ACME"]["minutes"], 20)
+        self.assertIn("0h 45m billed", result.reply)
+
+    def test_stats_time_by_tech_resolves_me(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            result = ticket_stats(
+                self.source, TicketStatsArgs(entity="time", group_by="tech", assignee_code="me")
+            )
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["key"] for row in result.data["rows"]], ["Tre Seibert"])
+
+    def test_stats_mail_by_sender(self) -> None:
+        result = ticket_stats(self.source, TicketStatsArgs(entity="mail", group_by="sender", client_code="WDON"))
+        by_key = {row["key"]: row["count"] for row in result.data["rows"]}
+        self.assertEqual(by_key["Debe Hernandez"], 2)
+
+    def test_stats_rejects_unknown_group(self) -> None:
+        result = ticket_stats(self.source, TicketStatsArgs(entity="tickets", group_by="bogus"))
+        self.assertFalse(result.ok)
+        self.assertIn("group_by", result.error)
+
+    def test_stats_empty_result_says_so(self) -> None:
+        result = ticket_stats(self.source, TicketStatsArgs(entity="tickets", group_by="cause", client_code="NOPE"))
+        self.assertTrue(result.ok)
+        self.assertIn("No tickets found", result.reply)

@@ -37,6 +37,7 @@ from app.tools.registry import (
     SEARCH_CONTACT,
     SEARCH_KNOWLEDGE,
     SEARCH_TECHNICIAN,
+    TICKET_STATS,
     TOOL_NAMES,
 )
 
@@ -161,6 +162,7 @@ def _longest_time_page_size(text: str, default: int) -> int:
     return default
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
+INTERNAL_CLIENT_CODES = ("ZTB", "ZINT", "ZAWE", "ZFRIENDS")
 _INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
 _CATEGORY_ALIASES = {
     "urgent": "0 Urgent",
@@ -248,6 +250,8 @@ class ListTicketsArgs(BaseModel):
     last_activity_before: str | None = None
     last_activity_after: str | None = None
     requestor: str | None = None
+    needs_response: bool | None = None
+    unassigned: bool | None = None
     stage: str | None = None
     sort: str | None = None
     order: str | None = None
@@ -281,7 +285,9 @@ class ListTicketsArgs(BaseModel):
         if any(
             value is not None
             for value in (self.contact_id, self.complete, self.project)
-        ) or self.overdue:
+        ) or self.overdue or self.needs_response or self.unassigned:
+            return self
+        if (self.sort or "").strip():
             return self
         if (self.stage or "").strip().lower() in _LIST_STAGES:
             return self
@@ -308,24 +314,62 @@ class MergeTicketsArgs(BaseModel):
 
 
 class ListMailArgs(BaseModel):
-    client_code: str
+    client_code: str | None = None
     direction: str = "inbound"
     email: str | None = None
     contact_id: int | None = None
+    received_after: str | None = None
+    received_before: str | None = None
     limit: int = 25
+
+    @model_validator(mode="after")
+    def _need_scope(self) -> ListMailArgs:
+        if any(
+            (value or "").strip()
+            for value in (self.client_code, self.email, self.received_after, self.received_before)
+        ) or self.contact_id is not None:
+            return self
+        raise ValueError("client_code, email, contact_id, or a received_after/received_before range is required")
 
 
 class ListTimeEntriesArgs(BaseModel):
     ticket_id: int | None = None
     client_code: str | None = None
     assignee_code: str | None = None
+    work_after: str | None = None
+    work_before: str | None = None
+    billable: bool | None = None
+    reviewed: bool | None = None
     limit: int = 25
 
     @model_validator(mode="after")
     def _need_scope(self) -> ListTimeEntriesArgs:
-        if self.ticket_id is None and not (self.client_code or "").strip():
-            raise ValueError("ticket_id or client_code is required")
+        if (
+            self.ticket_id is None
+            and self.reviewed is None
+            and not any(
+                (value or "").strip()
+                for value in (self.client_code, self.assignee_code, self.work_after, self.work_before)
+            )
+        ):
+            raise ValueError(
+                "ticket_id, client_code, assignee_code, a work_after/work_before range, or reviewed is required"
+            )
         return self
+
+
+class TicketStatsArgs(BaseModel):
+    entity: str = "tickets"
+    group_by: str = "client"
+    metric: str = "count"
+    client_code: str | None = None
+    assignee_code: str | None = None
+    stage: str = "all"
+    direction: str = "inbound"
+    billable: bool | None = None
+    after: str | None = None
+    before: str | None = None
+    limit: int = 10
 
 
 class ListMachinesArgs(BaseModel):
@@ -1157,11 +1201,15 @@ def _default_list_stage(
         or (args.cause or "").strip()
         or args.contact_id is not None
         or (args.requestor or "").strip()
+        or args.needs_response
+        or args.unassigned
     )
     scoped = column_scope and not any(
         (value or "").strip() for value in (args.client_code, query, args.ticket_num)
     )
     if scoped and wanted not in ("review", "archived", "all"):
+        return "open"
+    if not wanted and (args.sort or "").strip() == "hrs_actual_total":
         return "open"
     return wanted or "live"
 
@@ -1173,6 +1221,9 @@ def list_tickets(
     *,
     force_text_query: bool = False,
 ) -> ToolResult:
+    codes = _client_codes(args.client_code)
+    if len(codes) > 1:
+        return _list_tickets_multi(source, args, turn, codes)
     raw_assignee = args.assignee_code
     raw_q = (args.q or "").strip() or None
     if not (raw_assignee or "").strip() and _is_self_token(raw_q):
@@ -1208,6 +1259,8 @@ def list_tickets(
         or (args.cause or "").strip()
         or args.contact_id is not None
         or (args.requestor or "").strip()
+        or args.needs_response
+        or args.unassigned
     )
     if column_asked and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
         raw_assignee = None
@@ -1299,6 +1352,8 @@ def list_tickets(
         last_activity_before=(args.last_activity_before or "").strip() or None,
         last_activity_after=(args.last_activity_after or "").strip() or None,
         requestor=requestor,
+        needs_response=args.needs_response,
+        unassigned=args.unassigned,
         stage=stage,
         sort=resolved_sort,
         order=(args.order or "desc").strip() or "desc",
@@ -1359,6 +1414,45 @@ def list_tickets(
         client_code=scoped,
         note=note,
         reply=format_ticket_list(data, heading=heading, note=note if rows else None),
+    )
+
+
+def _client_codes(raw: str | None) -> list[str]:
+    """'ZTB,ZINT' or 'internal' -> codes. A single code (or none) comes back as 0-1 items."""
+    codes: list[str] = []
+    for part in re.split(r"[,\s]+", (raw or "").strip().upper()):
+        if not part:
+            continue
+        for code in INTERNAL_CLIENT_CODES if part == "INTERNAL" else (part,):
+            if code not in codes:
+                codes.append(code)
+    return codes
+
+
+def _list_tickets_multi(
+    source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None, codes: list[str]
+) -> ToolResult:
+    results = [
+        list_tickets(source, args.model_copy(update={"client_code": code}), turn) for code in codes
+    ]
+    failed = next((r for r in results if not r.ok), None)
+    if failed is not None:
+        return failed
+    data = [row for r in results for row in (r.data or [])]
+    data.sort(key=lambda row: (row.get("last_activity_at") or "", row.get("id") or 0), reverse=True)
+    data = data[: max(args.limit, 1)]
+    stage = (args.stage or "").strip().lower() or ("open" if args.assignee_code else "live")
+    label = ", ".join(codes)
+    note = f"{len(data)} ticket(s) across {label}."
+    heading = f"{len(data)} {stage} ticket(s) for {label}" if data else f"No {stage} tickets for {label}."
+    return ToolResult(
+        tool=LIST_TICKETS,
+        source=source.source_name,
+        data=data,
+        row_ids=[row["id"] for row in data],
+        client_code=None,
+        note=note,
+        reply=format_ticket_list(data, heading=heading, note=note if data else None),
     )
 
 
@@ -1746,15 +1840,21 @@ def merge_tickets(source: FlowSource, args: MergeTicketsArgs, turn: ChatTurn | N
 
 
 def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
-    rows = source.list_mail(
-        client_code=args.client_code,
-        direction=args.direction,
-        email=args.email,
-        contact_id=args.contact_id,
-        limit=args.limit,
-    )
+    client = (args.client_code or "").strip().upper() or None
+    try:
+        rows = source.list_mail(
+            client_code=client,
+            direction=args.direction,
+            email=args.email,
+            contact_id=args.contact_id,
+            received_after=(args.received_after or "").strip() or None,
+            received_before=(args.received_before or "").strip() or None,
+            limit=args.limit,
+        )
+    except FlowRequestError as exc:
+        return _refuse(LIST_MAIL, source, str(exc))
     data = [_mail_payload(r) for r in rows]
-    lines = [f"{len(data)} {args.direction} mail row(s) for {args.client_code.upper()}.", ""]
+    lines = [f"{len(data)} {args.direction} mail row(s) for {client or 'that search'}.", ""]
     if not data:
         lines.append("None found.")
     for row in data:
@@ -1767,7 +1867,7 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
         source=source.source_name,
         data=data,
         row_ids=[r.id for r in rows],
-        client_code=args.client_code.upper(),
+        client_code=client,
         note="direction=inbound means from the client to TechBldrs (filed on a Flow ticket).",
         reply="\n".join(lines).rstrip(),
     )
@@ -1790,13 +1890,20 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
             ticket_id=args.ticket_id,
             client_code=client,
             tech_user_id=tech_user_id,
+            work_after=(args.work_after or "").strip() or None,
+            work_before=(args.work_before or "").strip() or None,
+            billable=args.billable,
+            reviewed=args.reviewed,
             limit=args.limit,
         )
     except FlowRequestError as exc:
         return _refuse(LIST_TIME_ENTRIES, source, str(exc))
     data = [_time_entry_payload(r) for r in rows]
     total_minutes = sum(r.minutes for r in rows)
-    scope = (f"ticket {args.ticket_id}" if args.ticket_id else client) or "that scope"
+    if args.ticket_id and rows:
+        scope = rows[0].ticket_label
+    else:
+        scope = (f"ticket {args.ticket_id}" if args.ticket_id else client) or assignee or "that scope"
     lines = [f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'} for {scope} ({total_minutes} min total).", ""]
     if not data:
         lines.append("None found.")
@@ -1812,6 +1919,96 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
         client_code=client,
         reply="\n".join(lines).rstrip(),
     )
+
+
+def ticket_stats(source: FlowSource, args: TicketStatsArgs) -> ToolResult:
+    assignee, error = _resolve_assignee(source, args.assignee_code)
+    if error:
+        return _refuse(TICKET_STATS, source, error)
+    tech_user_id = None
+    ticket_assignee = None
+    if assignee and args.entity == "time":
+        matches = source.search_technician(query=assignee, limit=5)
+        pick = next((m for m in matches if (m.assignee_code or "").lower() == assignee), None)
+        if pick is None:
+            return _refuse(TICKET_STATS, source, f"No active technician matches {assignee!r}.")
+        tech_user_id = pick.id
+    elif assignee:
+        ticket_assignee = assignee
+    client = (args.client_code or "").strip().upper() or None
+    try:
+        stats = source.ticket_stats(
+            entity=(args.entity or "tickets").strip().lower(),
+            group_by=(args.group_by or "client").strip().lower(),
+            metric=(args.metric or "count").strip().lower(),
+            client_code=client,
+            assignee_code=ticket_assignee,
+            tech_user_id=tech_user_id,
+            stage=(args.stage or "all").strip().lower(),
+            direction=(args.direction or "inbound").strip().lower(),
+            billable=args.billable,
+            after=(args.after or "").strip() or None,
+            before=(args.before or "").strip() or None,
+            limit=args.limit,
+        )
+    except FlowRequestError as exc:
+        return _refuse(TICKET_STATS, source, str(exc))
+    return ToolResult(
+        tool=TICKET_STATS,
+        source=source.source_name,
+        data=stats,
+        client_code=client,
+        note="Counts and hours are computed by Flow. Quote them as given; do not recount.",
+        reply=format_stats(stats, client=client, assignee=assignee, after=args.after, before=args.before),
+    )
+
+
+def _format_minutes(minutes: int) -> str:
+    hours, mins = divmod(int(minutes), 60)
+    return f"{hours}h {mins:02d}m"
+
+
+def format_stats(
+    stats: dict[str, Any],
+    *,
+    client: str | None,
+    assignee: str | None,
+    after: str | None,
+    before: str | None,
+) -> str:
+    entity = stats.get("entity", "tickets")
+    group_by = stats.get("group_by", "")
+    rows = stats.get("rows") or []
+    scope = [f"{entity} by {group_by}"]
+    if client:
+        scope.append(f"client {client}")
+    if assignee:
+        scope.append(f"tech {assignee}")
+    if after or before:
+        scope.append(f"{after or 'start'} to {before or 'now'}")
+    head = ", ".join(scope)
+    if not rows:
+        return f"No {entity} found ({head})."
+    if entity == "time":
+        total = f"{_format_minutes(stats.get('total_minutes', 0))} logged, {_format_minutes(stats.get('total_billed_minutes', 0))} billed"
+        lines = [f"{head}: {stats.get('total_count', 0)} entries, {total}.", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(
+                f"{i}. {row['key']} — {_format_minutes(row['minutes'])} logged, "
+                f"{_format_minutes(row['billed_minutes'])} billed ({row['count']} entries)"
+            )
+    elif entity == "tickets":
+        lines = [f"{head}: {stats.get('total_count', 0)} tickets, {stats.get('total_hours', 0)} h worked.", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['key']} — {row['count']} ticket(s), {row['hours']} h worked")
+    else:
+        lines = [f"{head}: {stats.get('total_count', 0)} mail rows.", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['key']} — {row['count']}")
+    shown = len(rows)
+    if stats.get("groups", shown) > shown:
+        lines.append(f"(top {shown} of {stats['groups']} groups)")
+    return "\n".join(lines)
 
 
 def list_machines(source: FlowSource, args: ListMachinesArgs) -> ToolResult:
@@ -1967,6 +2164,8 @@ def dispatch(
         return list_mail(source, ListMailArgs.model_validate(raw_args))
     if name == LIST_TIME_ENTRIES:
         return list_time_entries(source, ListTimeEntriesArgs.model_validate(raw_args))
+    if name == TICKET_STATS:
+        return ticket_stats(source, TicketStatsArgs.model_validate(raw_args))
     if name == LIST_MACHINES:
         return list_machines(source, ListMachinesArgs.model_validate(raw_args))
     if name == GET_TICKET_DETAIL:

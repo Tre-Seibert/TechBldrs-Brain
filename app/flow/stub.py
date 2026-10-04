@@ -214,6 +214,8 @@ class StubFlowSource:
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
         requestor: str | None = None,
+        needs_response: bool | None = None,
+        unassigned: bool | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -262,6 +264,8 @@ class StubFlowSource:
                 last_after_dt,
                 contact_id is not None,
                 (requestor or "").strip(),
+                needs_response,
+                unassigned,
                 _norm(stage) in _LIST_STAGES,
             )
         )
@@ -307,6 +311,8 @@ class StubFlowSource:
             and (last_before_dt is None or t.last_activity_at < last_before_dt)
             and (last_after_dt is None or t.last_activity_at >= last_after_dt)
             and (not overdue or (t.due_at is not None and t.due_at < now and not t.complete))
+            and (not unassigned or not (t.assignee_code or "").strip())
+            and (not needs_response or self._newest_mail_direction(t.id) == "inbound")
         ]
         reverse = (order or "desc").lower() != "asc"
         if _norm(sort) == "hrs_actual_total":
@@ -392,20 +398,34 @@ class StubFlowSource:
             },
         }
 
+    @staticmethod
+    def _newest_mail_direction(ticket_id: int) -> str | None:
+        mails = [m for m in MAIL if m.ticket_id == ticket_id]
+        if not mails:
+            return None
+        newest = max(mails, key=lambda m: (m.received_at or m.created_at, m.id))
+        return _norm(newest.direction)
+
     def list_mail(
         self,
         *,
-        client_code: str,
+        client_code: str | None = None,
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
         ticket_id: int | None = None,
         ticket_num: str | None = None,
+        received_after: str | None = None,
+        received_before: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]:
         code = _norm(client_code)
-        if not code:
-            return []
+        after_dt = _parse_dt(received_after)
+        before_dt = _parse_dt(received_before)
+        if not (code or email or contact_id is not None or ticket_id is not None or after_dt or before_dt):
+            raise FlowRequestError(
+                "Flow 400: client_code, email, contact_id, ticket_id, or a received_after/received_before range is required"
+            )
         direction_norm = _norm(direction) or "inbound"
         email_norm = _norm(email)
         contact_emails: set[str] = set()
@@ -424,7 +444,12 @@ class StubFlowSource:
 
         hits: list[MailRecord] = []
         for mail in MAIL:
-            if _norm(mail.client_code) != code:
+            if code and _norm(mail.client_code) != code:
+                continue
+            stamp = mail.received_at or mail.created_at
+            if after_dt is not None and stamp < after_dt:
+                continue
+            if before_dt is not None and stamp >= before_dt:
                 continue
             if direction_norm not in ("all", "*") and _norm(mail.direction) != direction_norm:
                 continue
@@ -478,22 +503,174 @@ class StubFlowSource:
         ticket_id: int | None = None,
         client_code: str | None = None,
         tech_user_id: int | None = None,
+        work_after: str | None = None,
+        work_before: str | None = None,
+        billable: bool | None = None,
+        reviewed: bool | None = None,
         sort: str = "start_at",
         order: str = "desc",
         limit: int = 25,
     ) -> list[TimeEntryRecord]:
-        if ticket_id is None and not (client_code or "").strip():
-            raise FlowRequestError("Flow 400: ticket_id or client_code is required")
-        code = _norm(client_code)
-        rows = [
-            entry
-            for entry in TIME_ENTRIES
-            if (ticket_id is None or entry.ticket_id == ticket_id)
-            and (not code or _norm(entry.client_code) == code)
-            and (tech_user_id is None or entry.tech_user_id == tech_user_id)
-        ]
+        after_dt = _parse_dt(work_after)
+        before_dt = _parse_dt(work_before)
+        if (
+            ticket_id is None
+            and not (client_code or "").strip()
+            and tech_user_id is None
+            and after_dt is None
+            and before_dt is None
+            and reviewed is None
+        ):
+            raise FlowRequestError(
+                "Flow 400: ticket_id, client_code, tech_user_id, a work_after/work_before range, or reviewed is required"
+            )
+        rows = self._filtered_time(
+            ticket_id=ticket_id,
+            client_code=client_code,
+            tech_user_id=tech_user_id,
+            after_dt=after_dt,
+            before_dt=before_dt,
+            billable=billable,
+            reviewed=reviewed,
+        )
         rows.sort(key=lambda entry: (entry.start_at or entry.created_at, entry.id), reverse=(order != "asc"))
         return rows[: _clamp_limit(limit)]
+
+    @staticmethod
+    def _filtered_time(
+        *,
+        ticket_id=None,
+        client_code=None,
+        tech_user_id=None,
+        after_dt=None,
+        before_dt=None,
+        billable=None,
+        reviewed=None,
+    ) -> list[TimeEntryRecord]:
+        code = _norm(client_code)
+        rows = []
+        for entry in TIME_ENTRIES:
+            when = entry.work_date or entry.start_at or entry.created_at
+            if (
+                (ticket_id is None or entry.ticket_id == ticket_id)
+                and (not code or _norm(entry.client_code) == code)
+                and (tech_user_id is None or entry.tech_user_id == tech_user_id)
+                and (after_dt is None or when >= after_dt)
+                and (before_dt is None or when < before_dt)
+                and (billable is None or entry.billable is billable)
+                and (reviewed is None or entry.reviewed is reviewed)
+            ):
+                rows.append(entry)
+        return rows
+
+    def ticket_stats(
+        self,
+        *,
+        entity: str = "tickets",
+        group_by: str = "client",
+        metric: str = "count",
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        tech_user_id: int | None = None,
+        stage: str = "all",
+        direction: str = "inbound",
+        billable: bool | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        groups = {
+            "tickets": ("client", "cause", "reason", "category", "assignee", "status", "requestor", "topic"),
+            "time": ("client", "tech", "ticket", "billable", "reviewed"),
+            "mail": ("sender", "client", "ticket"),
+        }
+        if entity not in groups:
+            raise FlowRequestError("Flow 400: entity must be one of tickets, time, mail")
+        if group_by not in groups[entity]:
+            raise FlowRequestError(f"Flow 400: group_by for {entity} must be one of {', '.join(groups[entity])}")
+        if metric not in ("count", "hours"):
+            raise FlowRequestError("Flow 400: metric must be one of count, hours")
+        after_dt, before_dt = _parse_dt(after), _parse_dt(before)
+        code, assignee = _norm(client_code), _norm(assignee_code)
+        merged: dict[Any, dict[str, Any]] = {}
+
+        def add(key, *, count=1, hours=0.0, minutes=0, billed=0):
+            slot = merged.setdefault(key, {"key": key, "count": 0, "hours": 0.0, "minutes": 0, "billed_minutes": 0})
+            slot["count"] += count
+            slot["hours"] += hours
+            slot["minutes"] += minutes
+            slot["billed_minutes"] += billed
+
+        if entity == "tickets":
+            for t in self._tickets:
+                if not _stage_match(t, None if stage == "all" else stage) and stage != "all":
+                    continue
+                if code and _norm(t.client_code) != code:
+                    continue
+                if assignee and _norm(t.assignee_code) != assignee:
+                    continue
+                if after_dt is not None and t.created_at < after_dt:
+                    continue
+                if before_dt is not None and t.created_at >= before_dt:
+                    continue
+                key = {
+                    "client": t.client_code,
+                    "cause": (t.cause or "").strip() or "(none)",
+                    "reason": (t.reason or "").strip() or "(none)",
+                    "category": t.category,
+                    "assignee": (t.assignee_code or "").strip() or "(unassigned)",
+                    "status": t.status,
+                    "requestor": (t.requestor_text or "").strip() or "(none)",
+                    "topic": t.topic,
+                }[group_by]
+                add(key, hours=_worked_hours(t))
+        elif entity == "time":
+            names = {tech.id: tech.display_name for tech in TECHNICIANS}
+            for e in self._filtered_time(
+                client_code=client_code, tech_user_id=tech_user_id, after_dt=after_dt, before_dt=before_dt,
+                billable=billable,
+            ):
+                key = {
+                    "client": e.client_code,
+                    "tech": names.get(e.tech_user_id, str(e.tech_user_id)),
+                    "ticket": e.ticket_label,
+                    "billable": e.billable,
+                    "reviewed": e.reviewed,
+                }[group_by]
+                add(key, minutes=e.actual_minutes, billed=e.minutes, hours=e.actual_minutes / 60.0)
+        else:
+            wanted = _norm(direction) or "inbound"
+            for m in MAIL:
+                stamp = m.received_at or m.created_at
+                if wanted not in ("all", "*") and _norm(m.direction) != wanted:
+                    continue
+                if code and _norm(m.client_code) != code:
+                    continue
+                if after_dt is not None and stamp < after_dt:
+                    continue
+                if before_dt is not None and stamp >= before_dt:
+                    continue
+                key = {
+                    "sender": (m.from_name or "").strip() or m.from_address or "(unknown)",
+                    "client": m.client_code,
+                    "ticket": m.ticket_label,
+                }[group_by]
+                add(key)
+        field = "hours" if (metric == "hours" and entity != "mail") else "count"
+        rows = sorted(merged.values(), key=lambda r: (-r[field], str(r["key"])))
+        for row in rows:
+            row["hours"] = round(row["hours"], 2)
+        return {
+            "entity": entity,
+            "group_by": group_by,
+            "metric": metric,
+            "total_count": sum(r["count"] for r in rows),
+            "total_hours": round(sum(r["hours"] for r in rows), 2),
+            "total_minutes": sum(r["minutes"] for r in rows),
+            "total_billed_minutes": sum(r["billed_minutes"] for r in rows),
+            "groups": len(rows),
+            "rows": rows[: _clamp_limit(limit, default=10, maximum=100)],
+        }
 
     def list_machines(
         self,

@@ -168,6 +168,8 @@ class HttpFlowSource:
         last_activity_before: str | None = None,
         last_activity_after: str | None = None,
         requestor: str | None = None,
+        needs_response: bool | None = None,
+        unassigned: bool | None = None,
         stage: str | None = None,
         sort: str = "last_activity_at",
         order: str = "desc",
@@ -197,6 +199,8 @@ class HttpFlowSource:
             "last_activity_before": last_activity_before,
             "last_activity_after": last_activity_after,
             "requestor": requestor,
+            "needs_response": needs_response,
+            "unassigned": unassigned,
             "stage": stage,
         }
         params.update({key: value for key, value in optional.items() if value not in (None, "")})
@@ -237,19 +241,26 @@ class HttpFlowSource:
     def list_mail(
         self,
         *,
-        client_code: str,
+        client_code: str | None = None,
         direction: str = "inbound",
         email: str | None = None,
         contact_id: int | None = None,
         ticket_id: int | None = None,
         ticket_num: str | None = None,
+        received_after: str | None = None,
+        received_before: str | None = None,
         limit: int = 25,
     ) -> list[MailRecord]:
         params: dict[str, Any] = {
-            "client_code": client_code,
             "direction": direction,
             "limit": limit,
         }
+        if client_code:
+            params["client_code"] = client_code
+        if received_after:
+            params["received_after"] = received_after
+        if received_before:
+            params["received_before"] = received_before
         if email:
             params["email"] = email
         if contact_id is not None:
@@ -281,6 +292,10 @@ class HttpFlowSource:
         ticket_id: int | None = None,
         client_code: str | None = None,
         tech_user_id: int | None = None,
+        work_after: str | None = None,
+        work_before: str | None = None,
+        billable: bool | None = None,
+        reviewed: bool | None = None,
         sort: str = "start_at",
         order: str = "desc",
         limit: int = 25,
@@ -292,9 +307,54 @@ class HttpFlowSource:
             params["client_code"] = client_code
         if tech_user_id is not None:
             params["tech_user_id"] = tech_user_id
+        for key, value in (
+            ("work_after", work_after),
+            ("work_before", work_before),
+            ("billable", billable),
+            ("reviewed", reviewed),
+        ):
+            if value not in (None, ""):
+                params[key] = value
         data = self._get("/api/private/brain/time-entries", params)
         rows = data if isinstance(data, list) else []
         return [TimeEntryRecord.model_validate(row) for row in rows]
+
+    def ticket_stats(
+        self,
+        *,
+        entity: str = "tickets",
+        group_by: str = "client",
+        metric: str = "count",
+        client_code: str | None = None,
+        assignee_code: str | None = None,
+        tech_user_id: int | None = None,
+        stage: str = "all",
+        direction: str = "inbound",
+        billable: bool | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "entity": entity,
+            "group_by": group_by,
+            "metric": metric,
+            "stage": stage,
+            "direction": direction,
+            "limit": limit,
+        }
+        for key, value in (
+            ("client_code", client_code),
+            ("assignee_code", assignee_code),
+            ("tech_user_id", tech_user_id),
+            ("billable", billable),
+            ("after", after),
+            ("before", before),
+        ):
+            if value not in (None, ""):
+                params[key] = value
+        data = self._get("/api/private/brain/stats", params)
+        return data if isinstance(data, dict) else {}
 
     def list_machines(
         self,
