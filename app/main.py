@@ -179,6 +179,8 @@ def health(request: Request) -> dict[str, Any]:
         "flow_mode": settings.flow_mode_normalized,
         "flow_source": getattr(source, "source_name", "unknown"),
         "llm_base_url": settings.llm_base_url,
+        "llm_model": settings.llm_model,
+        "disabled_routers": sorted(settings.disabled_router_set),
         "knowledge_source": _knowledge(request).source_name,
         "tools": list(TOOL_NAMES),
         "write_tools": list(WRITE_TOOL_NAMES),

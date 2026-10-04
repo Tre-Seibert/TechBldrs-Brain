@@ -4,8 +4,11 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Pattern-matched answers that run before the LLM sees a question (app/agent/loop.py).
+ROUTER_NAMES = ("merge_suggestion", "person_mail", "person_ticket", "tickets_about", "longest_time")
 
 
 def _default_data_dir() -> Path:
@@ -25,8 +28,11 @@ class Settings(BaseSettings):
     llm_base_url: str = Field(default="http://127.0.0.1:11434/v1")
     llm_model: str = Field(default="")
     llm_api_key: str = Field(default="ollama")
-    llm_timeout_seconds: float = Field(default=180.0)
+    llm_timeout_seconds: float = Field(default=600.0)
     agent_max_tool_iters: int = Field(default=8)
+    # Comma-separated ROUTER_NAMES to skip, so those questions go to the LLM instead.
+    # Empty keeps every router on.
+    disabled_routers: str = Field(default="")
 
     brain_host: str = Field(default="127.0.0.1")
     brain_port: int = Field(default=8765)
@@ -48,6 +54,19 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="")
     knowledge_collection: str = Field(default="tb_knowledge")
     embedding_model: str = Field(default="nomic-embed-text")
+
+    @field_validator("disabled_routers")
+    @classmethod
+    def _known_routers(cls, value: str) -> str:
+        names = [name.strip().lower() for name in (value or "").split(",") if name.strip()]
+        unknown = [name for name in names if name not in ROUTER_NAMES]
+        if unknown:
+            raise ValueError(f"unknown router(s) {unknown}; valid: {', '.join(ROUTER_NAMES)}")
+        return ",".join(names)
+
+    @property
+    def disabled_router_set(self) -> frozenset[str]:
+        return frozenset(name for name in self.disabled_routers.split(",") if name)
 
     @property
     def audit_log_dir(self) -> Path:

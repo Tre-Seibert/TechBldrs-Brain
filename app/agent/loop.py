@@ -12,11 +12,11 @@ from typing import Any
 import httpx
 
 from app.agent.system import SYSTEM_PROMPT, signed_in_prompt_line
-from app.config import Settings
+from app.config import ROUTER_NAMES, Settings
 from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
-from app.tools import ChatTurn, openai_tools, run_tool
+from app.tools import ChatTurn, ToolResult, openai_tools, run_tool
 from app.tools.handlers import (
     answer_longest_time_worked,
     answer_merge_suggestion,
@@ -75,6 +75,29 @@ _log = logging.getLogger("tb_brain.agent")
 
 class AgentError(RuntimeError):
     pass
+
+
+# Order matters: the first router that answers wins. Names must match config.ROUTER_NAMES.
+_ROUTERS = (
+    ("merge_suggestion", answer_merge_suggestion),
+    ("person_mail", answer_person_mail_question),
+    ("person_ticket", answer_person_ticket_question),
+    ("tickets_about", answer_tickets_about),
+    ("longest_time", answer_longest_time_worked),
+)
+assert tuple(name for name, _ in _ROUTERS) == ROUTER_NAMES
+
+
+def direct_answer(source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()) -> ToolResult | None:
+    """Pattern-matched answer that skips the LLM, or None to let the model handle the question."""
+    for name, router in _ROUTERS:
+        if name in disabled:
+            continue
+        result = router(source, turn)
+        if result is not None:
+            _log.info("router answered router=%s", name, extra={"event": "agent.router", "router": name})
+            return result
+    return None
 
 
 def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
@@ -283,15 +306,7 @@ async def run_tool_loop(
         _log.info("ignoring client tools: %s", ",".join(ignored))
     tools = openai_tools()
     turn = chat_turn_from_messages(messages)
-    direct = answer_merge_suggestion(source, turn)
-    if direct is None:
-        direct = answer_person_mail_question(source, turn)
-    if direct is None:
-        direct = answer_person_ticket_question(source, turn)
-    if direct is None:
-        direct = answer_tickets_about(source, turn)
-    if direct is None:
-        direct = answer_longest_time_worked(source, turn)
+    direct = direct_answer(source, turn, settings.disabled_router_set)
     if direct is not None:
         return _assistant_payload(
             direct.reply or direct.error or _NO_TOOL_ENGLISH,

@@ -61,9 +61,9 @@ Same rule as Flow: never create `.venv`, Ollama models, Qdrant data, or Docker b
 
 ## Hardware (lab, 2026-09-21)
 
-ASUS desktop: Ryzen 7 9800X3D, RTX 5070 Ti 16 GB, 32 GB RAM, Windows 11 Pro. Desktop session already uses ~3.4 GB VRAM. Fine for a lab; **not production**.
+TB-BRAIN1: Lenovo, i7-10750H, RTX 2070 Super Max-Q (8 GB), 32 GB RAM. Fine for a lab; **not production**.
 
-First local models that fit: Qwen2.5-14B-Instruct (Q5) or Mistral Small 24B Q4 via Ollama. 32B+ waits for a GPU upgrade. Set `LLM_MODEL` in `.env`; do not put "14B" in code.
+Model that fits: `qwen2.5:14b-instruct-q3_K_M` (Q4 14B OOMs this card). 7B is the fallback. 24B+ needs a GPU upgrade. Set `LLM_MODEL` in `.env`.
 
 ## Architecture
 

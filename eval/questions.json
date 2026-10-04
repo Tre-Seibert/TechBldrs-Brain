@@ -1,0 +1,461 @@
+{
+  "description": "tb-brain eval set. Expected answers assume FLOW_MODE=stub fixtures (app/flow/fixtures.py).",
+  "cases": [
+    {
+      "id": "lt-basic",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which open ticket has the longest time worked"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091",
+        "ZTST-0092"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-word-order",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What's the longest ticket worked?"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-most-hours",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which ticket has the most hours?"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-highest-logged",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Highest hours logged on an open ticket?"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-single",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Just the one ticket with the most hours, please."
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0092",
+        "ZTST-0006"
+      ],
+      "note": "Explicit count of one must return one ticket."
+    },
+    {
+      "id": "lt-top3",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Top 3 open tickets by longest time worked"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091",
+        "ZTST-0092",
+        "ZTST-0093"
+      ],
+      "must_not_contain": [
+        "WDON-1842",
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-not-placeholder",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which open ticket has the longest time worked that isn't a placeholder ticket"
+        }
+      ],
+      "must_contain": [
+        "ZTST-0091"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ]
+    },
+    {
+      "id": "lt-follow-up",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Which open ticket has the longest time worked"
+        },
+        {
+          "role": "assistant",
+          "content": "Top 5 open tickets, ranked by longest time worked:\n- ZTST-0091 Server migration project (42.0 hrs)\n- ZTST-0092 Firewall replacement (18.5 hrs)\n- ZTST-0093 Office move network setup (6.25 hrs)\n- WDON-1842 Imaging workstation offline (0.75 hrs)\n- ACME-0041 VPN dropouts (0.5 hrs)"
+        },
+        {
+          "role": "user",
+          "content": "How about after that?"
+        }
+      ],
+      "must_match": [
+        "(?i)(no (more|other|further|additional)|can't rank|cannot rank|nothing (left|else)|already)"
+      ],
+      "must_not_contain": [
+        "ZTST-0006"
+      ],
+      "note": "Every ticket with hours was already shown; must say nothing is left, not repeat or invent."
+    },
+    {
+      "id": "lt-not-this",
+      "group": "longest_time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "How much time was logged on ticket ACME-0041?"
+        }
+      ],
+      "must_contain": [
+        "ACME-0041"
+      ],
+      "must_not_contain": [
+        "ZTST-0091"
+      ],
+      "note": "Time on one named ticket is not a ranking question."
+    },
+    {
+      "id": "pm-obrien",
+      "group": "person_mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "when did Sean O'Brien last reach out?"
+        }
+      ],
+      "must_contain": [
+        "WDON-2621"
+      ],
+      "must_not_contain": [
+        "April",
+        "WDON-2622"
+      ]
+    },
+    {
+      "id": "pm-obrien-typo",
+      "group": "person_mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "when did Sean OBrien last email us?"
+        }
+      ],
+      "must_contain": [
+        "WDON-2621"
+      ],
+      "must_not_contain": [
+        "April"
+      ]
+    },
+    {
+      "id": "pm-debe",
+      "group": "person_mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "When did Debe last reach out?"
+        }
+      ],
+      "must_contain": [
+        "WDON-1842"
+      ]
+    },
+    {
+      "id": "pm-client-not-person",
+      "group": "person_mail",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show all emails from WDON to our tenant"
+        }
+      ],
+      "must_contain": [
+        "WDON"
+      ],
+      "must_not_contain": [
+        "last reached out"
+      ]
+    },
+    {
+      "id": "pt-sodl",
+      "group": "person_ticket",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell me the latest ticket involving Michael Sodl"
+        }
+      ],
+      "must_contain": [
+        "ACME-0400"
+      ],
+      "must_not_contain": [
+        "WDON-1842",
+        "Western Dental"
+      ]
+    },
+    {
+      "id": "pt-carter",
+      "group": "person_ticket",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell me the latest ticket involving Thomas Carter"
+        }
+      ],
+      "must_contain": [
+        "WDON-2619"
+      ]
+    },
+    {
+      "id": "pt-unknown",
+      "group": "person_ticket",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell me the latest ticket involving Nobody Fakename"
+        }
+      ],
+      "must_match": [
+        "(?i)(no ticket|not find|couldn't find|could not find|no match|none)"
+      ],
+      "must_not_match": [
+        "\b[A-Z]{2,8}-[A-Z0-9]{3,6}\b"
+      ],
+      "must_not_contain": [
+        "Western Dental"
+      ],
+      "note": "Must not invent a ticket for a person who does not exist."
+    },
+    {
+      "id": "ta-ellerby",
+      "group": "tickets_about",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets are about B Ellerby Email features?"
+        }
+      ],
+      "must_contain": [
+        "WDON-2619"
+      ],
+      "must_not_contain": [
+        "ZINT-5550"
+      ]
+    },
+    {
+      "id": "ta-no-match",
+      "group": "tickets_about",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets are about Flow Reporting features?"
+        }
+      ],
+      "must_not_match": [
+        "\b[A-Z]{2,8}-[A-Z0-9]{3,6}\b"
+      ],
+      "note": "Nothing matches; any ticket label in the reply is invented."
+    },
+    {
+      "id": "ta-imaging",
+      "group": "tickets_about",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Any tickets about imaging?"
+        }
+      ],
+      "must_contain": [
+        "WDON-1842"
+      ]
+    },
+    {
+      "id": "ms-all",
+      "group": "merge_suggestion",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Does any tickets need merged?"
+        }
+      ],
+      "must_contain": [
+        "ACME-0041",
+        "ACME-0045"
+      ]
+    },
+    {
+      "id": "ms-client",
+      "group": "merge_suggestion",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What tickets need merged for ZINT?"
+        }
+      ],
+      "must_not_contain": [
+        "ACME-0041"
+      ]
+    },
+    {
+      "id": "tl-urgent",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Any urgent tickets?"
+        }
+      ],
+      "must_contain": [
+        "ACME-0099"
+      ],
+      "must_not_contain": [
+        "ACME-0041"
+      ]
+    },
+    {
+      "id": "tl-assigned",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tickets assigned to Tom Rivera"
+        }
+      ],
+      "must_contain": [
+        "WDON-1842",
+        "WDON-1830"
+      ],
+      "must_not_contain": [
+        "ACME-0041"
+      ]
+    },
+    {
+      "id": "tl-all-open-client",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "All open tickets for ACME"
+        }
+      ],
+      "must_contain": [
+        "ACME-0099",
+        "ACME-0400",
+        "ACME-0041",
+        "ACME-0045"
+      ],
+      "must_not_contain": [
+        "WDON-1842",
+        "ACME-0700",
+        "ACME-0050"
+      ]
+    },
+    {
+      "id": "tl-archived-client",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Archived tickets for ACME"
+        }
+      ],
+      "must_contain": [
+        "ACME-0700"
+      ],
+      "must_not_contain": [
+        "ACME-0099"
+      ]
+    },
+    {
+      "id": "tl-review",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What ACME tickets are in review?"
+        }
+      ],
+      "must_contain": [
+        "ACME-0050"
+      ],
+      "must_not_contain": [
+        "ACME-0010",
+        "ACME-0099"
+      ]
+    },
+    {
+      "id": "tl-machines",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What machines does ACME have?"
+        }
+      ],
+      "must_contain": [
+        "ACME-WKS-14"
+      ]
+    },
+    {
+      "id": "tl-unknown-client",
+      "group": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Show me open tickets for client ZZZZ"
+        }
+      ],
+      "must_not_match": [
+        "\b[A-Z]{2,8}-[A-Z0-9]{3,6}\b"
+      ],
+      "note": "No such client; any ticket label is invented."
+    }
+  ]
+}

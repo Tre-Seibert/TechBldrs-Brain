@@ -10,9 +10,7 @@ Lab UI is [Open WebUI](https://github.com/open-webui/open-webui) in front of tb-
 2. Pull a local instruct model. Pick one that fits the current GPU; do not bake the size into code.
 
    ```powershell
-   ollama pull qwen2.5:14b-instruct-q5_K_M
-   # or
-   ollama pull mistral-small:24b-instruct-2501-q4_K_M
+   ollama pull qwen2.5:14b-instruct-q3_K_M
    ```
 
 3. Confirm Ollama: `curl.exe --noproxy "*" http://127.0.0.1:11434/api/tags`
