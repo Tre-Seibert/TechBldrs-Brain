@@ -357,6 +357,7 @@ async def run_tool_loop(
                 "tools": tools,
                 "stream": False,
             }
+            body.update(settings.llm_extra_body_dict)
             if extra_body:
                 for key, value in extra_body.items():
                     if key in ("messages", "tools", "stream"):

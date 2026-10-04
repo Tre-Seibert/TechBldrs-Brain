@@ -101,3 +101,35 @@ class NoThinkAndSchemaTests(unittest.TestCase):
         )
         self.assertEqual(row.ticket_num, "3540")
         self.assertEqual(row.ticket_label, "BUCK-3540")
+
+
+class ExtraBodyTests(unittest.IsolatedAsyncioTestCase):
+    def test_extra_body_must_be_a_json_object(self) -> None:
+        self.assertEqual(Settings(llm_extra_body='{"think": false}', _env_file=None).llm_extra_body_dict, {"think": False})
+        self.assertEqual(Settings(_env_file=None).llm_extra_body_dict, {})
+        with self.assertRaises(ValueError):
+            Settings(llm_extra_body="[1, 2]", _env_file=None)
+
+    async def test_extra_body_is_sent_to_the_llm(self) -> None:
+        seen: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(json.loads(request.content))
+            return httpx.Response(
+                200, json={"id": "x", "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}]}
+            )
+
+        real = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+        with mock.patch("app.agent.loop.httpx.AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            await run_tool_loop(
+                settings=Settings(
+                    llm_model="fake", llm_base_url="http://llm.test/v1",
+                    llm_extra_body='{"reasoning_effort": "none"}', _env_file=None,
+                ),
+                source=StubFlowSource(),
+                messages=[{"role": "user", "content": "anything"}],
+                model=None,
+                actor="test",
+            )
+        self.assertEqual(seen[0]["reasoning_effort"], "none")

@@ -36,6 +36,25 @@ class Settings(BaseSettings):
     # Qwen3-style models "think" before answering (about 9x slower here). true appends the
     # /no_think soft switch to the system prompt. Harmless for models that ignore it.
     llm_no_think: bool = Field(default=False)
+    # JSON object merged into every LLM request body, e.g. {"reasoning_effort":"none"} or
+    # {"think":false}. Whatever your Ollama build accepts for turning thinking off.
+    llm_extra_body: str = Field(default="")
+
+    @field_validator("llm_extra_body")
+    @classmethod
+    def _extra_body_is_json_object(cls, value: str) -> str:
+        import json
+
+        text = value.strip()
+        if text and not isinstance(json.loads(text), dict):
+            raise ValueError("LLM_EXTRA_BODY must be a JSON object")
+        return text
+
+    @property
+    def llm_extra_body_dict(self) -> dict:
+        import json
+
+        return json.loads(self.llm_extra_body) if self.llm_extra_body else {}
 
     brain_host: str = Field(default="127.0.0.1")
     brain_port: int = Field(default=8765)
