@@ -70,10 +70,6 @@
         {
           "tool": "list_tickets",
           "args": {
-            "assignee_code": [
-              "me",
-              "ts"
-            ],
             "category": [
               "urgent",
               "0 urgent"
@@ -83,7 +79,8 @@
       ],
       "must_not_contain": [
         "ACME-0099"
-      ]
+      ],
+      "note": "The model may leave out assignee_code; list_tickets adds 'me' when the user said 'my'. The reply check (ACME-0099 is eo's ticket) is what proves the filter applied."
     },
     {
       "id": "A4",
@@ -227,7 +224,7 @@
       "messages": [
         {
           "role": "user",
-          "content": "Show me ZTB-1691"
+          "content": "Show me ACME-0041"
         }
       ],
       "expect": [
@@ -236,30 +233,33 @@
             {
               "tool": "list_tickets",
               "args": {
-                "q": "ZTB-1691"
+                "q": "ACME-0041"
               }
             },
             {
               "tool": "list_tickets",
               "args": {
-                "client_code": "ZTB",
-                "ticket_num": "1691"
+                "client_code": "ACME",
+                "ticket_num": "0041"
               }
             },
             {
               "tool": "get_ticket_detail",
               "args": {
-                "ticket_label": "ZTB-1691"
+                "ticket_label": "ACME-0041"
               }
             },
             {
               "tool": "latest_ticket",
               "args": {
-                "client_code": "ZTB"
+                "client_code": "ACME"
               }
             }
           ]
         }
+      ],
+      "must_contain": [
+        "ACME-0041"
       ]
     },
     {
