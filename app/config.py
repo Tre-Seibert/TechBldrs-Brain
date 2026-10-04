@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Comma-separated ROUTER_NAMES to skip, so those questions go to the LLM instead.
     # Empty keeps every router on.
     disabled_routers: str = Field(default="")
+    # Qwen3-style models "think" before answering (about 9x slower here). true appends the
+    # /no_think soft switch to the system prompt. Harmless for models that ignore it.
+    llm_no_think: bool = Field(default=False)
 
     brain_host: str = Field(default="127.0.0.1")
     brain_port: int = Field(default=8765)

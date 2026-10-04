@@ -11,9 +11,9 @@ Flow tables used here:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ContactType = Literal[
     "client",
@@ -201,6 +201,15 @@ class MailDetail(MailRecord):
 
 
 class TimeEntryRecord(BaseModel):
+    @model_validator(mode="before")
+    @classmethod
+    def _ticket_num_from_label(cls, data: Any) -> Any:
+        """Flow's time-entry payload carries ticket_label ('BUCK-3540') but not ticket_num."""
+        if isinstance(data, dict) and not data.get("ticket_num") and data.get("ticket_label"):
+            data = dict(data)
+            data["ticket_num"] = str(data["ticket_label"]).partition("-")[2]
+        return data
+
     id: int
     ticket_id: int
     client_code: str

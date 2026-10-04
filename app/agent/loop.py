@@ -184,7 +184,18 @@ def _today_line() -> str:
     return f"Today is {now.strftime('%A %Y-%m-%d')} (server local time). Use it for 'today', 'yesterday', 'this month', 'last week'."
 
 
-def _ensure_system(messages: list[dict[str, Any]], *, source: FlowSource) -> list[dict[str, Any]]:
+def _ensure_system(
+    messages: list[dict[str, Any]], *, source: FlowSource, no_think: bool = False
+) -> list[dict[str, Any]]:
+    out = _ensure_system_prompt(messages, source=source)
+    if no_think:
+        first = dict(out[0])
+        first["content"] = str(first.get("content") or "").rstrip() + "\n/no_think"
+        out = [first, *out[1:]]
+    return out
+
+
+def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: FlowSource) -> list[dict[str, Any]]:
     prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
@@ -332,7 +343,7 @@ async def run_tool_loop(
         payload["x_tb_brain"] = {"router": router_name, "tool_calls": []}
         return payload
     trace: list[dict[str, Any]] = []
-    chat = _ensure_system(list(messages), source=source)
+    chat = _ensure_system(list(messages), source=source, no_think=settings.llm_no_think)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)

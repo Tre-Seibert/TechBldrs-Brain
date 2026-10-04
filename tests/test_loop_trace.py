@@ -79,3 +79,25 @@ class LoopTraceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoThinkAndSchemaTests(unittest.TestCase):
+    def test_no_think_switch_is_appended_only_when_asked(self) -> None:
+        from app.agent.loop import _ensure_system
+
+        source = StubFlowSource()
+        plain = _ensure_system([{"role": "user", "content": "hi"}], source=source)
+        switched = _ensure_system([{"role": "user", "content": "hi"}], source=source, no_think=True)
+        self.assertNotIn("/no_think", plain[0]["content"])
+        self.assertTrue(switched[0]["content"].endswith("/no_think"))
+        self.assertEqual(switched[1], {"role": "user", "content": "hi"})
+
+    def test_time_entry_from_real_flow_has_no_ticket_num(self) -> None:
+        from app.flow.schemas import TimeEntryRecord
+
+        row = TimeEntryRecord.model_validate(
+            {"id": 62665, "ticket_id": 95045, "client_code": "BUCK", "ticket_label": "BUCK-3540",
+             "tech_user_id": 376, "minutes": 15, "created_at": "2026-10-02 20:21:29"}
+        )
+        self.assertEqual(row.ticket_num, "3540")
+        self.assertEqual(row.ticket_label, "BUCK-3540")
