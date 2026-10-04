@@ -247,6 +247,12 @@
               }
             },
             {
+              "tool": "get_ticket_detail",
+              "args": {
+                "ticket_label": "ZTB-1691"
+              }
+            },
+            {
               "tool": "latest_ticket",
               "args": {
                 "client_code": "ZTB"
@@ -464,6 +470,18 @@
       "expect": [
         {
           "any": [
+            {
+              "tool": "list_time_entries",
+              "args": {
+                "ticket_label": "ACME-0041"
+              }
+            },
+            {
+              "tool": "get_ticket_detail",
+              "args": {
+                "ticket_label": "ACME-0041"
+              }
+            },
             {
               "tool": "list_time_entries",
               "args": {

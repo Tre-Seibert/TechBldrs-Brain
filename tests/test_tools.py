@@ -994,3 +994,85 @@ class NewCapabilityTests(unittest.TestCase):
         result = ticket_stats(self.source, TicketStatsArgs(entity="tickets", group_by="cause", client_code="NOPE"))
         self.assertTrue(result.ok)
         self.assertIn("No tickets found", result.reply)
+
+
+class RouterScopeGuardTests(unittest.TestCase):
+    """A client code is a filter the pattern routers do not handle; they must hand it to the model."""
+
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def _turn(self, text: str) -> ChatTurn:
+        return ChatTurn(user_text=text)
+
+    def test_person_ticket_router_ignores_client_codes(self) -> None:
+        for text in (
+            "Show me open tickets for client ZZZZ",
+            "Tickets still open for BLMC that have no assignee",
+            "Show me open tickets for WDON",
+        ):
+            self.assertIsNone(answer_person_ticket_question(self.source, self._turn(text)), text)
+
+    def test_person_ticket_router_still_handles_people(self) -> None:
+        self.assertIsNotNone(
+            answer_person_ticket_question(self.source, self._turn("Tell me the latest ticket involving Michael Sodl"))
+        )
+
+    def test_tickets_about_router_declines_a_client_scope(self) -> None:
+        self.assertIsNone(answer_tickets_about(self.source, self._turn("Tickets about printer issues at ZEBB")))
+        self.assertIsNotNone(answer_tickets_about(self.source, self._turn("Any tickets about imaging?")))
+        self.assertIsNotNone(answer_tickets_about(self.source, self._turn("Any tickets about VPN?")))
+
+    def test_longest_time_router_declines_a_client_scope(self) -> None:
+        self.assertIsNone(answer_longest_time_worked(self.source, self._turn("Top 5 longest-worked tickets for BUCK")))
+        self.assertIsNotNone(
+            answer_longest_time_worked(self.source, self._turn("Which open ticket has the longest time worked"))
+        )
+
+
+class OwnTicketsAndLabelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+        self._token = current_signed_in_email.set("tseibert@techbldrs.example")
+
+    def tearDown(self) -> None:
+        current_signed_in_email.reset(self._token)
+
+    def test_need_to_respond_keeps_me_even_without_the_word_my(self) -> None:
+        turn = ChatTurn(user_text="What tickets do I need to respond to?")
+        result = list_tickets(
+            self.source, ListTicketsArgs(assignee_code="me", stage="open", needs_response=True), turn
+        )
+        labels = [row["ticket_label"] for row in result.data]
+        self.assertIn("ACME-0041", labels)
+        self.assertNotIn("WDON-1842", labels)  # newest mail is inbound, but it is Tom's ticket
+
+    def test_my_urgent_tickets_adds_me_when_the_model_forgot(self) -> None:
+        turn = ChatTurn(user_text="What are my urgent tickets?")
+        result = list_tickets(self.source, ListTicketsArgs(category="urgent", stage="open"), turn)
+        self.assertNotIn("ACME-0099", [row["ticket_label"] for row in result.data])  # eo's ticket
+
+    def test_any_urgent_tickets_stays_everyone(self) -> None:
+        turn = ChatTurn(user_text="Any urgent tickets?")
+        result = list_tickets(self.source, ListTicketsArgs(category="urgent", stage="open"), turn)
+        self.assertIn("ACME-0099", [row["ticket_label"] for row in result.data])
+
+    def test_a_client_scope_beats_the_word_my(self) -> None:
+        turn = ChatTurn(user_text="Show my client's open tickets for ACME")
+        result = list_tickets(self.source, ListTicketsArgs(client_code="ACME", stage="open"), turn)
+        self.assertIn("ACME-0099", [row["ticket_label"] for row in result.data])
+
+    def test_time_entries_by_ticket_label(self) -> None:
+        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_label="acme-0041"))
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([row["id"] for row in result.data], [70002])
+        self.assertIn("ACME-0041", result.reply)
+
+    def test_ticket_detail_by_label_and_unknown_label(self) -> None:
+        good = get_ticket_detail(self.source, GetTicketDetailArgs(ticket_label="ACME-0041"))
+        self.assertTrue(good.ok, good.error)
+        self.assertEqual(good.row_ids, [3100])
+        bad = get_ticket_detail(self.source, GetTicketDetailArgs(ticket_label="ZTB-1691"))
+        self.assertFalse(bad.ok)
+        with self.assertRaises(ValueError):
+            GetTicketDetailArgs()

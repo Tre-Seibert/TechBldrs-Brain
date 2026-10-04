@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -87,6 +88,38 @@ def _arg_matches(actual, wanted) -> bool:
     return actual == wanted
 
 
+def _env_value(name: str) -> str:
+    """NAME from the environment, else from the repo's .env (never printed)."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    env_file = ROOT / ".env"
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+            key, sep, rest = line.partition("=")
+            if sep and key.strip() == name:
+                return rest.strip().strip("\"'")
+    return ""
+
+
+def identity_headers(email: str, secret: str) -> dict[str, str]:
+    """Who "me" is. A configured BRAIN_USER_JWT_SECRET means tb-brain ignores a bare email header,
+    so sign a short-lived Open WebUI-style JWT with it. Without a secret the header is accepted."""
+    if not email:
+        return {}
+    if not secret:
+        return {"X-OpenWebUI-User-Email": email}
+    import jwt  # PyJWT, already a tb-brain dependency
+
+    now = int(time.time())
+    token = jwt.encode(
+        {"sub": email, "email": email, "name": email, "role": "user", "iss": "tb-brain-eval", "iat": now, "exp": now + 3600},
+        secret,
+        algorithm="HS256",
+    )
+    return {"X-OpenWebUI-User-Jwt": token}
+
+
 def call_matches(call: dict, spec: dict) -> bool:
     tools = spec.get("tool")
     names = [tools] if isinstance(tools, str) else list(tools or [])
@@ -123,9 +156,12 @@ def check_calls(case: dict, trace: dict | None) -> list[str]:
         return failures
     for want in wants:
         options = want["any"] if "any" in want else [want]
-        if not any(call_matches(c, opt) for c in calls for opt in options):
+        matched = [c for c in calls for opt in options if call_matches(c, opt)]
+        if not matched:
             wording = " or ".join(_describe(opt) for opt in options)
             failures.append(f"no call matching {wording}")
+        elif not any(c.get("ok", True) for c in matched):
+            failures.append(f"matching call errored: {matched[0].get('error')}")
     return failures
 
 
@@ -151,7 +187,8 @@ def run(args: argparse.Namespace) -> int:
         print("no cases selected", file=sys.stderr)
         return 2
     base = args.url.rstrip("/")
-    headers = {"X-OpenWebUI-User-Email": args.as_email} if args.as_email else {}
+    secret = args.jwt_secret if args.jwt_secret is not None else _env_value("BRAIN_USER_JWT_SECRET")
+    headers = identity_headers(args.as_email, secret)
     results: list[dict] = []
     with httpx.Client(timeout=args.timeout) as client:
         health = client.get(f"{base}/health").json()
@@ -265,6 +302,11 @@ def main() -> int:
         "--as-email",
         default="tseibert@techbldrs.example",
         help="signed-in technician for 'me' (stub fixtures: Tre = ts); empty string sends no identity",
+    )
+    run_p.add_argument(
+        "--jwt-secret",
+        default=None,
+        help="BRAIN_USER_JWT_SECRET used to sign the identity (default: env var, then .env)",
     )
     run_p.add_argument("--verbose", action="store_true", help="print the tool calls for passing cases too")
     run_p.set_defaults(func=run)

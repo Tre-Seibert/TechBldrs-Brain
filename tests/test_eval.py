@@ -111,3 +111,28 @@ class CallScoringTests(unittest.TestCase):
         self.assertEqual(evalmod.check_calls(case, {"tool_calls": []}), [])
         self.assertEqual(len(evalmod.check_calls(case, {"tool_calls": [self.call("list_tickets")]})), 1)
         self.assertEqual(len(evalmod.check_calls(case, {"router": "longest_time", "tool_calls": []})), 1)
+
+
+class IdentityAndErrorTests(unittest.TestCase):
+    def test_signed_identity_is_accepted_by_tb_brain(self) -> None:
+        from app.config import Settings
+        from app.identity import resolve_actor
+
+        headers = evalmod.identity_headers("tseibert@techbldrs.example", "s3cret")
+        settings = Settings(brain_user_jwt_secret="s3cret", _env_file=None)
+        actor = resolve_actor(
+            settings, user_jwt=headers["X-OpenWebUI-User-Jwt"], user_email_header=None, fallback_actor=None
+        )
+        self.assertTrue(actor.verified)
+        self.assertEqual(actor.email, "tseibert@techbldrs.example")
+
+    def test_without_a_secret_the_plain_header_is_sent(self) -> None:
+        self.assertEqual(
+            evalmod.identity_headers("a@b.c", ""), {"X-OpenWebUI-User-Email": "a@b.c"}
+        )
+        self.assertEqual(evalmod.identity_headers("", "x"), {})
+
+    def test_a_matching_call_that_errored_fails(self) -> None:
+        case = {"expect": [{"tool": "list_tickets", "args": {"assignee_code": "me"}}]}
+        trace = {"tool_calls": [{"name": "list_tickets", "arguments": {"assignee_code": "me"}, "ok": False, "error": "unknown self"}]}
+        self.assertEqual(evalmod.check_calls(case, trace), ["matching call errored: unknown self"])

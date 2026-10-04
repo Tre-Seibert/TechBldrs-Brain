@@ -42,6 +42,9 @@ from app.tools.registry import (
 )
 
 _ASSIGNEE_CODE_RE = re.compile(r"^[A-Za-z]{2}$")
+_CLIENT_CODE_TOKEN_RE = re.compile(r"[A-Z]{3,8}")
+# "... for BUCK", "... at client ZEBB": a client scope the pattern routers do not handle.
+_CLIENT_SCOPE_RE = re.compile(r"\b(?:at|for|from|of|in)\s+(?:client\s+)?[A-Z]{3,8}\b")
 _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
 _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
@@ -334,6 +337,7 @@ class ListMailArgs(BaseModel):
 
 class ListTimeEntriesArgs(BaseModel):
     ticket_id: int | None = None
+    ticket_label: str | None = None
     client_code: str | None = None
     assignee_code: str | None = None
     work_after: str | None = None
@@ -349,7 +353,13 @@ class ListTimeEntriesArgs(BaseModel):
             and self.reviewed is None
             and not any(
                 (value or "").strip()
-                for value in (self.client_code, self.assignee_code, self.work_after, self.work_before)
+                for value in (
+                    self.ticket_label,
+                    self.client_code,
+                    self.assignee_code,
+                    self.work_after,
+                    self.work_before,
+                )
             )
         ):
             raise ValueError(
@@ -378,7 +388,14 @@ class ListMachinesArgs(BaseModel):
 
 
 class GetTicketDetailArgs(BaseModel):
-    ticket_id: int
+    ticket_id: int | None = None
+    ticket_label: str | None = None
+
+    @model_validator(mode="after")
+    def _need_one(self) -> GetTicketDetailArgs:
+        if self.ticket_id is None and not (self.ticket_label or "").strip():
+            raise ValueError("ticket_label (e.g. ACME-0041) or ticket_id is required")
+        return self
 
 
 class GetMailDetailArgs(BaseModel):
@@ -782,6 +799,12 @@ def _clean_person_name(name: str | None) -> str | None:
     if _LABEL_RE.match(text) or _ASSIGNEE_CODE_RE.match(text):
         return None
     if re.fullmatch(r"[A-Za-z]{2,8}", text) and text.isupper():
+        return None
+    tokens = text.split()
+    # A client code ("BLMC", "client ZZZZ") or a long clause is a filter, not a person.
+    if len(tokens) > 4 or any(_CLIENT_CODE_TOKEN_RE.fullmatch(token) for token in tokens):
+        return None
+    if tokens[0].lower() == "client":
         return None
     return text
 
@@ -1229,6 +1252,16 @@ def list_tickets(
     if not (raw_assignee or "").strip() and _is_self_token(raw_q):
         raw_assignee = "me"
         raw_q = None
+    if (
+        not (raw_assignee or "").strip()
+        and _asked_own_tickets(turn)
+        and not any(
+            (value or "").strip()
+            for value in (args.client_code, raw_q, args.ticket_num, args.requestor, args.machine_name)
+        )
+        and args.contact_id is None
+    ):
+        raw_assignee = "me"  # "my urgent tickets": the model dropped the assignee
     category = _resolve_category(args.category)
     if not category:
         from_q, raw_q = _category_from_query(raw_q)
@@ -1259,8 +1292,6 @@ def list_tickets(
         or (args.cause or "").strip()
         or args.contact_id is not None
         or (args.requestor or "").strip()
-        or args.needs_response
-        or args.unassigned
     )
     if column_asked and _is_self_token(raw_assignee) and not _asked_own_tickets(turn):
         raw_assignee = None
@@ -1541,7 +1572,7 @@ def _about_query(turn: ChatTurn | None) -> str | None:
     if not text or _asked_latest_for_person(turn):
         return None
     match = _ABOUT_TICKET_RE.search(text)
-    if not match:
+    if not match or _CLIENT_SCOPE_RE.search(match.group("q")):
         return None
     words = [part.strip(" ?.!,") for part in re.split(r"\s+", match.group("q").strip()) if part.strip(" ?.!,")]
     while words and words[-1].lower() in _ABOUT_FILLER:
@@ -1601,7 +1632,7 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
     was one of these rankings, and excludes every ticket that reply already named.
     """
     text = (turn.user_text if turn else "").strip()
-    if not text or _TICKET_LABEL_RE.search(text):
+    if not text or _TICKET_LABEL_RE.search(text) or _CLIENT_SCOPE_RE.search(text):
         return None
     previous_text = (turn.previous_assistant_text if turn else "") or ""
     prior_is_ranking = "longest time worked" in previous_text.lower()
@@ -1884,10 +1915,13 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
         if pick is None:
             return _refuse(LIST_TIME_ENTRIES, source, f"No active technician matches {assignee!r}.")
         tech_user_id = pick.id
+    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
+    if label_error:
+        return _refuse(LIST_TIME_ENTRIES, source, label_error)
     client = (args.client_code or "").strip().upper() or None
     try:
         rows = source.list_time_entries(
-            ticket_id=args.ticket_id,
+            ticket_id=ticket_id,
             client_code=client,
             tech_user_id=tech_user_id,
             work_after=(args.work_after or "").strip() or None,
@@ -1900,10 +1934,10 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
         return _refuse(LIST_TIME_ENTRIES, source, str(exc))
     data = [_time_entry_payload(r) for r in rows]
     total_minutes = sum(r.minutes for r in rows)
-    if args.ticket_id and rows:
+    if ticket_id and rows:
         scope = rows[0].ticket_label
     else:
-        scope = (f"ticket {args.ticket_id}" if args.ticket_id else client) or assignee or "that scope"
+        scope = (f"ticket {ticket_id}" if ticket_id else client) or assignee or "that scope"
     lines = [f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'} for {scope} ({total_minutes} min total).", ""]
     if not data:
         lines.append("None found.")
@@ -2031,9 +2065,23 @@ def list_machines(source: FlowSource, args: ListMachinesArgs) -> ToolResult:
     )
 
 
+def _ticket_id_for(source: FlowSource, ticket_id: int | None, label: str | None) -> tuple[int | None, str | None]:
+    """A ticket id from an explicit id or a label like ACME-0041. Returns (id, error)."""
+    text = (label or "").strip()
+    if not text:
+        return ticket_id, None
+    row = _resolve_label(source, text.upper())
+    if row is None:
+        return None, f"No single ticket found for label {text!r}. Check the client code and number."
+    return row.id, None
+
+
 def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResult:
+    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
+    if label_error:
+        return _refuse(GET_TICKET_DETAIL, source, label_error)
     try:
-        row = source.get_ticket(ticket_id=args.ticket_id)
+        row = source.get_ticket(ticket_id=ticket_id)
     except FlowRequestError as exc:
         return _refuse(GET_TICKET_DETAIL, source, str(exc))
     data = _ticket_detail_payload(row)

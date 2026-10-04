@@ -78,8 +78,8 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
         "assignee_code": {
             "type": "string",
             "description": (
-                "Two-letter technician code from search_technician (e.g. ts), "
-                "or 'me' for the signed-in technician. Use me for 'my tickets'."
+                "Technician name as the user said it (e.g. Tom) or two-letter code (e.g. ts); names are "
+                "resolved for you. Use 'me' for 'my tickets'. Never guess a code."
             ),
         },
         "client_code": {
@@ -293,7 +293,11 @@ _LIST_MAIL_SCHEMA: dict[str, Any] = {
 _LIST_TIME_ENTRIES_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "ticket_id": {"type": "integer", "description": "tickets.id to list time entries for."},
+        "ticket_label": {
+            "type": "string",
+            "description": "Ticket label such as ACME-0041. Prefer this over ticket_id; never invent a ticket_id.",
+        },
+        "ticket_id": {"type": "integer", "description": "tickets.id, only if a previous tool result gave it to you."},
         "client_code": {"type": "string", "description": "Flow client_code (e.g. WDON). ticket_id or client_code is required."},
         "assignee_code": {
             "type": "string",
@@ -365,12 +369,15 @@ _LIST_MACHINES_SCHEMA: dict[str, Any] = {
 _GET_TICKET_DETAIL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "ticket_label": {
+            "type": "string",
+            "description": "Ticket label such as ZTB-1691. Prefer this; it is resolved for you.",
+        },
         "ticket_id": {
             "type": "integer",
-            "description": "tickets.id from an earlier list_tickets/latest_ticket/find_similar_tickets result.",
+            "description": "tickets.id, only if an earlier tool result gave it to you. Never invent one.",
         },
     },
-    "required": ["ticket_id"],
 }
 
 _GET_MAIL_DETAIL_SCHEMA: dict[str, Any] = {
@@ -423,8 +430,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         SEARCH_TECHNICIAN,
-        "Resolve a TechBldrs technician's name, email, or code to their two-letter assignee_code. "
-        "Call this before list_tickets when the user names a technician.",
+        "Look up a TechBldrs technician by name, email, or code (shows who they are and their assignee_code). "
+        "list_tickets accepts a technician's name directly, so you do not need this just to list their tickets.",
         _SEARCH_TECHNICIAN_SCHEMA,
     ),
     _fn(
