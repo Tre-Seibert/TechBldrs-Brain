@@ -368,6 +368,12 @@ class ListTimeEntriesArgs(BaseModel):
         return self
 
 
+_STATS_DATE_ALIASES = {
+    "after": ("work_after", "received_after", "created_after", "date_from", "start", "from_date", "since"),
+    "before": ("work_before", "received_before", "created_before", "date_to", "end", "to_date", "until"),
+}
+
+
 class TicketStatsArgs(BaseModel):
     entity: str = "tickets"
     group_by: str = "client"
@@ -380,6 +386,22 @@ class TicketStatsArgs(BaseModel):
     after: str | None = None
     before: str | None = None
     limit: int = 10
+
+    @model_validator(mode="before")
+    @classmethod
+    def _date_aliases(cls, data: Any) -> Any:
+        """Models reuse list_time_entries' work_after/work_before here; a silently dropped date
+        range would answer an all-time question instead of 'this month'."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        for canonical, aliases in _STATS_DATE_ALIASES.items():
+            if not data.get(canonical):
+                for alias in aliases:
+                    if data.get(alias):
+                        data[canonical] = data[alias]
+                        break
+        return data
 
 
 class ListMachinesArgs(BaseModel):
@@ -1263,6 +1285,9 @@ def list_tickets(
     ):
         raw_assignee = "me"  # "my urgent tickets": the model dropped the assignee
     category = _resolve_category(args.category)
+    model_said_overdue = False
+    if category and category.strip().lower() in ("overdue", "past due", "late"):
+        category, model_said_overdue = None, True  # overdue is a due-date filter, not a category
     if not category:
         from_q, raw_q = _category_from_query(raw_q)
         category = from_q
@@ -1275,7 +1300,7 @@ def list_tickets(
     if not reason:
         reason = _reason_from_turn(turn)
     overdue = args.overdue
-    if overdue is None and _overdue_from_turn(turn):
+    if overdue is None and (model_said_overdue or _overdue_from_turn(turn)):
         overdue = True
     complete = args.complete
     if complete is None:

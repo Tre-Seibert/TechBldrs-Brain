@@ -701,8 +701,7 @@
         {
           "tool": "list_mail",
           "args": {
-            "client_code": "WDON",
-            "direction": "inbound"
+            "client_code": "WDON"
           }
         }
       ],

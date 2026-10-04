@@ -1076,3 +1076,29 @@ class OwnTicketsAndLabelTests(unittest.TestCase):
         self.assertFalse(bad.ok)
         with self.assertRaises(ValueError):
             GetTicketDetailArgs()
+
+
+class ModelHabitTests(unittest.TestCase):
+    """Argument mistakes the 14B model actually makes (seen in eval runs) must not change the answer."""
+
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_stats_keeps_a_date_range_given_as_work_after(self) -> None:
+        args = TicketStatsArgs.model_validate(
+            {"entity": "time", "group_by": "tech", "work_after": "2026-09-19", "work_before": "2026-09-20"}
+        )
+        self.assertEqual((args.after, args.before), ("2026-09-19", "2026-09-20"))
+        result = ticket_stats(self.source, args)
+        self.assertEqual([row["key"] for row in result.data["rows"]], ["Tre Seibert"])
+        self.assertEqual(result.data["total_count"], 1)  # only the 09-19 entry, not all time
+
+    def test_explicit_after_wins_over_an_alias(self) -> None:
+        args = TicketStatsArgs.model_validate({"after": "2026-01-01", "work_after": "2026-09-19"})
+        self.assertEqual(args.after, "2026-01-01")
+
+    def test_category_overdue_is_treated_as_the_overdue_filter(self) -> None:
+        with_alias = list_tickets(self.source, ListTicketsArgs(category="overdue", stage="open"))
+        plain = list_tickets(self.source, ListTicketsArgs(overdue=True, stage="open"))
+        self.assertTrue(with_alias.ok, with_alias.error)
+        self.assertEqual(with_alias.row_ids, plain.row_ids)
