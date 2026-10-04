@@ -1102,3 +1102,30 @@ class ModelHabitTests(unittest.TestCase):
         plain = list_tickets(self.source, ListTicketsArgs(overdue=True, stage="open"))
         self.assertTrue(with_alias.ok, with_alias.error)
         self.assertEqual(with_alias.row_ids, plain.row_ids)
+
+
+class LongestTimeDateRangeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_a_date_range_goes_to_the_model_not_the_all_time_ranking(self) -> None:
+        for text in (
+            "What was the longest ticket we spent time on last week?",
+            "Which ticket has the most hours this month?",
+            "longest time worked yesterday",
+            "most hours logged since September",
+        ):
+            self.assertIsNone(answer_longest_time_worked(self.source, ChatTurn(user_text=text)), text)
+
+    def test_the_plain_all_time_question_still_hits_the_router(self) -> None:
+        self.assertIsNotNone(
+            answer_longest_time_worked(self.source, ChatTurn(user_text="Which open ticket has the longest time worked"))
+        )
+
+    def test_stats_can_rank_tickets_by_time_in_a_range(self) -> None:
+        result = ticket_stats(
+            self.source,
+            TicketStatsArgs(entity="time", group_by="ticket", metric="hours", after="2026-09-17", before="2026-09-20"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.data["rows"][0]["key"], "WDON-1842")  # 41 actual minutes beats 20

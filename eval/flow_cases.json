@@ -570,6 +570,29 @@
       ]
     },
     {
+      "id": "C7",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What was the longest ticket we spent time on last week?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "time",
+            "group_by": "ticket",
+            "after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ],
+      "note": "A date range must not be answered with the all-time ranking (the longest_time router used to)."
+    },
+    {
       "id": "D1",
       "group": "mail",
       "messages": [
