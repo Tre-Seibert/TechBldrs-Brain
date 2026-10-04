@@ -133,3 +133,58 @@ class ExtraBodyTests(unittest.IsolatedAsyncioTestCase):
                 actor="test",
             )
         self.assertEqual(seen[0]["reasoning_effort"], "none")
+
+
+class NudgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_answer_from_memory_gets_one_nudge_then_uses_a_tool(self) -> None:
+        requests: list[dict] = []
+        script = iter(
+            [
+                {"role": "assistant", "content": "You spent the most time on ZTB-9999."},  # invented, no tool
+                _tool_call("ticket_stats", {"entity": "time", "group_by": "ticket", "metric": "hours"}),
+                {"role": "assistant", "content": "ignored: the tool reply wins"},
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": next(script)}]})
+
+        real = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+        with mock.patch("app.agent.loop.httpx.AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            payload = await run_tool_loop(
+                settings=Settings(llm_model="fake", llm_base_url="http://llm.test/v1", _env_file=None),
+                source=StubFlowSource(),
+                messages=[{"role": "user", "content": "what ticket have I spent the most time on?"}],
+                model=None,
+                actor="test",
+            )
+        self.assertEqual([c["name"] for c in payload["x_tb_brain"]["tool_calls"]], ["ticket_stats"])
+        self.assertNotIn("ZTB-9999", payload["choices"][0]["message"]["content"])
+        self.assertIn("without calling a tool", requests[1]["messages"][-1]["content"])
+
+    async def test_a_second_invented_answer_is_still_refused(self) -> None:
+        script = iter(
+            [
+                {"role": "assistant", "content": "It is ZTB-9999."},
+                {"role": "assistant", "content": "Definitely ZTB-9999."},
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": next(script)}]})
+
+        real = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+        with mock.patch("app.agent.loop.httpx.AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            payload = await run_tool_loop(
+                settings=Settings(llm_model="fake", llm_base_url="http://llm.test/v1", _env_file=None),
+                source=StubFlowSource(),
+                messages=[{"role": "user", "content": "anything"}],
+                model=None,
+                actor="test",
+            )
+        text = payload["choices"][0]["message"]["content"]
+        self.assertNotIn("ZTB-9999", text)
+        self.assertIn("I can only list tickets a Flow search returned", text)

@@ -62,6 +62,10 @@ _NO_TOOL_ENGLISH = (
 )
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
+_NUDGE_TO_USE_A_TOOL = (
+    "You answered without calling a tool, so those ticket numbers are unverified. Call the right tool "
+    "(for example ticket_stats for hours or counts, list_tickets for lists) and answer only from its result."
+)
 _NO_INVENTED_TICKETS = (
     "I can only list tickets a Flow search returned. I did not run that search, so I won't guess ticket numbers."
 )
@@ -343,6 +347,7 @@ async def run_tool_loop(
         payload["x_tb_brain"] = {"router": router_name, "tool_calls": []}
         return payload
     trace: list[dict[str, Any]] = []
+    nudged = False
     chat = _ensure_system(list(messages), source=source, no_think=settings.llm_no_think)
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
@@ -380,6 +385,14 @@ async def run_tool_loop(
                 payload["model"] = resolved_model
                 if not relayed:
                     blocked = reply_without_invented_tickets(str(message.get("content") or ""), relayed)
+                    if blocked and not nudged:
+                        # The model answered from memory with ticket labels it never looked up.
+                        # Give it one chance to call a tool instead of showing the refusal.
+                        nudged = True
+                        chat.append({"role": "assistant", "content": str(message.get("content") or "")})
+                        chat.append({"role": "user", "content": _NUDGE_TO_USE_A_TOOL})
+                        _log.info("nudging model to use a tool", extra={"event": "agent.nudge"})
+                        continue
                     if blocked:
                         payload = _set_assistant_content(payload, blocked)
                 payload = _apply_english_reply(payload, relayed)

@@ -124,6 +124,8 @@ _OVERDUE_RE = re.compile(r"\boverdue\b", re.IGNORECASE)
 _RANK_WORD_RE = re.compile(r"\b(?:longest|most|highest|greatest)\b", re.IGNORECASE)
 _WORK_AMOUNT_WORD_RE = re.compile(r"\b(?:time|hours?|worked|logged)\b", re.IGNORECASE)
 _TICKET_WORD_RE = re.compile(r"\btickets?\b", re.IGNORECASE)
+# "the ticket *I* spent the most time on" is one technician's time, not the all-time ticket total.
+_OWN_TIME_RE = re.compile(r"\b(?:i|my|mine|myself)\b|\b(?:by|for)\s+me\b", re.IGNORECASE)
 # "last week", "this month", "yesterday": a time-bounded question the all-time ranking cannot answer.
 _DATE_RANGE_RE = re.compile(
     r"\b(?:(?:last|this|past|previous|current)\s+(?:week|month|quarter|year|\d+\s+(?:days?|weeks?|months?))"
@@ -1669,6 +1671,7 @@ def answer_longest_time_worked(source: FlowSource, turn: ChatTurn | None) -> Too
         or _TICKET_LABEL_RE.search(text)
         or _CLIENT_SCOPE_RE.search(text)
         or _DATE_RANGE_RE.search(text)
+        or _OWN_TIME_RE.search(text)
     ):
         return None
     previous_text = (turn.previous_assistant_text if turn else "") or ""

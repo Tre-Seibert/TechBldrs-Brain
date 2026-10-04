@@ -1129,3 +1129,18 @@ class LongestTimeDateRangeTests(unittest.TestCase):
         )
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.data["rows"][0]["key"], "WDON-1842")  # 41 actual minutes beats 20
+
+
+class LongestTimeOwnTimeTests(unittest.TestCase):
+    def test_my_own_time_goes_to_the_model(self) -> None:
+        source = StubFlowSource()
+        for text in (
+            "what ticket have I spent the most amount of time working on?",
+            "Which of my tickets has the most hours?",
+            "most hours logged by me",
+        ):
+            self.assertIsNone(answer_longest_time_worked(source, ChatTurn(user_text=text)), text)
+        # "show me" is not "by me"
+        self.assertIsNotNone(
+            answer_longest_time_worked(source, ChatTurn(user_text="Show me the open ticket with the longest time worked"))
+        )

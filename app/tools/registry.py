@@ -486,7 +486,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "stage=open. Longest ticket worked last week/this month -> entity=time, group_by=ticket, metric=hours, "
         "after/before (the all-time longest uses list_tickets sort=hrs_actual_total instead). "
         "Hours billed to X this month -> entity=time, group_by=client, billable=true, client_code=X, "
-        "after/before. My hours yesterday -> entity=time, group_by=tech, assignee_code=me, after/before.",
+        "after/before. My hours yesterday -> entity=time, group_by=tech, assignee_code=me, after/before. "
+        "The ticket I spent the most time on -> entity=time, group_by=ticket, metric=hours, assignee_code=me.",
         _TICKET_STATS_SCHEMA,
     ),
     _fn(

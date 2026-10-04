@@ -593,6 +593,30 @@
       "note": "A date range must not be answered with the all-time ranking (the longest_time router used to)."
     },
     {
+      "id": "C8",
+      "group": "time",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what ticket have I spent the most amount of time working on?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "ticket_stats",
+          "args": {
+            "entity": "time",
+            "group_by": "ticket",
+            "assignee_code": [
+              "me",
+              "ts"
+            ]
+          }
+        }
+      ],
+      "note": "Time *I* logged, not the ticket total from everyone. Without a tool the model used to invent labels."
+    },
+    {
       "id": "D1",
       "group": "mail",
       "messages": [
