@@ -26,6 +26,7 @@ from app.tools.handlers import (
     answer_person_ticket_question,
     answer_tickets_about,
 )
+from app.tools.registry import WRITE_TOOL_NAMES
 from app.tools.registry import (
     FIND_SIMILAR_TICKETS,
     GET_CLIENT_DETAIL,
@@ -66,6 +67,10 @@ _NUDGE_TO_USE_A_TOOL = (
     "You answered without calling a tool, so that answer is unverified. For any question about tickets, "
     "time, mail, contacts, or clients you must call the right tool first (for example list_tickets for "
     "lists, ticket_stats for hours or counts) and answer only from its result. Call the tool now."
+)
+_NUDGE_TO_WRITE = (
+    "Write the answer now, in English, in plain sentences, from the digest above. Name tickets only "
+    "if they appear in the digest. Do not call tools."
 )
 _STUCK = (
     "I kept searching without getting to an answer. Try asking again with a client code or ticket label, "
@@ -119,6 +124,71 @@ def _compact_history(messages: list[dict[str, Any]], *, limit: int = 240) -> lis
 _NO_INVENTED_TICKETS = (
     "I can only list tickets a Flow search returned. I did not run that search, so I won't guess ticket numbers."
 )
+
+
+def _tool_cheatsheet(tools: list[dict[str, Any]]) -> str:
+    lines = []
+    for tool in tools:
+        fn = tool.get("function") or {}
+        if fn.get("name") in WRITE_TOOL_NAMES:
+            continue
+        params = ", ".join((fn.get("parameters") or {}).get("properties", {}).keys())
+        lines.append(f"- {fn.get('name')}({params}): {str(fn.get('description') or '')[:150]}")
+    return "\n".join(lines)
+
+
+async def _force_tool_call(
+    client: httpx.AsyncClient, model: str, chat: list[dict[str, Any]], tools: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Last resort when the model twice answers a data question without calling a tool.
+
+    Asks for the tool call as constrained JSON (the model cannot answer in prose), so a call is
+    guaranteed. The write tool is never offered. Returns a synthetic assistant tool_calls message,
+    or None if the server does not support structured output.
+    """
+    names = [t["function"]["name"] for t in tools if t["function"]["name"] not in WRITE_TOOL_NAMES]
+    ask = {
+        "role": "user",
+        "content": (
+            "Reply with JSON only: the single tool call that best answers the user's last question. "
+            "Tools:\n" + _tool_cheatsheet(tools)
+        ),
+    }
+    body = {
+        "model": model,
+        "messages": [*chat, ask],
+        "stream": False,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "tool_call",
+                "schema": {
+                    "type": "object",
+                    "properties": {"tool": {"type": "string", "enum": names}, "arguments": {"type": "object"}},
+                    "required": ["tool", "arguments"],
+                },
+            },
+        },
+    }
+    try:
+        response = await client.post("/chat/completions", json=body)
+        if response.status_code >= 400:
+            return None
+        data = json.loads(str(response.json()["choices"][0]["message"].get("content") or ""))
+        tool, arguments = data.get("tool"), data.get("arguments")
+    except Exception as exc:  # noqa: BLE001 - the caller falls back to the safe message
+        _log.info("forced tool call failed: %s", exc)
+        return None
+    if tool not in names or not isinstance(arguments, dict):
+        return None
+    _log.info("forced tool call: %s", tool, extra={"event": "agent.forced_tool_call"})
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "forced", "type": "function", "function": {"name": tool, "arguments": json.dumps(arguments)}}
+        ],
+    }
 
 
 def reply_without_invented_tickets(content: str, relayed: list[str]) -> str | None:
@@ -400,6 +470,8 @@ async def run_tool_loop(
         return payload
     trace: list[dict[str, Any]] = []
     nudged = False
+    forced_tried = False
+    fallbacks: list[str] = []  # plain lists, used if a summary never comes out of the model
     chat = _ensure_system(_compact_history(list(messages)), source=source, no_think=settings.llm_no_think)
     prompt_tokens = 0
     relayed: list[str] = []
@@ -444,29 +516,30 @@ async def run_tool_loop(
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
                 payload["model"] = resolved_model
+                content = str(message.get("content") or "")
+                blocked = None
+                skipped = unusable = False
                 if not relayed:
-                    content = str(message.get("content") or "")
                     if digests:
                         # Prose written from a digest may name tickets, but only ones the digest had.
                         grounded = " ".join(digests)
                         invented = [label for label in _TICKET_LABEL_RE.findall(content) if label not in grounded]
                         blocked = _NO_INVENTED_TICKETS if invented else None
+                        unusable = not content.strip() or _has_non_english_script(content)
                     else:
                         blocked = reply_without_invented_tickets(content, relayed)
                     skipped = not trace and _expects_tool(turn)
-                    if (blocked or skipped) and not nudged:
-                        # The model answered from memory (made-up labels, or a data question with no
-                        # tool call at all). Give it one chance to call a tool.
+                    if (blocked or skipped or unusable) and not nudged:
+                        # Made-up labels, no tool call for a data question, or an empty / non-English
+                        # summary. One retry before anything else.
                         nudged = True
-                        chat.append({"role": "assistant", "content": str(message.get("content") or "")})
-                        chat.append({"role": "user", "content": _NUDGE_TO_USE_A_TOOL})
-                        _log.info("nudging model to use a tool", extra={"event": "agent.nudge"})
+                        chat.append({"role": "assistant", "content": content})
+                        chat.append({"role": "user", "content": _NUDGE_TO_WRITE if digests else _NUDGE_TO_USE_A_TOOL})
+                        _log.info("nudging model (digest=%s)", bool(digests), extra={"event": "agent.nudge"})
                         continue
-                    if blocked:
-                        payload = _set_assistant_content(payload, blocked)
-                    elif skipped:
-                        # The model twice failed to call a tool. A pattern router is a better safety net
-                        # than a refusal, even for routers the operator turned off.
+                    if (blocked or skipped) and not digests:
+                        # Twice without a tool. A pattern router is a better safety net than a refusal,
+                        # even for routers the operator turned off.
                         fallback = _direct_answer_named(source, turn)
                         if fallback is not None:
                             name, direct = fallback
@@ -476,16 +549,29 @@ async def run_tool_loop(
                             )
                             payload["x_tb_brain"] = {"router": f"fallback:{name}", "tool_calls": trace}
                             return payload
-                        payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
-                payload = _apply_english_reply(payload, relayed)
-                if (footers or field_headers) and not relayed:
-                    prose = str(payload["choices"][0]["message"].get("content") or "").strip()
-                    if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH):
-                        prose = ""
-                    parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
-                    payload = _set_assistant_content(payload, "\n\n".join(part for part in parts if part))
-                payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
-                return payload
+                        if not forced_tried:
+                            # No router fits either: make the tool call with constrained JSON, which
+                            # cannot come back as prose, and carry on as if the model had called it.
+                            forced_tried = True
+                            forced = await _force_tool_call(client, resolved_model, chat, tools)
+                            if forced is not None:
+                                message = forced
+                                tool_calls = forced["tool_calls"]
+                if not tool_calls:
+                    if not relayed:
+                        if blocked:
+                            payload = _set_assistant_content(payload, blocked)
+                        elif skipped:
+                            payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
+                    payload = _apply_english_reply(payload, relayed)
+                    if (footers or field_headers) and not relayed:
+                        prose = str(payload["choices"][0]["message"].get("content") or "").strip()
+                        if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) or unusable:
+                            prose = fallbacks[-1] if fallbacks else ""  # no usable summary: show the plain list
+                        parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
+                        payload = _set_assistant_content(payload, "\n\n".join(part for part in parts if part))
+                    payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
+                    return payload
             chat.append(message)
             _log.info(
                 "agent tool_calls iteration=%s count=%s",
@@ -512,6 +598,8 @@ async def run_tool_loop(
                     relayed.append(result.reply)
                 if result.digest:
                     digests.append(result.digest)
+                if result.fallback:
+                    fallbacks.append(result.fallback)
                 if result.footer:
                     footers.append(result.footer)
                 if result.header:

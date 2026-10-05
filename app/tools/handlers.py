@@ -467,6 +467,8 @@ class ToolResult(BaseModel):
     digest: str | None = None
     header: str | None = None
     footer: str | None = None
+    # Plain list shown instead of prose if the model never produces a usable summary.
+    fallback: str | None = None
 
 
 def _contact_payload(row: ContactRecord) -> dict[str, Any]:
@@ -926,7 +928,7 @@ def _contact_name_score(query: str, stored: str) -> int | None:
 
 
 def _clean_person_name(name: str | None) -> str | None:
-    text = (name or "").strip(" ?.!,")
+    text = (name or "").strip(" ?.!,*;:\"'()")
     if not text or _is_self_token(text) or _OWN_TICKETS_RE.search(text):
         return None
     if _LABEL_RE.match(text) or _ASSIGNEE_CODE_RE.match(text):
@@ -1595,6 +1597,9 @@ def list_tickets(
         stage = "live"
     stage_given = (args.stage or "").strip().lower() in ("open", "review", "live", "archived", "all")
     said = turn.user_text if turn else ""
+    searching = bool(raw_q or person_label or contact_id is not None)
+    if searching and (args.stage or "").strip().lower() == "open" and not _OPEN_WORD_RE.search(said):
+        stage = "live"  # "tickets about X" / "tickets for Y": open and in review, unless they said open
     if not stage_given and stage in ("live", "open") and _OPEN_WORD_RE.search(said) and not _NOT_OPEN_RE.search(said):
         stage = "open"  # the user said "open": never hand back review tickets
     limit = 1 if _asked_latest_for_person(turn) else args.limit
@@ -1787,6 +1792,7 @@ def _ticket_summary_result(
     extra = f" (summarized the {_SUMMARY_MAX_TICKETS} most recently active)" if len(rows) > len(shown) else ""
     footer = f"{len(rows)} ticket(s){extra}: " + ", ".join(ticket_label(r.client_code, r.ticket_num) for r in rows)
     return ToolResult(
+        fallback=format_ticket_list(data, heading=heading),
         tool=LIST_TICKETS,
         source=source.source_name,
         data=data,
@@ -2433,7 +2439,12 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
             client_code=client,
             reply="\n".join(lines).rstrip(),
         )
+    plain = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
+    for row in data:
+        when = (row["work_date"] or row["start_at"] or "")[:10]
+        plain.append(f"- {when} — {row['subject']} ({_format_minutes(row['actual_minutes'] or row['minutes'])})")
     return ToolResult(
+        fallback="\n".join(plain),
         tool=LIST_TIME_ENTRIES,
         source=source.source_name,
         data=data,
