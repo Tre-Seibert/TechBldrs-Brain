@@ -67,6 +67,10 @@ _NUDGE_TO_USE_A_TOOL = (
     "time, mail, contacts, or clients you must call the right tool first (for example list_tickets for "
     "lists, ticket_stats for hours or counts) and answer only from its result. Call the tool now."
 )
+_STUCK = (
+    "I kept searching without getting to an answer. Try asking again with a client code or ticket label, "
+    "for example 'show me ZTB-1680'."
+)
 _NO_SEARCH_RUN = (
     "I didn't run a Flow search for that, so I won't guess. Try rephrasing, for example "
     "'my urgent tickets' or 'open tickets for BUCK'."
@@ -411,9 +415,10 @@ async def run_tool_loop(
             body: dict[str, Any] = {
                 "model": resolved_model,
                 "messages": chat,
-                "tools": tools,
                 "stream": False,
             }
+            if not digests:  # a digest means "write the answer now": offering tools invites repeat calls
+                body["tools"] = tools
             body.update(settings.llm_extra_body_dict)
             if extra_body:
                 for key, value in extra_body.items():
@@ -519,10 +524,22 @@ async def run_tool_loop(
                         "content": _tool_message_content(result),
                     }
                 )
-        raise AgentError(
-            f"Tool loop exceeded AGENT_MAX_TOOL_ITERS={settings.agent_max_tool_iters}. "
-            f"Last model payload keys={list((last_payload or {}).keys())}"
+        _log.warning("tool loop hit AGENT_MAX_TOOL_ITERS=%s", settings.agent_max_tool_iters)
+        stuck = _assistant_payload(
+            "\n\n".join(
+                part
+                for part in (
+                    field_headers[-1] if field_headers else "",
+                    _STUCK if not (field_headers or footers) else "",
+                    relayed[-1] if relayed else "",
+                    footers[-1] if footers else "",
+                )
+                if part
+            ),
+            settings.llm_model.strip() or "tb-brain",
         )
+        stuck["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens, "stuck": True}
+        return stuck
 
 
 async def stream_final_message(payload: dict[str, Any]) -> AsyncIterator[bytes]:

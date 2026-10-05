@@ -1216,6 +1216,15 @@ def _signed_in_technician(source: FlowSource) -> tuple[TechnicianRecord | None, 
     return None, f"No Flow technician uses the signed-in email {email}."
 
 
+def _first_name_starts(source: FlowSource, prefix: str) -> list[TechnicianRecord]:
+    found = []
+    for tech in source.search_technician(query="", limit=100):
+        first = (tech.display_name or "").strip().split(" ")[0].lower()
+        if tech.assignee_code and first.startswith(prefix.lower()) and first != prefix.lower():
+            found.append(tech)
+    return found
+
+
 def _closest_technicians(source: FlowSource, text: str) -> list[tuple[int, TechnicianRecord]]:
     """Technicians whose first or full name is within two typos of `text`, closest tier only.
 
@@ -1255,7 +1264,17 @@ def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, 
             return None, error
         return (tech.assignee_code or "").lower(), None
     if _ASSIGNEE_CODE_RE.match(text):
-        return text.lower(), None
+        code = text.lower()
+        known = source.search_technician(query=code, limit=5)
+        if any((m.assignee_code or "").lower() == code for m in known):
+            return code, None
+        starts = _first_name_starts(source, code)  # "ed" is the start of Eddie, not anyone's code
+        if len(starts) == 1:
+            return (starts[0].assignee_code or "").lower(), None
+        if starts:
+            options = " or ".join(f"{t.display_name} ({t.assignee_code})" for t in starts)
+            return None, f"{code!r} could be {options}. Ask again with the full name."
+        return code, None  # not a known code and not a name start: let Flow decide
     matches = source.search_technician(query=text, limit=10)
     codes = sorted({(m.assignee_code or "").lower() for m in matches if m.assignee_code})
     if len(codes) == 1:
@@ -1293,7 +1312,7 @@ def search_contact(source: FlowSource, args: SearchContactArgs, turn: ChatTurn |
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     client_code = codes[0] if len(codes) == 1 else (args.client_code or None)
     if _asked_tickets_for_person(turn):
-        stage = "live" if _asked_latest_for_person(turn) else "open"
+        stage = "live"
         limit = 1 if _asked_latest_for_person(turn) else 100
         listed = list_tickets(
             source,
@@ -1438,7 +1457,7 @@ def _search_terms(query: str) -> list[str]:
     return terms[:3]
 
 
-def _text_search(run: Any, query: str) -> list[TicketRecord]:
+def _text_search(run: Any, query: str) -> list[TicketRecord]:  # noqa: C901
     """Word-by-word, stemmed text search. Flow only does one substring match, so each word is searched
     on its own and the results are intersected (every word must appear)."""
     terms = _search_terms(query)
@@ -1567,7 +1586,7 @@ def list_tickets(
         "live",
     ):
         if not client and not raw_q and not args.ticket_num:
-            stage = "live" if _asked_latest_for_person(turn) else "open"
+            stage = "live"  # a person's tickets: open and in review, never archived unless asked
     if _asked_latest_for_person(turn) and (args.stage or "").strip().lower() not in (
         "review",
         "archived",
@@ -1578,15 +1597,13 @@ def list_tickets(
     said = turn.user_text if turn else ""
     if not stage_given and stage in ("live", "open") and _OPEN_WORD_RE.search(said) and not _NOT_OPEN_RE.search(said):
         stage = "open"  # the user said "open": never hand back review tickets
-    elif not stage_given and stage == "live" and raw_q and not (person_label or contact_id is not None):
-        stage = "all"  # "tickets about X" is a search of everything; each row says which stage it is in
     limit = 1 if _asked_latest_for_person(turn) else args.limit
     resolved_sort = (args.sort or "last_activity_at").strip() or "last_activity_at"
     # Placeholder tickets get filtered out *after* fetching below, which would just
     # shrink an already-capped page -- overfetch here so trimming to the caller's
     # real limit still happens after that filter, not before it.
     fetch_limit = max(limit, 100) if (resolved_sort == "hrs_actual_total" and not category) else limit
-    def run(query: str | None) -> list[TicketRecord]:
+    def run(query: str | None, stage_override: str | None = None) -> list[TicketRecord]:
         return source.list_tickets(
             client_code=client,
             assignee_code=assignee,
@@ -1612,7 +1629,7 @@ def list_tickets(
             requestor=requestor,
             needs_response=args.needs_response,
             unassigned=args.unassigned,
-            stage=stage,
+            stage=stage_override or stage,
             sort=resolved_sort,
             order=(args.order or "desc").strip() or "desc",
             limit=fetch_limit,
@@ -1628,8 +1645,12 @@ def list_tickets(
         rows = [r for r in rows if not _is_placeholder_category(r.category)][:limit]
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     scoped = client or (codes[0] if len(codes) == 1 else None)
+    archive_offer = None
+    searched = bool(raw_q or person_label or contact_id is not None)  # not for overdue / needs-reply style filters
+    if not rows and searched and stage in ("live", "open", "review") and not _asked_latest_for_person(turn):
+        archive_offer = _archive_offer(source, run, raw_q, stage)
     note = f"{len(rows)} ticket(s)."
-    if len(rows) >= max(args.limit, 1):
+    if len(rows) >= max(args.limit, 1) and args.limit > 1:
         note = (
             f"Showing {len(rows)} tickets (limit {args.limit}, max 100). "
             "More may exist; narrow with a client code or status."
@@ -1694,6 +1715,9 @@ def list_tickets(
         extras.append("due")
     if args.last_activity_before or args.last_activity_after or args.needs_response:
         extras.append("activity")
+    reply = format_ticket_list(data, heading=heading, note=note if rows else None, extras=tuple(extras))
+    if archive_offer:
+        reply = f"{reply}\n\n{archive_offer}"
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
@@ -1701,8 +1725,23 @@ def list_tickets(
         row_ids=[r.id for r in rows],
         client_code=scoped,
         note=note,
-        reply=format_ticket_list(data, heading=heading, note=note if rows else None, extras=tuple(extras)),
+        reply=reply,
     )
+
+
+def _archive_offer(source: FlowSource, run: Any, raw_q: str | None, stage: str) -> str | None:
+    """When nothing live matched, say whether the archives have matches and ask before showing them."""
+    try:
+        found = _text_search(lambda q: _run_archived(source, run, q), raw_q) if raw_q else _run_archived(source, run, None)
+    except FlowRequestError:
+        return None
+    if not found:
+        return "I also checked the archives and found nothing there either."
+    return f"I found {len(found)} archived ticket(s) that match. Want me to show them?"
+
+
+def _run_archived(source: FlowSource, run: Any, query: str | None) -> list[TicketRecord]:
+    return run(query, "archived")
 
 
 _SUMMARY_MAX_TICKETS = 15
@@ -1920,7 +1959,7 @@ def _about_stage(turn: ChatTurn | None) -> str:
         return "review"
     if re.search(r"\bopen\b", text):
         return "open"
-    return "all"
+    return "live"
 
 
 def _format_hours(hours: float) -> str:
@@ -2203,7 +2242,10 @@ def merge_tickets(source: FlowSource, args: MergeTicketsArgs, turn: ChatTurn | N
     )
 
 
-def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
+def list_mail(source: FlowSource, args: ListMailArgs, turn: ChatTurn | None = None) -> ToolResult:
+    period = _period_from_turn(turn)
+    if period:
+        args = args.model_copy(update={"received_after": period[0], "received_before": period[1]})
     client = (args.client_code or "").strip().upper() or None
     try:
         rows = source.list_mail(
@@ -2235,6 +2277,46 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
         note="direction=inbound means from the client to TechBldrs (filed on a Flow ticket).",
         reply="\n".join(lines).rstrip(),
     )
+
+
+_WEEKDAYS_BACK = 7
+
+
+def _period_from_turn(turn: ChatTurn | None, now: datetime | None = None) -> tuple[str, str, str] | None:
+    """(after, before_exclusive, label) for 'last week', 'this month', 'yesterday'... in the user's words.
+
+    The 14B model gets these dates wrong (it once answered 'last week' as Oct 1 to Oct 7), so when the
+    question names a period the code computes it and overrides the model's dates.
+    """
+    from datetime import timedelta
+
+    text = (turn.user_text if turn else "") or ""
+    now = now or datetime.now()
+    today = now.date()
+    monday = today - timedelta(days=today.weekday())
+    first = today.replace(day=1)
+    next_month = (first + timedelta(days=32)).replace(day=1)
+    last_month = (first - timedelta(days=1)).replace(day=1)
+    low = text.lower()
+    span: tuple[Any, Any] | None = None
+    if re.search(r"\blast\s+week\b", low):
+        span = (monday - timedelta(days=7), monday)
+    elif re.search(r"\bthis\s+week\b", low):
+        span = (monday, monday + timedelta(days=7))
+    elif re.search(r"\byesterday\b", low):
+        span = (today - timedelta(days=1), today)
+    elif re.search(r"\btoday\b", low):
+        span = (today, today + timedelta(days=1))
+    elif re.search(r"\blast\s+month\b", low):
+        span = (last_month, first)
+    elif re.search(r"\bthis\s+month\b", low):
+        span = (first, next_month)
+    if span is None:
+        return None
+    start, end = span
+    last_day = end - timedelta(days=1)
+    label = f"{start:%b} {start.day}" if start == last_day else f"{start:%b} {start.day} to {last_day:%b} {last_day.day}"
+    return start.isoformat(), end.isoformat(), label
 
 
 _TIME_SUMMARY_FETCH = 100
@@ -2289,7 +2371,7 @@ def _time_footer(rows: list[TimeEntryRecord], *, total_minutes: int, truncated: 
     return "\n".join(lines)
 
 
-def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResult:
+def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatTurn | None = None) -> ToolResult:
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
         return _refuse(LIST_TIME_ENTRIES, source, error)
@@ -2308,6 +2390,9 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
     fetch_limit = _TIME_SUMMARY_FETCH if summary else args.limit
     work_after = (args.work_after or "").strip() or None
     work_before = (args.work_before or "").strip() or None
+    period = _period_from_turn(turn)
+    if period:
+        work_after, work_before = period[0], period[1]
     try:
         rows = source.list_time_entries(
             ticket_id=ticket_id,
@@ -2328,6 +2413,8 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
     else:
         scope = (f"ticket {ticket_id}" if ticket_id else client) or assignee or "that scope"
     span = f", {work_after or 'start'} to {work_before or 'now'}" if (work_after or work_before) else ""
+    if period:
+        span = f", {period[2]}"
     count = f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'}"
     if not data or not summary:
         lines = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
@@ -2354,10 +2441,11 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
         client_code=client,
         digest=_time_digest(rows, scope=scope, span=span, total_minutes=total_minutes),
         footer=_time_footer(rows, total_minutes=total_minutes, truncated=len(rows) >= _TIME_SUMMARY_FETCH),
+        header=f"Period: {period[2]}" if period else None,
     )
 
 
-def ticket_stats(source: FlowSource, args: TicketStatsArgs) -> ToolResult:
+def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | None = None) -> ToolResult:
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
         return _refuse(TICKET_STATS, source, error)
@@ -2372,6 +2460,9 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs) -> ToolResult:
     elif assignee:
         ticket_assignee = assignee
     client = (args.client_code or "").strip().upper() or None
+    period = _period_from_turn(turn)
+    if period:
+        args = args.model_copy(update={"after": period[0], "before": period[1]})
     try:
         stats = source.ticket_stats(
             entity=(args.entity or "tickets").strip().lower(),
@@ -2481,7 +2572,13 @@ def _ticket_id_for(source: FlowSource, ticket_id: int | None, label: str | None)
     return row.id, None
 
 
-def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResult:
+_FULL_LOG_RE = re.compile(
+    r"\b(?:full|raw|entire|whole|complete)\s+(?:ticket\s+)?log\b|\bshow\s+(?:me\s+)?the\s+log\b|\bticket\s+log\b",
+    re.IGNORECASE,
+)
+
+
+def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs, turn: ChatTurn | None = None) -> ToolResult:
     ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
     if label_error:
         return _refuse(GET_TICKET_DETAIL, source, label_error)
@@ -2490,7 +2587,8 @@ def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResu
     except FlowRequestError as exc:
         return _refuse(GET_TICKET_DETAIL, source, str(exc))
     data = _ticket_detail_payload(row)
-    if (args.view or "brief").strip().lower() != "full":
+    asked_for_log = bool(turn and _FULL_LOG_RE.search(turn.user_text or ""))
+    if (args.view or "brief").strip().lower() != "full" or (turn is not None and not asked_for_log):
         return _ticket_briefing(source, row, data)
     lines = [f"{data['ticket_label']} — {data['topic']} ({data['status']}, {data['category']})"]
     if row.log_text:
@@ -2704,15 +2802,15 @@ def dispatch(
     if name == MERGE_TICKETS:
         return merge_tickets(source, MergeTicketsArgs.model_validate(raw_args), turn)
     if name == LIST_MAIL:
-        return list_mail(source, ListMailArgs.model_validate(raw_args))
+        return list_mail(source, ListMailArgs.model_validate(raw_args), turn)
     if name == LIST_TIME_ENTRIES:
-        return list_time_entries(source, ListTimeEntriesArgs.model_validate(raw_args))
+        return list_time_entries(source, ListTimeEntriesArgs.model_validate(raw_args), turn)
     if name == TICKET_STATS:
-        return ticket_stats(source, TicketStatsArgs.model_validate(raw_args))
+        return ticket_stats(source, TicketStatsArgs.model_validate(raw_args), turn)
     if name == LIST_MACHINES:
         return list_machines(source, ListMachinesArgs.model_validate(raw_args))
     if name == GET_TICKET_DETAIL:
-        return get_ticket_detail(source, GetTicketDetailArgs.model_validate(raw_args))
+        return get_ticket_detail(source, GetTicketDetailArgs.model_validate(raw_args), turn)
     if name == GET_MAIL_DETAIL:
         return get_mail_detail(source, GetMailDetailArgs.model_validate(raw_args))
     if name == GET_CLIENT_DETAIL:

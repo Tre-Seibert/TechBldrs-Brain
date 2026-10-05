@@ -129,7 +129,7 @@ class TimeSummaryLoopTests(unittest.IsolatedAsyncioTestCase):
             return await run_tool_loop(
                 settings=Settings(llm_model="fake", llm_base_url="http://llm.test/v1", _env_file=None),
                 source=StubFlowSource(),
-                messages=[{"role": "user", "content": "What did I work on last week?"}],
+                messages=[{"role": "user", "content": "What did I work on recently?"}],
                 model=None,
                 actor="test",
             )
