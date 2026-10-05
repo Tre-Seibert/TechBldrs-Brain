@@ -193,3 +193,16 @@ class MultiClientTests(unittest.TestCase):
         self.assertTrue(head.startswith("2 open ticket(s) for ACME, WDON"), head)
         self.assertIn("Showing the 2 most recently active of", result.reply)
         self.assertNotIn("in review", result.reply)
+
+
+class InternalScopeTests(unittest.TestCase):
+    def test_internal_clients_do_not_also_filter_on_reason_internal_unless_asked(self) -> None:
+        source = StubFlowSource()
+        said = ChatTurn(user_text="What ACME and WDON tickets are open?")
+        with mock.patch.object(source, "list_tickets", wraps=source.list_tickets) as spy:
+            list_tickets(source, ListTicketsArgs(client_code="ACME,WDON", reason="Internal", stage="open"), said)
+        self.assertTrue(all(call.kwargs.get("reason") is None for call in spy.call_args_list))
+        asked = ChatTurn(user_text="open ACME and WDON tickets with reason internal")
+        with mock.patch.object(source, "list_tickets", wraps=source.list_tickets) as spy:
+            list_tickets(source, ListTicketsArgs(client_code="ACME,WDON", reason="Internal", stage="open"), asked)
+        self.assertTrue(all(call.kwargs.get("reason") == "Internal" for call in spy.call_args_list))

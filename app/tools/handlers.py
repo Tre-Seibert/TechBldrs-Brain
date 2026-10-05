@@ -1818,8 +1818,14 @@ def _client_codes(raw: str | None) -> list[str]:
 def _list_tickets_multi(
     source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None, codes: list[str]
 ) -> ToolResult:
+    shared: dict[str, Any] = {}
+    asked_reason = bool(turn and re.search(r"\breason\b", turn.user_text or "", re.IGNORECASE))
+    if (args.reason or "").strip().lower() == "internal" and not asked_reason:
+        # "Internal tickets" already means the internal clients. The model sometimes also adds
+        # reason=Internal, which drops internal-client tickets with another reason (alerts, support).
+        shared["reason"] = None
     results = [
-        list_tickets(source, args.model_copy(update={"client_code": code}), turn) for code in codes
+        list_tickets(source, args.model_copy(update={"client_code": code, **shared}), turn) for code in codes
     ]
     failed = next((r for r in results if not r.ok), None)
     if failed is not None:
