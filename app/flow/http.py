@@ -333,6 +333,7 @@ class HttpFlowSource:
         billable: bool | None = None,
         after: str | None = None,
         before: str | None = None,
+        exclude_alerts: bool = False,
         limit: int = 10,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -350,6 +351,7 @@ class HttpFlowSource:
             ("billable", billable),
             ("after", after),
             ("before", before),
+            ("exclude_alerts", exclude_alerts or None),
         ):
             if value not in (None, ""):
                 params[key] = value

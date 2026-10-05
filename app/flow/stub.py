@@ -49,6 +49,18 @@ def _parse_dt(raw: str | None) -> datetime | None:
     return None
 
 
+_PATTERN_STOP = frozenset("the and for with from your you our has have not was are can new fwd fw re please need needs".split())
+
+
+def _stub_pattern(topic: str | None) -> str:
+    """Same idea as Flow's topic_pattern: the kind of issue a title describes."""
+    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", (topic or "").lower())
+    text = re.sub(r"https?://\S+|\S+@\S+", " ", text)
+    text = re.sub(r"\b\w*\d\w*\b", " ", text)
+    words = [w for w in re.findall(r"[a-z][a-z'+]{2,}", text) if w not in _PATTERN_STOP]
+    return " ".join(words[:6]) or "(no topic)"
+
+
 def _clamp_limit(limit: int, default: int = 25, maximum: int = 100) -> int:
     if limit <= 0:
         return default
@@ -583,10 +595,11 @@ class StubFlowSource:
         billable: bool | None = None,
         after: str | None = None,
         before: str | None = None,
+        exclude_alerts: bool = False,
         limit: int = 10,
     ) -> dict[str, Any]:
         groups = {
-            "tickets": ("client", "cause", "reason", "category", "assignee", "status", "requestor", "topic"),
+            "tickets": ("client", "cause", "reason", "category", "assignee", "status", "requestor", "topic", "pattern"),
             "time": ("client", "tech", "ticket", "billable", "reviewed"),
             "mail": ("sender", "client", "ticket"),
         }
@@ -599,6 +612,8 @@ class StubFlowSource:
         after_dt, before_dt = _parse_dt(after), _parse_dt(before)
         code, assignee = _norm(client_code), _norm(assignee_code)
         merged: dict[Any, dict[str, Any]] = {}
+        pattern_meta: dict[str, dict[str, Any]] = {}
+        excluded_alerts = 0
 
         def add(key, *, count=1, hours=0.0, minutes=0, billed=0):
             slot = merged.setdefault(key, {"key": key, "count": 0, "hours": 0.0, "minutes": 0, "billed_minutes": 0})
@@ -618,6 +633,17 @@ class StubFlowSource:
                 if after_dt is not None and t.created_at < after_dt:
                     continue
                 if before_dt is not None and t.created_at >= before_dt:
+                    continue
+                if exclude_alerts and _norm(t.reason) == "alert":
+                    excluded_alerts += 1
+                    continue
+                if group_by == "pattern":
+                    pattern = _stub_pattern(t.topic)
+                    add(pattern, hours=_worked_hours(t))
+                    meta = pattern_meta.setdefault(pattern, {"samples": {}, "causes": {}})
+                    meta["samples"][t.topic or ""] = meta["samples"].get(t.topic or "", 0) + 1
+                    if (t.cause or "").strip():
+                        meta["causes"][t.cause.strip()] = meta["causes"].get(t.cause.strip(), 0) + 1
                     continue
                 key = {
                     "client": t.client_code,
@@ -666,10 +692,17 @@ class StubFlowSource:
         rows = sorted(merged.values(), key=lambda r: (-r[field], str(r["key"])))
         for row in rows:
             row["hours"] = round(row["hours"], 2)
+            meta = pattern_meta.get(row["key"]) if group_by == "pattern" else None
+            if meta:
+                ranked = sorted(meta["samples"].items(), key=lambda item: (-item[1], item[0]))
+                row["samples"] = [text for text, _n in ranked[:3] if text]
+                if meta["causes"]:
+                    row["cause"] = max(meta["causes"].items(), key=lambda item: (item[1], item[0]))[0]
         return {
             "entity": entity,
             "group_by": group_by,
             "metric": metric,
+            "excluded_alerts": excluded_alerts,
             "total_count": sum(r["count"] for r in rows),
             "total_hours": round(sum(r["hours"] for r in rows), 2),
             "total_minutes": sum(r["minutes"] for r in rows),

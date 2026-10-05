@@ -399,6 +399,8 @@ class TicketStatsArgs(BaseModel):
     billable: bool | None = None
     after: str | None = None
     before: str | None = None
+    # issue analysis only: leave out automated alert tickets (default true there)
+    exclude_alerts: bool | None = None
     limit: int = 10
 
     @model_validator(mode="before")
@@ -409,6 +411,8 @@ class TicketStatsArgs(BaseModel):
         if not isinstance(data, dict):
             return data
         data = dict(data)
+        if str(data.get("group_by") or "").strip().lower() in ("issue", "issues", "problem", "problems", "topic_pattern"):
+            data["group_by"] = "pattern"
         for canonical, aliases in _STATS_DATE_ALIASES.items():
             if not data.get(canonical):
                 for alias in aliases:
@@ -2328,6 +2332,7 @@ def _period_from_turn(turn: ChatTurn | None, now: datetime | None = None) -> tup
     last_month = (first - timedelta(days=1)).replace(day=1)
     low = text.lower()
     span: tuple[Any, Any] | None = None
+    year = re.search(r"\b(?:in|during|for|of)\s+(20\d{2})\b", low)
     if re.search(r"\blast\s+week\b", low):
         span = (monday - timedelta(days=7), monday)
     elif re.search(r"\bthis\s+week\b", low):
@@ -2340,11 +2345,16 @@ def _period_from_turn(turn: ChatTurn | None, now: datetime | None = None) -> tup
         span = (last_month, first)
     elif re.search(r"\bthis\s+month\b", low):
         span = (first, next_month)
+    elif year:
+        y = int(year.group(1))
+        span = (today.replace(year=y, month=1, day=1), today.replace(year=y + 1, month=1, day=1))
     if span is None:
         return None
     start, end = span
     last_day = end - timedelta(days=1)
     label = f"{start:%b} {start.day}" if start == last_day else f"{start:%b} {start.day} to {last_day:%b} {last_day.day}"
+    if year and span and span[0].month == 1 and span[0].day == 1 and (span[1] - span[0]).days in (365, 366):
+        label = year.group(1)
     return start.isoformat(), end.isoformat(), label
 
 
@@ -2530,8 +2540,13 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
     period = _period_from_turn(turn)
     if period:
         args = args.model_copy(update={"after": period[0], "before": period[1]})
+    issue_analysis = (args.entity or "tickets").strip().lower() == "tickets" and (args.group_by or "").strip().lower() == "pattern"
+    skip_alerts = bool(args.exclude_alerts) if args.exclude_alerts is not None else (
+        issue_analysis and not re.search(r"\balerts?\b", (turn.user_text if turn else "") or "", re.IGNORECASE)
+    )
     try:
         stats = source.ticket_stats(
+            exclude_alerts=skip_alerts,
             entity=(args.entity or "tickets").strip().lower(),
             group_by=(args.group_by or "client").strip().lower(),
             metric=(args.metric or "count").strip().lower(),
@@ -2543,10 +2558,12 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
             billable=args.billable,
             after=(args.after or "").strip() or None,
             before=(args.before or "").strip() or None,
-            limit=args.limit,
+            limit=25 if issue_analysis else args.limit,
         )
     except FlowRequestError as exc:
         return _refuse(TICKET_STATS, source, str(exc))
+    if issue_analysis and stats.get("rows"):
+        return _issue_analysis_result(source, stats, client=client, after=args.after, before=args.before, skipped=skip_alerts)
     return ToolResult(
         tool=TICKET_STATS,
         source=source.source_name,
@@ -2554,6 +2571,51 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
         client_code=client,
         note="Counts and hours are computed by Flow. Quote them as given; do not recount.",
         reply=format_stats(stats, client=client, assignee=assignee, after=args.after, before=args.before),
+    )
+
+
+def _issue_analysis_result(
+    source: FlowSource, stats: dict[str, Any], *, client: str | None, after: str | None, before: str | None, skipped: bool
+) -> ToolResult:
+    """Recurring issue types from ticket titles, for the model to name and describe in prose."""
+    rows = stats["rows"]
+    total = int(stats.get("total_count") or 0)
+    left_out = int(stats.get("excluded_alerts") or 0)
+    scope = " ".join(
+        part
+        for part in (
+            f"for {client}" if client else "across all clients",
+            f"({after or 'start'} to {before or 'now'})" if (after or before) else "",
+        )
+        if part
+    )
+    lines = [
+        f"Ticket issue analysis {scope}: {total} tickets" + (f", {left_out} automated alert tickets left out" if skipped else "")
+        + f", grouped into {stats.get('groups', len(rows))} recurring title patterns (top {len(rows)} below).",
+        "Using only these groups, write two or three short paragraphs naming the most common kinds of issue "
+        "clients reported and what each involves. Merge groups that are really the same issue. Cite ticket counts "
+        "for the top issues. Say that this is based on ticket titles and the cause field, not on reading each "
+        "ticket's emails or notes.",
+        "",
+    ]
+    for rank, row in enumerate(rows, 1):
+        samples = " | ".join(f'"{text[:110]}"' for text in (row.get("samples") or [])[:3])
+        cause = f", usual cause: {row['cause']}" if row.get("cause") else ""
+        lines.append(f"{rank}. [{row['count']} tickets, {row['hours']} h{cause}] {row['key']} -- e.g. {samples}")
+    table = [f"{rank}. {row['key']} — {row['count']:,} tickets ({row['hours']:g} h)" for rank, row in enumerate(rows[:10], 1)]
+    footer = (
+        f"Analyzed {total:,} tickets {scope}"
+        + (f"; left out {left_out:,} automated alert tickets" if skipped and left_out else "")
+        + ". Basis: ticket titles (cause used as a hint).\nTop title patterns:\n"
+        + "\n".join(table)
+    )
+    return ToolResult(
+        tool=TICKET_STATS,
+        source=source.source_name,
+        data=stats,
+        client_code=client,
+        digest="\n".join(lines),
+        footer=footer,
     )
 
 

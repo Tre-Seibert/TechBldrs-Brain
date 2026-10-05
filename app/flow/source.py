@@ -131,6 +131,7 @@ class FlowSource(Protocol):
         billable: bool | None = None,
         after: str | None = None,
         before: str | None = None,
+        exclude_alerts: bool = False,
         limit: int = 10,
     ) -> dict[str, Any]: ...
 

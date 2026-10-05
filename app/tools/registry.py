@@ -342,7 +342,8 @@ _TICKET_STATS_SCHEMA: dict[str, Any] = {
         "group_by": {
             "type": "string",
             "description": (
-                "tickets: client, cause, reason, category, assignee, status, requestor, topic. "
+                "tickets: client, cause, reason, category, assignee, status, requestor, topic, issue (what problems come "
+                "up most: groups similar ticket titles into recurring issue types). "
                 "time: client, tech, ticket, billable, reviewed. mail: sender, client, ticket."
             ),
         },
@@ -510,7 +511,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "Counts and hour totals grouped by something, computed by Flow. Use for 'how many', 'how many hours', "
         "'which client/person/cause has the most', 'who contacts us most', 'what problem does X face most'. "
         "Never count or add up rows from other tools yourself. Examples: problem a client has most -> "
-        "entity=tickets, group_by=cause, client_code=X. Who contacts us most from X -> entity=tickets, "
+        "entity=tickets, group_by=issue, client_code=X (you receive the grouped titles and write the analysis). "
+        "Who contacts us most from X -> entity=tickets, "
         "group_by=requestor, client_code=X. Most open tickets by client -> entity=tickets, group_by=client, "
         "stage=open. Longest ticket worked last week/this month -> entity=time, group_by=ticket, metric=hours, "
         "after/before (the all-time longest uses list_tickets sort=hrs_actual_total instead). "
