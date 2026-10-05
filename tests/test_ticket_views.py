@@ -196,13 +196,42 @@ class MultiClientTests(unittest.TestCase):
 
 
 class InternalScopeTests(unittest.TestCase):
-    def test_internal_clients_do_not_also_filter_on_reason_internal_unless_asked(self) -> None:
+    """Internal = the internal clients (the important part) OR reason Internal, merged and de-duplicated."""
+
+    def _calls(self, said: str, **args):
         source = StubFlowSource()
-        said = ChatTurn(user_text="What ACME and WDON tickets are open?")
         with mock.patch.object(source, "list_tickets", wraps=source.list_tickets) as spy:
-            list_tickets(source, ListTicketsArgs(client_code="ACME,WDON", reason="Internal", stage="open"), said)
-        self.assertTrue(all(call.kwargs.get("reason") is None for call in spy.call_args_list))
-        asked = ChatTurn(user_text="open ACME and WDON tickets with reason internal")
-        with mock.patch.object(source, "list_tickets", wraps=source.list_tickets) as spy:
-            list_tickets(source, ListTicketsArgs(client_code="ACME,WDON", reason="Internal", stage="open"), asked)
-        self.assertTrue(all(call.kwargs.get("reason") == "Internal" for call in spy.call_args_list))
+            result = list_tickets(source, ListTicketsArgs(stage="open", **args), ChatTurn(user_text=said))
+        return result, [call.kwargs for call in spy.call_args_list]
+
+    def test_internal_runs_every_internal_client_plus_the_internal_reason(self) -> None:
+        result, calls = self._calls("What internal tickets are open?", client_code="internal")
+        clients = [c["client_code"] for c in calls if c["client_code"]]
+        self.assertEqual(clients, ["ZTB", "ZINT", "ZAWE", "ZZTB", "ZFRIENDS"])
+        self.assertTrue(any(c["client_code"] is None and c["reason"] == "Internal" for c in calls))
+        self.assertTrue(all(c["reason"] is None for c in calls if c["client_code"]))
+        self.assertIn("the internal clients or reason Internal", result.reply.splitlines()[0])
+
+    def test_the_result_does_not_depend_on_the_model_adding_a_reason(self) -> None:
+        _, plain = self._calls("What internal tickets are open?", client_code="ZTB,ZINT,ZAWE,ZFRIENDS")
+        _, with_reason = self._calls(
+            "What internal tickets are open?", client_code="ZTB,ZINT,ZAWE,ZFRIENDS", reason="Internal"
+        )
+        self.assertEqual(
+            [(c["client_code"], c["reason"]) for c in plain], [(c["client_code"], c["reason"]) for c in with_reason]
+        )
+
+    def test_a_client_in_both_groups_is_listed_once(self) -> None:
+        source = StubFlowSource()
+        row = source.list_tickets(client_code="ACME", stage="open")[0]
+        twin = row.model_copy(update={"reason": "Internal"})
+        with mock.patch.object(source, "list_tickets", return_value=[twin]):
+            result = list_tickets(
+                source, ListTicketsArgs(client_code="internal", stage="open"), ChatTurn(user_text="internal tickets open")
+            )
+        self.assertEqual(len(result.data), 1)
+
+    def test_a_plain_list_of_other_clients_keeps_its_own_reason_filter(self) -> None:
+        _, calls = self._calls("open ACME and WDON tickets", client_code="ACME,WDON", reason="Internal")
+        self.assertEqual(sorted(c["client_code"] for c in calls), ["ACME", "WDON"])
+        self.assertTrue(all(c["reason"] == "Internal" for c in calls))

@@ -86,7 +86,7 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": (
                 "Flow client_code (e.g. ZINT). Several codes comma-separated (ZTB,ZINT) are searched together. "
-                "'internal' means all internal clients (ZTB, ZINT, ZAWE, ZFRIENDS)."
+                "'internal' means all internal clients (ZTB, ZINT, ZAWE, ZZTB, ZFRIENDS) plus any ticket with reason Internal."
             ),
         },
         "needs_response": {

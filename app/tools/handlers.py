@@ -174,7 +174,7 @@ def _longest_time_page_size(text: str, default: int) -> int:
     return default
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _LIST_STAGES = frozenset({"open", "review", "live", "archived", "all"})
-INTERNAL_CLIENT_CODES = ("ZTB", "ZINT", "ZAWE", "ZFRIENDS")
+INTERNAL_CLIENT_CODES = ("ZTB", "ZINT", "ZAWE", "ZZTB", "ZFRIENDS")
 _INCOMPLETE_RE = re.compile(r"\b(incomplete|not complete|not completed)\b", re.IGNORECASE)
 _CATEGORY_ALIASES = {
     "urgent": "0 Urgent",
@@ -1818,19 +1818,35 @@ def _client_codes(raw: str | None) -> list[str]:
 def _list_tickets_multi(
     source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None, codes: list[str]
 ) -> ToolResult:
+    said_text = turn.user_text if turn else ""
+    # "Internal tickets" means the internal clients (the important part) OR any ticket whose reason is
+    # Internal, whichever client it belongs to. Run both and merge, so the answer does not depend on
+    # whether the model happened to add a reason filter.
+    internal = set(codes) <= set(INTERNAL_CLIENT_CODES) and (
+        re.search(r"\binternal\b", said_text, re.IGNORECASE) or "internal" in (args.client_code or "").lower()
+    )
     shared: dict[str, Any] = {}
-    asked_reason = bool(turn and re.search(r"\breason\b", turn.user_text or "", re.IGNORECASE))
-    if (args.reason or "").strip().lower() == "internal" and not asked_reason:
-        # "Internal tickets" already means the internal clients. The model sometimes also adds
-        # reason=Internal, which drops internal-client tickets with another reason (alerts, support).
-        shared["reason"] = None
+    if internal:
+        codes = list(INTERNAL_CLIENT_CODES)  # every internal client, even if the model named only some
+        if (args.reason or "").strip().lower() == "internal":
+            shared["reason"] = None  # the reason query below covers it
     results = [
         list_tickets(source, args.model_copy(update={"client_code": code, **shared}), turn) for code in codes
     ]
+    if internal:
+        results.append(
+            list_tickets(source, args.model_copy(update={"client_code": None, "reason": "Internal"}), turn)
+        )
     failed = next((r for r in results if not r.ok), None)
     if failed is not None:
         return failed
-    data = [row for r in results for row in (r.data or [])]
+    seen: set[Any] = set()
+    data = []
+    for r in results:
+        for row in r.data or []:
+            if row.get("id") not in seen:
+                seen.add(row.get("id"))
+                data.append(row)
     data.sort(key=lambda row: (row.get("last_activity_at") or "", row.get("id") or 0), reverse=True)
     available = len(data)
     data = data[: max(args.limit, 1)]
@@ -1841,7 +1857,7 @@ def _list_tickets_multi(
             stage = "open"
         else:
             stage = "live"
-    label = ", ".join(codes)
+    label = "the internal clients or reason Internal" if internal else ", ".join(codes)
     stage_label = _STAGE_LABELS.get(stage, stage)
     sl = f"{stage_label} " if stage_label else ""
     heading = f"{len(data)} {sl}ticket(s) for {label}" if data else f"No {sl}tickets for {label}."
