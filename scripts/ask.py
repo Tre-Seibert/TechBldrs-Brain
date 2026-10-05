@@ -37,7 +37,10 @@ def _calls_line(trace: dict | None) -> str:
     names = [
         f"{c.get('name')}{'' if c.get('ok', True) else ' (error)'}" for c in trace.get("tool_calls") or []
     ]
-    return f"[tools: {', '.join(names)}]" if names else "[no tools]"
+    line = f"[tools: {', '.join(names)}]" if names else "[no tools]"
+    if trace.get("prompt_tokens"):
+        line += f" [prompt {trace['prompt_tokens']} tokens]"
+    return line
 
 
 def ask(client: httpx.Client, base: str, headers: dict, messages: list[dict]) -> tuple[str, dict | None]:

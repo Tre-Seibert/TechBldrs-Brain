@@ -63,9 +63,55 @@ _NO_TOOL_ENGLISH = (
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
 _NUDGE_TO_USE_A_TOOL = (
-    "You answered without calling a tool, so those ticket numbers are unverified. Call the right tool "
-    "(for example ticket_stats for hours or counts, list_tickets for lists) and answer only from its result."
+    "You answered without calling a tool, so that answer is unverified. For any question about tickets, "
+    "time, mail, contacts, or clients you must call the right tool first (for example list_tickets for "
+    "lists, ticket_stats for hours or counts) and answer only from its result. Call the tool now."
 )
+_NO_SEARCH_RUN = (
+    "I didn't run a Flow search for that, so I won't guess. Try rephrasing, for example "
+    "'my urgent tickets' or 'open tickets for BUCK'."
+)
+# Questions that must be answered from a tool. A first-word write verb ("Close ticket ...",
+# "Email Debe ...", "Merge ...") is a request the model should decline or gate, not search for.
+_DATA_WORD_RE = re.compile(
+    r"\b(?:tickets?|urgent|overdue|assigned|hours?|time|logged|worked|e-?mails?|mail|reach(?:ed)? out|"
+    r"contacts?|clients?|machines?|respond|queue|open|review|archived|billable|cause|problem|unassigned|work(?:ed|ing)?|spent)\b"
+    r"|\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b",
+    re.IGNORECASE,
+)
+_WRITE_INTENT_RE = re.compile(
+    r"^\s*(?:please\s+|can you\s+)?(?:close|archive|delete|create|log|send|e-?mail|change|set|update|reassign|add|merge)\b",
+    re.IGNORECASE,
+)
+
+
+def _expects_tool(turn: ChatTurn) -> bool:
+    """True when this turn is a Flow data question, so an answer with no tool call is unverified."""
+    text = turn.user_text or ""
+    if _WRITE_INTENT_RE.search(text):
+        return False
+    return bool(_DATA_WORD_RE.search(text) or _DATA_WORD_RE.search(turn.previous_assistant_text or ""))
+
+
+def _compact_history(messages: list[dict[str, Any]], *, limit: int = 240) -> list[dict[str, Any]]:
+    """Shrink earlier assistant answers before they go to the model.
+
+    Long tool-formatted lists in the history cost context (the system prompt and tools already use
+    most of it) and teach the model to imitate that format instead of calling a tool.
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") == "assistant" and isinstance(content, str) and len(content) > limit:
+            first = next((line.strip() for line in content.splitlines() if line.strip()), "")[:160]
+            message = {
+                **message,
+                "content": f"{first} [list shown to the user earlier; call a tool again if you need data]",
+            }
+        out.append(message)
+    return out
+
+
 _NO_INVENTED_TICKETS = (
     "I can only list tickets a Flow search returned. I did not run that search, so I won't guess ticket numbers."
 )
@@ -348,7 +394,8 @@ async def run_tool_loop(
         return payload
     trace: list[dict[str, Any]] = []
     nudged = False
-    chat = _ensure_system(list(messages), source=source, no_think=settings.llm_no_think)
+    chat = _ensure_system(_compact_history(list(messages)), source=source, no_think=settings.llm_no_think)
+    prompt_tokens = 0
     relayed: list[str] = []
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
@@ -378,6 +425,10 @@ async def run_tool_loop(
                 raise AgentError(f"LLM error {response.status_code}: {response.text[:800]}")
             payload = response.json()
             last_payload = payload
+            used = int(((payload.get("usage") or {}).get("prompt_tokens")) or 0)
+            prompt_tokens = max(prompt_tokens, used)
+            if used:
+                _log.info("llm prompt_tokens=%s", used, extra={"event": "agent.usage", "prompt_tokens": used})
             choice = (payload.get("choices") or [{}])[0]
             message = choice.get("message") or {}
             tool_calls = message.get("tool_calls") or []
@@ -385,9 +436,10 @@ async def run_tool_loop(
                 payload["model"] = resolved_model
                 if not relayed:
                     blocked = reply_without_invented_tickets(str(message.get("content") or ""), relayed)
-                    if blocked and not nudged:
-                        # The model answered from memory with ticket labels it never looked up.
-                        # Give it one chance to call a tool instead of showing the refusal.
+                    skipped = not trace and _expects_tool(turn)
+                    if (blocked or skipped) and not nudged:
+                        # The model answered from memory (made-up labels, or a data question with no
+                        # tool call at all). Give it one chance to call a tool.
                         nudged = True
                         chat.append({"role": "assistant", "content": str(message.get("content") or "")})
                         chat.append({"role": "user", "content": _NUDGE_TO_USE_A_TOOL})
@@ -395,8 +447,10 @@ async def run_tool_loop(
                         continue
                     if blocked:
                         payload = _set_assistant_content(payload, blocked)
+                    elif skipped:
+                        payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
                 payload = _apply_english_reply(payload, relayed)
-                payload["x_tb_brain"] = {"router": None, "tool_calls": trace}
+                payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
                 return payload
             chat.append(message)
             _log.info(

@@ -1211,6 +1211,175 @@
       "must_match": [
         "(?i)(only|can't|cannot|MSP|Flow|ticket)"
       ]
+    },
+    {
+      "id": "M1",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "what are my urgent tickets?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "category": [
+              "urgent",
+              "0 urgent"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "M2",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "Which of my tickets are overdue?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "overdue": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "M3",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "What tickets do I need to respond to?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "needs_response": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "M4",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "What tickets are open for WDON?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "WDON",
+            "stage": "open"
+          }
+        }
+      ]
+    },
+    {
+      "id": "M5",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "What did I work on last week?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_time_entries",
+          "args": {
+            "assignee_code": [
+              "me",
+              "ts"
+            ],
+            "work_after": {
+              "re": "^\\d{4}-\\d{2}-\\d{2}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "M6",
+      "group": "multiturn",
+      "messages": [
+        {
+          "role": "user",
+          "content": "what are my open tickets?"
+        },
+        {
+          "role": "assistant",
+          "content": "6 open ticket(s) for ts\n\n- ZTB-1680 \u2014 TB SuperBrain (ZTB \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 33.73 hours)\n- ZINT-5536 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 3.68 hours)\n- VANG-0011 \u2014 Vendure Platform Infrastructure (Dev/QA/Prod) (VANG \u00b7 New \u00b7 4 Waiting \u00b7 ts \u00b7 Internal \u00b7 1.82 hours)\n- ZINT-5539 \u2014 SBR Report Automation (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal)\n- ZINT-5466 \u2014 Flow Reporting (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 20.22 hours)\n- ZINT-5527 \u2014 Mobile UI Fixes (ZINT \u00b7 New \u00b7 6 Project \u00b7 ts \u00b7 Internal \u00b7 2.83 hours)\n\n6 ticket(s). These are Open tickets (not archived, not 9 REVIEW). Want archived tickets too?"
+        },
+        {
+          "role": "user",
+          "content": "my urgent tickets"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "category": [
+              "urgent",
+              "0 urgent"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
