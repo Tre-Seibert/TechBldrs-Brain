@@ -593,6 +593,7 @@ def _time_entry_payload(row: TimeEntryRecord) -> dict[str, Any]:
         "work_date": row.work_date.isoformat(sep=" ") if row.work_date else None,
         "start_at": row.start_at.isoformat(sep=" ") if row.start_at else None,
         "end_at": row.end_at.isoformat(sep=" ") if row.end_at else None,
+        "created_at": row.created_at.isoformat(sep=" ") if row.created_at else None,
         "actual_minutes": row.actual_minutes,
         "minutes": row.minutes,
         "subject": row.subject,
@@ -2347,6 +2348,20 @@ def _period_from_turn(turn: ChatTurn | None, now: datetime | None = None) -> tup
     return start.isoformat(), end.isoformat(), label
 
 
+_LATEST_ENTRY_RE = re.compile(
+    r"\b(?:last|latest|most\s+recent|newest)\s+(?:(\d{1,2})\s+)?(?:time\s*)?entr(?:y|ies)\b", re.IGNORECASE
+)
+_SUMMARIZE_WORD_RE = re.compile(r"\b(?:summari[sz]e|summary|recap|explain|describe)\b", re.IGNORECASE)
+
+
+def _latest_entry_count(turn: ChatTurn | None) -> int | None:
+    """How many entries 'my last time entry' asks for: 1, or N for 'my last 3 time entries'."""
+    match = _LATEST_ENTRY_RE.search((turn.user_text if turn else "") or "")
+    if not match:
+        return None
+    return min(max(int(match.group(1) or 1), 1), 10)
+
+
 _TIME_SUMMARY_FETCH = 100
 _SUBJECT_PREFIX_RE = re.compile(r"^\|[^|]*\|[^|]*\|\s*")
 
@@ -2421,8 +2436,17 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
     period = _period_from_turn(turn)
     if period:
         work_after, work_before = period[0], period[1]
+    latest_n = _latest_entry_count(turn)
+    order_by: dict[str, Any] = {}
+    if latest_n and not period:
+        # "my last time entry": the newest one submitted, not a date range of them.
+        work_after = work_before = None
+        fetch_limit = latest_n
+        order_by = {"sort": "created_at", "order": "desc"}
+        summary = bool(_SUMMARIZE_WORD_RE.search(turn.user_text or ""))  # else show the entry itself
     try:
         rows = source.list_time_entries(
+            **order_by,
             ticket_id=ticket_id,
             client_code=client,
             tech_user_id=tech_user_id,
@@ -2445,14 +2469,24 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
         span = f", {period[2]}"
     count = f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'}"
     if not data or not summary:
-        lines = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
+        if latest_n and data and not period:
+            lines = [f"{'Latest time entry' if len(data) == 1 else f'Latest {len(data)} time entries'} for {scope}:", ""]
+        else:
+            lines = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
         if not data:
             lines.append("None found.")
         for row in data:
             billed = "billable" if row["billable"] else ("gratis" if row["gratis"] else "non-billable")
             when = (row["work_date"] or row["start_at"] or "")[:10]
             worked = row["actual_minutes"] or row["minutes"]
-            lines.append(f"- {when} — {row['subject']} ({_format_minutes(worked)}, {billed})")
+            lines.append(f"- {when} — {row['ticket_label']} — {row['subject']} ({_format_minutes(worked)}, {billed})")
+            if len(data) <= 3:  # a handful of entries: show what was written, and when it was submitted
+                notes = " ".join((row.get("body") or "").split())
+                if notes:
+                    lines.append(f"    Notes: {notes[:600]}")
+                submitted = _when(row.get("created_at"))
+                if submitted:
+                    lines.append(f"    Submitted {_stamp(submitted, with_time=True)} ({_ago(submitted, datetime.now())})")
         return ToolResult(
             tool=LIST_TIME_ENTRIES,
             source=source.source_name,

@@ -536,7 +536,10 @@ class StubFlowSource:
             billable=billable,
             reviewed=reviewed,
         )
-        rows.sort(key=lambda entry: (entry.start_at or entry.created_at, entry.id), reverse=(order != "asc"))
+        if _norm(sort) == "created_at":
+            rows.sort(key=lambda entry: (entry.created_at, entry.id), reverse=(order != "asc"))
+        else:
+            rows.sort(key=lambda entry: (entry.start_at or entry.created_at, entry.id), reverse=(order != "asc"))
         return rows[: _clamp_limit(limit)]
 
     @staticmethod

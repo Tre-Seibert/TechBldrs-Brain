@@ -500,7 +500,8 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "List individual time entries. Needs ticket_id, client_code, assignee_code, or a work_after/work_before "
         "range. 'What did I work on last week' -> assignee_code=me + work_after=<last Monday> + "
         "work_before=<this Monday> (summary view, you write the prose). 'Show my time entries' -> view=list. "
-        "'Time entries not reviewed' -> reviewed=false. For totals ('how many hours') use ticket_stats instead "
+        "'My last time entry' -> assignee_code=me alone: the tool then returns only the newest one submitted, "
+        "with its notes. 'Time entries not reviewed' -> reviewed=false. For totals ('how many hours') use ticket_stats instead "
         "of adding rows yourself.",
         _LIST_TIME_ENTRIES_SCHEMA,
     ),

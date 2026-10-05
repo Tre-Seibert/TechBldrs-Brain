@@ -188,3 +188,52 @@ class LoopSafetyTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LatestEntryTests(unittest.TestCase):
+    """'What was my last time entry?' is one entry, the newest submitted, not a date range of them."""
+
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def _ask(self, text: str, **args):
+        return list_time_entries(
+            self.source,
+            ListTimeEntriesArgs(assignee_code="ts", **args),
+            ChatTurn(user_text=text),
+        )
+
+    def test_the_latest_entry_is_exactly_one_even_if_the_model_added_dates(self) -> None:
+        result = self._ask("what was my last time entry?", work_after="2026-09-01", work_before="2026-12-01")
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(len(result.data), 1)
+        self.assertEqual(result.data[0]["id"], 70002)  # submitted Sep 19, after the Sep 18 one
+        self.assertTrue(result.reply.startswith("Latest time entry for ts"))
+
+    def test_the_entry_shows_its_notes_and_when_it_was_submitted(self) -> None:
+        result = self._ask("what was my latest time entry")
+        self.assertIn("Notes: Checked firewall logs", result.reply)
+        self.assertIn("Submitted Sep 19", result.reply)
+        self.assertIn("ACME-0041", result.reply)
+
+    def test_last_three_entries_means_three(self) -> None:
+        result = self._ask("show my last 3 time entries")
+        self.assertEqual(len(result.data), 1)  # the stub only has one entry for ts
+        self.assertTrue(result.reply.startswith("Latest time entry"))
+
+    def test_asking_to_summarize_the_last_entry_summarizes_only_that_entry(self) -> None:
+        result = self._ask("summarize the last time entry I submitted")
+        self.assertIsNone(result.reply)
+        self.assertEqual(len(result.data), 1)
+        self.assertIn("ACME-0041", result.digest)
+        self.assertNotIn("WDON-1842", result.digest)
+
+    def test_a_period_in_the_question_still_wins(self) -> None:
+        result = self._ask("what was my last time entry last week")
+        self.assertNotIn("Latest time entry", result.reply or "")
+
+    def test_ordinary_time_questions_are_not_mistaken_for_it(self) -> None:
+        from app.tools.handlers import _latest_entry_count
+
+        for text in ("what did I work on last week?", "my time entries", "how many entries did I log"):
+            self.assertIsNone(_latest_entry_count(ChatTurn(user_text=text)), text)
