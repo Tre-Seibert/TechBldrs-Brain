@@ -135,6 +135,18 @@ class FlowSource(Protocol):
         limit: int = 10,
     ) -> dict[str, Any]: ...
 
+    def ticket_samples(
+        self,
+        *,
+        client_code: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        stage: str = "all",
+        interval: str = "month",
+        per_interval: int = 10,
+        exclude_alerts: bool = True,
+    ) -> dict[str, Any]: ...
+
     def list_machines(
         self,
         *,

@@ -358,6 +358,29 @@ class HttpFlowSource:
         data = self._get("/api/private/brain/stats", params)
         return data if isinstance(data, dict) else {}
 
+    def ticket_samples(
+        self,
+        *,
+        client_code: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        stage: str = "all",
+        interval: str = "month",
+        per_interval: int = 10,
+        exclude_alerts: bool = True,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "stage": stage,
+            "interval": interval,
+            "per_interval": per_interval,
+            "exclude_alerts": "true" if exclude_alerts else "false",
+        }
+        for key, value in (("client_code", client_code), ("after", after), ("before", before)):
+            if value not in (None, ""):
+                params[key] = value
+        data = self._get("/api/private/brain/ticket-samples", params)
+        return data if isinstance(data, dict) else {}
+
     def list_machines(
         self,
         *,

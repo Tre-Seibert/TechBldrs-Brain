@@ -27,8 +27,9 @@ class IssueAnalysisToolTests(unittest.TestCase):
         self.assertEqual(result.data["group_by"], "pattern")
         self.assertIsNone(result.reply)  # the model writes the analysis from the digest
         self.assertIn("Ticket issue analysis for ACME", result.digest)
-        self.assertIn("not on reading each ticket's emails or notes", result.digest)
-        self.assertIn("Basis: ticket titles", result.footer)
+        self.assertIn("Findings from reading real tickets follow them", result.digest)
+        self.assertIn("Basis: counts come from all", result.footer)
+        self.assertIn("real tickets", result.footer)
 
     def test_the_digest_gives_the_model_sample_titles_and_a_usual_cause(self) -> None:
         result = self._run(client_code="ACME")
@@ -69,17 +70,72 @@ def _tool_call(name: str, arguments: dict) -> dict:
     }
 
 
+class IssueAnalysisDeepDiveTests(unittest.TestCase):
+    def test_every_month_with_tickets_becomes_its_own_reading_prompt(self) -> None:
+        result = ticket_stats(
+            StubFlowSource(),
+            TicketStatsArgs.model_validate({"entity": "tickets", "group_by": "issue", "client_code": "ACME", "after": "2026-01-01"}),
+            ChatTurn(user_text="What is the most common issue for ACME?"),
+        )
+        self.assertTrue(result.chunks)
+        labels = [chunk["label"] for chunk in result.chunks]
+        self.assertEqual(labels, sorted(labels))
+        september = next(chunk for chunk in result.chunks if chunk["label"] == "2026-09")
+        self.assertIn("sampled from 2026-09", september["prompt"])
+        self.assertIn("client email (Riley Chen)", september["prompt"])  # the client's first email
+        self.assertIn("VPN tunnel troubleshooting", september["prompt"])  # a time entry's work
+        self.assertIn("List the 3 most common kinds of issue", september["prompt"])
+        self.assertIn("how they changed from", result.reduce_suffix)
+
+    def test_an_older_flow_without_the_sampling_endpoint_falls_back_to_titles(self) -> None:
+        from app.flow.source import FlowRequestError
+
+        source = StubFlowSource()
+        with mock.patch.object(source, "ticket_samples", side_effect=FlowRequestError("Flow 404: not found")):
+            result = ticket_stats(
+                source,
+                TicketStatsArgs.model_validate({"entity": "tickets", "group_by": "issue", "client_code": "ACME"}),
+                ChatTurn(user_text="most common issue for ACME"),
+            )
+        self.assertIsNone(result.chunks)
+        self.assertIn("not on reading each ticket's emails or notes", result.digest)
+        self.assertIn("Basis: ticket titles", result.footer)
+
+    def test_with_no_period_it_reads_the_last_12_months_and_says_so(self) -> None:
+        result = ticket_stats(
+            StubFlowSource(),
+            TicketStatsArgs.model_validate({"entity": "tickets", "group_by": "issue", "client_code": "ACME"}),
+            ChatTurn(user_text="most common issue for ACME"),
+        )
+        self.assertIn("last 12 months", result.digest)
+
+
+def _tool_call(name: str, arguments: dict) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "c1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}],
+    }
+
+
 class IssueAnalysisLoopTests(unittest.IsolatedAsyncioTestCase):
-    async def test_the_answer_is_prose_then_the_exact_table(self) -> None:
-        replies = iter(
+    async def _run(self, monthly_reply: str) -> tuple[dict, list[dict]]:
+        script = iter(
             [
-                _tool_call("ticket_stats", {"entity": "tickets", "group_by": "issue", "client_code": "ACME"}),
+                _tool_call("ticket_stats", {"entity": "tickets", "group_by": "issue", "client_code": "ACME", "after": "2026-01-01"}),
                 {"role": "assistant", "content": "Clients mostly reported VPN and printing problems."},
             ]
         )
+        seen: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": next(replies)}]})
+            body = json.loads(request.content)
+            seen.append(body)
+            if "analyze help desk tickets" in str(body["messages"][0].get("content")):  # a per-month reading
+                return httpx.Response(
+                    200, json={"choices": [{"index": 0, "message": {"role": "assistant", "content": monthly_reply}}]}
+                )
+            return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": next(script)}]})
 
         real = httpx.AsyncClient
         transport = httpx.MockTransport(handler)
@@ -91,10 +147,27 @@ class IssueAnalysisLoopTests(unittest.IsolatedAsyncioTestCase):
                 model=None,
                 actor="test",
             )
+        return payload, seen
+
+    async def test_each_month_is_read_then_the_final_answer_is_written_from_the_findings(self) -> None:
+        payload, seen = await self._run("- VPN tunnel drops (3 of 5): fixed by renewing the DHCP lease.")
+        readings = [b for b in seen if "analyze help desk tickets" in str(b["messages"][0].get("content"))]
+        self.assertGreaterEqual(len(readings), 2)  # more than one month was read separately
+        final_request = seen[-1]
+        digest = json.loads(final_request["messages"][-1]["content"])["digest"]
+        self.assertIn("Findings from reading real tickets:", digest)
+        self.assertIn("VPN tunnel drops (3 of 5)", digest)
+        self.assertNotIn("tools", final_request)  # the model is only asked to write
         text = payload["choices"][0]["message"]["content"]
         self.assertTrue(text.startswith("Clients mostly reported VPN and printing problems."))
         self.assertIn("Top title patterns:", text)
-        self.assertIn("Basis: ticket titles", text)
+        self.assertIn("Basis: counts come from all", text)
+
+    async def test_if_no_month_can_be_read_the_title_only_analysis_still_answers(self) -> None:
+        payload, _ = await self._run("")
+        text = payload["choices"][0]["message"]["content"]
+        self.assertTrue(text.startswith("Clients mostly reported VPN and printing problems."))
+        self.assertIn("Top title patterns:", text)
 
 
 if __name__ == "__main__":

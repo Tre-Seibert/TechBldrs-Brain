@@ -137,6 +137,33 @@ def _tool_cheatsheet(tools: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+async def _summarize_chunk(
+    client: httpx.AsyncClient, model: str, prompt: str, extra: dict[str, Any]
+) -> str:
+    """Answer one small prompt on its own (no tools, no chat history). Empty if the model fails."""
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You analyze help desk tickets. Reply in English only, briefly, from the text given."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        **extra,
+    }
+    for _attempt in range(2):
+        try:
+            response = await client.post("/chat/completions", json=body)
+            if response.status_code >= 400:
+                return ""
+            text = _THINK_RE.sub("", str(response.json()["choices"][0]["message"].get("content") or "")).strip()
+        except Exception as exc:  # noqa: BLE001 - a missing monthly finding must not sink the whole answer
+            _log.info("chunk summary failed: %s", exc)
+            return ""
+        if text and not _has_non_english_script(text):
+            return text
+    return ""
+
+
 async def _force_tool_call(
     client: httpx.AsyncClient, model: str, chat: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -596,6 +623,24 @@ async def run_tool_loop(
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in _RELAY_TOOLS:
                     relayed.append(result.reply)
+                if result.chunks:
+                    findings = []
+                    for chunk in result.chunks:
+                        text = await _summarize_chunk(client, resolved_model, chunk["prompt"], settings.llm_extra_body_dict)
+                        _log.info("read %s", chunk["label"], extra={"event": "agent.chunk", "label": chunk["label"]})
+                        if text:
+                            findings.append(f"{chunk['label']}:\n{text}")
+                    if findings:
+                        result = result.model_copy(
+                            update={
+                                "digest": "\n".join(
+                                    [result.reduce_prefix or "", "", "Findings from reading real tickets:", *findings, "", result.reduce_suffix or ""]
+                                ),
+                                "chunks": None,
+                            }
+                        )
+                    else:
+                        result = result.model_copy(update={"chunks": None})  # keep the title-only digest
                 if result.digest:
                     digests.append(result.digest)
                 if result.fallback:

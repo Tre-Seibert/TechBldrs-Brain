@@ -711,6 +711,73 @@ class StubFlowSource:
             "rows": rows[: _clamp_limit(limit, default=10, maximum=100)],
         }
 
+    def ticket_samples(
+        self,
+        *,
+        client_code: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+        stage: str = "all",
+        interval: str = "month",
+        per_interval: int = 10,
+        exclude_alerts: bool = True,
+    ) -> dict[str, Any]:
+        after_dt, before_dt = _parse_dt(after), _parse_dt(before)
+        code = _norm(client_code)
+        by_month: dict[str, list[TicketRecord]] = {}
+        for t in sorted(self._tickets, key=lambda row: (row.created_at, row.id)):
+            if stage != "all" and not _stage_match(t, stage):
+                continue
+            if code and _norm(t.client_code) != code:
+                continue
+            if exclude_alerts and _norm(t.reason) == "alert":
+                continue
+            if after_dt is not None and t.created_at < after_dt:
+                continue
+            if before_dt is not None and t.created_at >= before_dt:
+                continue
+            by_month.setdefault(f"{t.created_at:%Y-%m}", []).append(t)
+        intervals = []
+        for label, tickets in sorted(by_month.items()):
+            chosen = tickets[: max(1, per_interval)]
+            rows = []
+            for t in chosen:
+                extra = TICKET_DETAIL_EXTRAS.get(t.id) or {}
+                mail = next((m for m in MAIL if m.ticket_id == t.id and _norm(m.direction) == "inbound"), None)
+                rows.append(
+                    {
+                        "source": "archived" if _ticket_stage(t) == "archived" else "live",
+                        "label": t.label,
+                        "topic": t.topic,
+                        "cause": t.cause or "",
+                        "reason": t.reason or "",
+                        "created_at": f"{t.created_at:%Y-%m-%d %H:%M:%S}",
+                        "hours": float(_worked_hours(t)),
+                        "notes": " ".join(str(extra.get("notes_text") or "").split())[:400],
+                        "first_email": (
+                            {"from": mail.from_name or "", "subject": mail.subject or "", "text": mail.snippet}
+                            if mail
+                            else None
+                        ),
+                        "time_entries": [
+                            {"subject": e.subject, "notes": " ".join((e.body or "").split())[:220]}
+                            for e in TIME_ENTRIES
+                            if e.ticket_id == t.id
+                        ][:3],
+                    }
+                )
+            intervals.append({"label": label, "population": len(tickets), "tickets": rows})
+        return {
+            "interval": "month",
+            "after": after,
+            "before": before,
+            "per_interval": per_interval,
+            "exclude_alerts": exclude_alerts,
+            "population_total": sum(i["population"] for i in intervals),
+            "sampled_total": sum(len(i["tickets"]) for i in intervals),
+            "intervals": intervals,
+        }
+
     def list_machines(
         self,
         *,

@@ -471,6 +471,11 @@ class ToolResult(BaseModel):
     digest: str | None = None
     header: str | None = None
     footer: str | None = None
+    # Map-reduce summaries: each chunk is a small prompt the loop answers on its own (one per month),
+    # then reduce_prefix + the answers + reduce_suffix become the digest the final answer is written from.
+    chunks: list[dict[str, str]] | None = None
+    reduce_prefix: str | None = None
+    reduce_suffix: str | None = None
     # Plain list shown instead of prose if the model never produces a usable summary.
     fallback: str | None = None
 
@@ -2541,6 +2546,12 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
     if period:
         args = args.model_copy(update={"after": period[0], "before": period[1]})
     issue_analysis = (args.entity or "tickets").strip().lower() == "tickets" and (args.group_by or "").strip().lower() == "pattern"
+    defaulted_period = False
+    if issue_analysis and not (args.after or args.before):
+        from datetime import timedelta
+
+        args = args.model_copy(update={"after": (datetime.now() - timedelta(days=365)).date().isoformat()})
+        defaulted_period = True  # an unbounded history is too much to read; say so in the answer
     skip_alerts = bool(args.exclude_alerts) if args.exclude_alerts is not None else (
         issue_analysis and not re.search(r"\balerts?\b", (turn.user_text if turn else "") or "", re.IGNORECASE)
     )
@@ -2563,7 +2574,23 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
     except FlowRequestError as exc:
         return _refuse(TICKET_STATS, source, str(exc))
     if issue_analysis and stats.get("rows"):
-        return _issue_analysis_result(source, stats, client=client, after=args.after, before=args.before, skipped=skip_alerts)
+        samples = None
+        try:
+            samples = source.ticket_samples(
+                client_code=client,
+                after=(args.after or "").strip() or None,
+                before=(args.before or "").strip() or None,
+                stage=(args.stage or "all").strip().lower(),
+                interval="month",
+                per_interval=_SAMPLES_PER_INTERVAL,
+                exclude_alerts=skip_alerts,
+            )
+        except (FlowRequestError, AttributeError):
+            samples = None  # an older Flow without the sampling endpoint: fall back to titles only
+        return _issue_analysis_result(
+            source, stats, client=client, after=args.after, before=args.before, skipped=skip_alerts,
+            samples=samples, defaulted_period=defaulted_period,
+        )
     return ToolResult(
         tool=TICKET_STATS,
         source=source.source_name,
@@ -2574,8 +2601,42 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
     )
 
 
+_SAMPLES_PER_INTERVAL = 10
+
+
+def _sample_chunk(interval: dict[str, Any]) -> dict[str, str]:
+    """One month's sampled tickets as a self-contained prompt for the model to boil down."""
+    tickets = interval.get("tickets") or []
+    lines = [
+        f"These are {len(tickets)} real help desk tickets sampled from {interval['label']} "
+        f"(out of {interval.get('population', len(tickets))} non-alert tickets that period). For each you see the "
+        "title, the cause field, the ticket notes, the client's first email, and the technician's work entries.",
+        "List the 3 most common kinds of issue in this sample (fewer if fewer). One short bullet each: the "
+        "issue, about how many of these tickets it covers, and what actually happened or fixed it, taken from "
+        "the emails, notes and work entries. No introduction and no ticket-by-ticket list.",
+        "",
+    ]
+    for ticket in tickets:
+        head = f"[{ticket.get('label')} | {str(ticket.get('created_at') or '')[:10]} | cause: {ticket.get('cause') or 'none'}]"
+        lines.append(f"{head} {ticket.get('topic') or '(no title)'}")
+        mail = ticket.get("first_email") or {}
+        if mail.get("text"):
+            who = f" ({mail['from']})" if mail.get("from") else ""
+            lines.append(f"  client email{who}: {mail['text'][:320]}")
+        if ticket.get("notes"):
+            lines.append(f"  notes: {ticket['notes'][:260]}")
+        work = "; ".join(
+            f"{(e.get('subject') or '').strip()}" + (f" -- {e['notes'][:150]}" if e.get("notes") else "")
+            for e in (ticket.get("time_entries") or [])[:2]
+        )
+        if work:
+            lines.append(f"  work done: {work}")
+    return {"label": interval["label"], "prompt": "\n".join(lines)}
+
+
 def _issue_analysis_result(
-    source: FlowSource, stats: dict[str, Any], *, client: str | None, after: str | None, before: str | None, skipped: bool
+    source: FlowSource, stats: dict[str, Any], *, client: str | None, after: str | None, before: str | None,
+    skipped: bool, samples: dict[str, Any] | None = None, defaulted_period: bool = False,
 ) -> ToolResult:
     """Recurring issue types from ticket titles, for the model to name and describe in prose."""
     rows = stats["rows"]
@@ -2589,6 +2650,9 @@ def _issue_analysis_result(
         )
         if part
     )
+    intervals = [i for i in ((samples or {}).get("intervals") or []) if i.get("tickets")]
+    if defaulted_period:
+        scope += " (last 12 months; ask for another period if you want one)"
     lines = [
         f"Ticket issue analysis {scope}: {total} tickets" + (f", {left_out} automated alert tickets left out" if skipped else "")
         + f", grouped into {stats.get('groups', len(rows))} recurring title patterns (top {len(rows)} below).",
@@ -2598,17 +2662,47 @@ def _issue_analysis_result(
         "ticket's emails or notes.",
         "",
     ]
+    if intervals:
+        lines[1] = (
+            "The title patterns below count every ticket. Findings from reading real tickets follow them."
+        )
     for rank, row in enumerate(rows, 1):
-        samples = " | ".join(f'"{text[:110]}"' for text in (row.get("samples") or [])[:3])
+        sample_text = " | ".join(f'"{text[:110]}"' for text in (row.get("samples") or [])[:3])
         cause = f", usual cause: {row['cause']}" if row.get("cause") else ""
-        lines.append(f"{rank}. [{row['count']} tickets, {row['hours']} h{cause}] {row['key']} -- e.g. {samples}")
+        lines.append(f"{rank}. [{row['count']} tickets, {row['hours']} h{cause}] {row['key']} -- e.g. {sample_text}")
     table = [f"{rank}. {row['key']} — {row['count']:,} tickets ({row['hours']:g} h)" for rank, row in enumerate(rows[:10], 1)]
+    basis = "Basis: ticket titles (cause used as a hint)."
+    if intervals:
+        per = (samples or {}).get("per_interval", _SAMPLES_PER_INTERVAL)
+        basis = (
+            f"Basis: counts come from all {total:,} ticket titles; the findings come from reading "
+            f"{(samples or {}).get('sampled_total', 0):,} real tickets (up to {per} from each "
+            f"{(samples or {}).get('interval', 'month')}) including their emails, notes and time entries."
+        )
     footer = (
         f"Analyzed {total:,} tickets {scope}"
         + (f"; left out {left_out:,} automated alert tickets" if skipped and left_out else "")
-        + ". Basis: ticket titles (cause used as a hint).\nTop title patterns:\n"
+        + f". {basis}\nTop title patterns:\n"
         + "\n".join(table)
     )
+    if intervals:
+        return ToolResult(
+            tool=TICKET_STATS,
+            source=source.source_name,
+            data=stats,
+            client_code=client,
+            digest="\n".join(lines),  # used as-is if the loop cannot run the per-month readings
+            footer=footer,
+            chunks=[_sample_chunk(interval) for interval in intervals],
+            reduce_prefix="\n".join(lines),
+            reduce_suffix=(
+                f"Now write three or four short paragraphs: the most common kinds of issue overall (use the title "
+                f"pattern counts for how common), how they changed from {intervals[0]['label']} to "
+                f"{intervals[-1]['label']}, and one or two concrete examples of what actually happened, from the "
+                f"findings above. Say this comes from reading about {(samples or {}).get('per_interval', 10)} "
+                f"real tickets per {(samples or {}).get('interval', 'month')} plus a count of all ticket titles."
+            ),
+        )
     return ToolResult(
         tool=TICKET_STATS,
         source=source.source_name,
