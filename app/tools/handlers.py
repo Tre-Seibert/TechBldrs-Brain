@@ -353,6 +353,8 @@ class ListTimeEntriesArgs(BaseModel):
     work_before: str | None = None
     billable: bool | None = None
     reviewed: bool | None = None
+    # summary: the model writes a short prose summary of the notes; list: every entry, verbatim.
+    view: str = "summary"
     limit: int = 25
 
     @model_validator(mode="after")
@@ -454,6 +456,10 @@ class ToolResult(BaseModel):
     error: str | None = None
     note: str | None = None
     reply: str | None = None
+    # Summary mode (list_time_entries): the model reads `digest` and writes prose; `footer` holds the
+    # exact numbers and is appended after the model's text so the totals never come from the model.
+    digest: str | None = None
+    footer: str | None = None
 
 
 def _contact_payload(row: ContactRecord) -> dict[str, Any]:
@@ -661,7 +667,66 @@ def _refuse(
     )
 
 
-def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | None = None) -> str:
+def _when(value: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _span(delta: Any) -> str:
+    """1d 1h, 3h 20m, 12m: how long a timedelta is, for 'overdue by' and 'ago'."""
+    seconds = max(int(delta.total_seconds()), 0)
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days}d {hours}h" if hours else f"{days}d"
+    if hours:
+        return f"{hours}h {minutes:02d}m" if minutes else f"{hours}h"
+    return f"{minutes}m"
+
+
+def _stamp(moment: datetime, *, with_time: bool) -> str:
+    text = f"{moment:%b} {moment.day}"
+    if with_time:
+        text += f", {int(moment.strftime('%I'))}:{moment:%M} {moment:%p}"
+    return text
+
+
+def _due_text(value: Any, now: datetime) -> str:
+    due = _when(value)
+    if due is None:
+        return "no due date"
+    delta = now - due
+    state = f"{_span(delta)} overdue" if delta.total_seconds() > 0 else f"due in {_span(-delta)}"
+    return f"due {_stamp(due, with_time=True)} ({state})"
+
+
+def _activity_text(value: Any, now: datetime) -> str:
+    last = _when(value)
+    if last is None:
+        return "no activity recorded"
+    days = (now.date() - last.date()).days  # calendar days, so it agrees with the date shown
+    delta = now - last
+    if days >= 1:
+        ago = f"{days} day{'s' if days != 1 else ''} ago"
+    elif delta.total_seconds() >= 3600:
+        ago = f"{int(delta.total_seconds() // 3600)}h ago"
+    else:
+        ago = "just now"
+    return f"last activity {_stamp(last, with_time=False)} ({ago})"
+
+
+def format_ticket_list(
+    rows: list[dict[str, Any]],
+    *,
+    heading: str,
+    note: str | None = None,
+    extras: tuple[str, ...] = (),
+    now: datetime | None = None,
+) -> str:
+    now = now or datetime.now()
     if not rows:
         cleaned = heading.rstrip(".")
         if cleaned.lower().startswith("no "):
@@ -682,6 +747,10 @@ def format_ticket_list(rows: list[dict[str, Any]], *, heading: str, note: str | 
         hours = row.get("hrs_actual_total")
         if isinstance(hours, (int, float)):
             extra = f"{extra} · {_format_hours(float(hours))}"
+        if "due" in extras:
+            extra = f"{extra} · {_due_text(row.get('due_at'), now)}"
+        if "activity" in extras:
+            extra = f"{extra} · {_activity_text(row.get('last_activity_at'), now)}"
         lines.append(f"- {label} — {topic} ({extra})")
     if note:
         lines.extend(["", note])
@@ -1500,6 +1569,18 @@ def list_tickets(
         heading = f"{len(rows)} open ticket(s) for {who}"
     else:
         heading = f"{len(rows)} {stage} ticket(s) for {who}"
+    if args.needs_response and not latest_person:
+        whose = assignee or client or "you"
+        heading = (
+            f"{len(rows)} {stage} ticket(s) for {whose} waiting on a reply"
+            if rows
+            else f"No {stage} tickets for {whose} are waiting on a reply."
+        )
+    extras: list[str] = []
+    if overdue or args.due_before or args.due_after:
+        extras.append("due")
+    if args.last_activity_before or args.last_activity_after or args.needs_response:
+        extras.append("activity")
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
@@ -1507,7 +1588,7 @@ def list_tickets(
         row_ids=[r.id for r in rows],
         client_code=scoped,
         note=note,
-        reply=format_ticket_list(data, heading=heading, note=note if rows else None),
+        reply=format_ticket_list(data, heading=heading, note=note if rows else None, extras=tuple(extras)),
     )
 
 
@@ -1973,6 +2054,58 @@ def list_mail(source: FlowSource, args: ListMailArgs) -> ToolResult:
     )
 
 
+_TIME_SUMMARY_FETCH = 100
+_SUBJECT_PREFIX_RE = re.compile(r"^\|[^|]*\|[^|]*\|\s*")
+
+
+def _worked_minutes(row: TimeEntryRecord) -> int:
+    """Time actually worked; the billed (rounded) minutes only when no actual figure was logged."""
+    return row.actual_minutes or row.minutes
+
+
+def _time_digest(rows: list[TimeEntryRecord], *, scope: str, span: str, total_minutes: int) -> str:
+    """What the model reads to write the summary: one line per entry, notes trimmed to fit."""
+    per_note = max(120, min(400, 12000 // max(len(rows), 1)))
+    ordered = sorted(rows, key=lambda r: (r.ticket_label, r.work_date or r.start_at or r.created_at))
+    lines = [
+        f"Time entries for {scope}{span}: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}, "
+        f"{_format_minutes(total_minutes)} worked.",
+        "Write a plain-English summary of what was worked on, as 2 or 3 short paragraphs grouped by "
+        "ticket or theme. Name the tickets (like ZTB-1680). Past tense. Use only what the notes below say. "
+        "Do not list every entry and do not state totals; the exact totals are added after your text.",
+        "",
+    ]
+    for row in ordered:
+        when = (row.work_date or row.start_at or row.created_at).strftime("%Y-%m-%d")
+        subject = _SUBJECT_PREFIX_RE.sub("", row.subject or "").strip() or "(no title)"
+        notes = " ".join((row.body or "").split())[:per_note]
+        line = f"[{row.ticket_label} | {when} | {_format_minutes(_worked_minutes(row))}] {subject}"
+        lines.append(f"{line} -- notes: {notes}" if notes else line)
+    return "\n".join(lines)
+
+
+def _time_footer(rows: list[TimeEntryRecord], *, total_minutes: int, truncated: bool) -> str:
+    by_ticket: dict[str, int] = {}
+    billable = 0
+    for row in rows:
+        by_ticket[row.ticket_label] = by_ticket.get(row.ticket_label, 0) + _worked_minutes(row)
+        if row.billable:
+            billable += _worked_minutes(row)
+    ranked = sorted(by_ticket.items(), key=lambda item: (-item[1], item[0]))
+    lines = [
+        f"Total: {_format_minutes(total_minutes)} worked across {len(rows)} entr{'y' if len(rows) == 1 else 'ies'} on "
+        f"{len(by_ticket)} ticket{'s' if len(by_ticket) != 1 else ''}.",
+        "By ticket: " + " · ".join(f"{label} {_format_minutes(minutes)}" for label, minutes in ranked[:12]),
+    ]
+    if len(ranked) > 12:
+        lines[-1] += f" · +{len(ranked) - 12} more"
+    if billable:
+        lines.append(f"Billable: {_format_minutes(billable)}")
+    if truncated:
+        lines.append(f"(Showing the first {_TIME_SUMMARY_FETCH} entries; narrow the dates to see the rest.)")
+    return "\n".join(lines)
+
+
 def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResult:
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
@@ -1988,39 +2121,56 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs) -> ToolResu
     if label_error:
         return _refuse(LIST_TIME_ENTRIES, source, label_error)
     client = (args.client_code or "").strip().upper() or None
+    summary = (args.view or "summary").strip().lower() != "list"
+    fetch_limit = _TIME_SUMMARY_FETCH if summary else args.limit
+    work_after = (args.work_after or "").strip() or None
+    work_before = (args.work_before or "").strip() or None
     try:
         rows = source.list_time_entries(
             ticket_id=ticket_id,
             client_code=client,
             tech_user_id=tech_user_id,
-            work_after=(args.work_after or "").strip() or None,
-            work_before=(args.work_before or "").strip() or None,
+            work_after=work_after,
+            work_before=work_before,
             billable=args.billable,
             reviewed=args.reviewed,
-            limit=args.limit,
+            limit=fetch_limit,
         )
     except FlowRequestError as exc:
         return _refuse(LIST_TIME_ENTRIES, source, str(exc))
     data = [_time_entry_payload(r) for r in rows]
-    total_minutes = sum(r.minutes for r in rows)
+    total_minutes = sum(_worked_minutes(r) for r in rows)
     if ticket_id and rows:
         scope = rows[0].ticket_label
     else:
         scope = (f"ticket {ticket_id}" if ticket_id else client) or assignee or "that scope"
-    lines = [f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'} for {scope} ({total_minutes} min total).", ""]
-    if not data:
-        lines.append("None found.")
-    for row in data:
-        billed = "billable" if row["billable"] else ("gratis" if row["gratis"] else "non-billable")
-        when = row["work_date"] or row["start_at"] or ""
-        lines.append(f"- {when} — {row['subject']} ({row['minutes']} min, {billed})")
+    span = f", {work_after or 'start'} to {work_before or 'now'}" if (work_after or work_before) else ""
+    count = f"{len(data)} time entr{'y' if len(data) == 1 else 'ies'}"
+    if not data or not summary:
+        lines = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
+        if not data:
+            lines.append("None found.")
+        for row in data:
+            billed = "billable" if row["billable"] else ("gratis" if row["gratis"] else "non-billable")
+            when = (row["work_date"] or row["start_at"] or "")[:10]
+            worked = row["actual_minutes"] or row["minutes"]
+            lines.append(f"- {when} — {row['subject']} ({_format_minutes(worked)}, {billed})")
+        return ToolResult(
+            tool=LIST_TIME_ENTRIES,
+            source=source.source_name,
+            data=data,
+            row_ids=[r.id for r in rows],
+            client_code=client,
+            reply="\n".join(lines).rstrip(),
+        )
     return ToolResult(
         tool=LIST_TIME_ENTRIES,
         source=source.source_name,
         data=data,
         row_ids=[r.id for r in rows],
         client_code=client,
-        reply="\n".join(lines).rstrip(),
+        digest=_time_digest(rows, scope=scope, span=span, total_minutes=total_minutes),
+        footer=_time_footer(rows, total_minutes=total_minutes, truncated=len(rows) >= _TIME_SUMMARY_FETCH),
     )
 
 
@@ -2067,8 +2217,11 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs) -> ToolResult:
 
 
 def _format_minutes(minutes: int) -> str:
+    """45m, 2h, 2h 05m: hours and minutes, never a bare minute count."""
     hours, mins = divmod(int(minutes), 60)
-    return f"{hours}h {mins:02d}m"
+    if not hours:
+        return f"{mins}m"
+    return f"{hours}h" if not mins else f"{hours}h {mins:02d}m"
 
 
 def format_stats(

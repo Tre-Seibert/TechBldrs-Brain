@@ -292,6 +292,8 @@ async def _resolve_model(client: httpx.AsyncClient, settings: Settings, requeste
 
 def _tool_message_content(result: Any) -> str:
     """Keep the model from seeing a fat JSON schema it will 'analyze' in Chinese."""
+    if result.digest:
+        return json.dumps({"ok": result.ok, "digest": result.digest, "row_ids": result.row_ids})
     if result.reply:
         return json.dumps(
             {
@@ -397,6 +399,8 @@ async def run_tool_loop(
     chat = _ensure_system(_compact_history(list(messages)), source=source, no_think=settings.llm_no_think)
     prompt_tokens = 0
     relayed: list[str] = []
+    digests: list[str] = []  # what summary-mode tools gave the model to write prose from
+    footers: list[str] = []  # exact numbers appended after the model's prose
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
     async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
@@ -435,7 +439,14 @@ async def run_tool_loop(
             if not tool_calls:
                 payload["model"] = resolved_model
                 if not relayed:
-                    blocked = reply_without_invented_tickets(str(message.get("content") or ""), relayed)
+                    content = str(message.get("content") or "")
+                    if digests:
+                        # Prose written from a digest may name tickets, but only ones the digest had.
+                        grounded = " ".join(digests)
+                        invented = [label for label in _TICKET_LABEL_RE.findall(content) if label not in grounded]
+                        blocked = _NO_INVENTED_TICKETS if invented else None
+                    else:
+                        blocked = reply_without_invented_tickets(content, relayed)
                     skipped = not trace and _expects_tool(turn)
                     if (blocked or skipped) and not nudged:
                         # The model answered from memory (made-up labels, or a data question with no
@@ -450,6 +461,11 @@ async def run_tool_loop(
                     elif skipped:
                         payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
                 payload = _apply_english_reply(payload, relayed)
+                if footers and not relayed:
+                    prose = str(payload["choices"][0]["message"].get("content") or "").strip()
+                    if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH):
+                        prose = ""
+                    payload = _set_assistant_content(payload, (prose + "\n\n" if prose else "") + footers[-1])
                 payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
                 return payload
             chat.append(message)
@@ -476,6 +492,10 @@ async def run_tool_loop(
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in _RELAY_TOOLS:
                     relayed.append(result.reply)
+                if result.digest:
+                    digests.append(result.digest)
+                if result.footer:
+                    footers.append(result.footer)
                 chat.append(
                     {
                         "role": "tool",

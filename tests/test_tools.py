@@ -723,11 +723,12 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(codes, {"WDON"})
 
     def test_list_time_entries_by_ticket(self) -> None:
-        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_id=9001))
+        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_id=9001, view="list"))
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.row_ids, [70001])
         self.assertEqual(result.data[0]["minutes"], 45)
         self.assertIn("On-site: imaging workstation repair", result.reply or "")
+        self.assertIn("41m", result.reply)  # actual minutes, as hours/minutes, not "41 min"
 
     def test_list_time_entries_by_client_and_assignee(self) -> None:
         result = list_time_entries(self.source, ListTimeEntriesArgs(client_code="ACME", assignee_code="ts"))
@@ -967,7 +968,7 @@ class NewCapabilityTests(unittest.TestCase):
         by_key = {row["key"]: row for row in result.data["rows"]}
         self.assertEqual(by_key["WDON"]["billed_minutes"], 45)
         self.assertEqual(by_key["ACME"]["minutes"], 20)
-        self.assertIn("0h 45m billed", result.reply)
+        self.assertIn("45m billed", result.reply)
 
     def test_stats_time_by_tech_resolves_me(self) -> None:
         token = current_signed_in_email.set("tseibert@techbldrs.example")
@@ -1063,7 +1064,7 @@ class OwnTicketsAndLabelTests(unittest.TestCase):
         self.assertIn("ACME-0099", [row["ticket_label"] for row in result.data])
 
     def test_time_entries_by_ticket_label(self) -> None:
-        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_label="acme-0041"))
+        result = list_time_entries(self.source, ListTimeEntriesArgs(ticket_label="acme-0041", view="list"))
         self.assertTrue(result.ok, result.error)
         self.assertEqual([row["id"] for row in result.data], [70002])
         self.assertIn("ACME-0041", result.reply)

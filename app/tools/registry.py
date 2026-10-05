@@ -310,7 +310,16 @@ _LIST_TIME_ENTRIES_SCHEMA: dict[str, Any] = {
         "work_before": {"type": "string", "description": "ISO date (YYYY-MM-DD). Work before this date (exclusive)."},
         "billable": {"type": "boolean", "description": "true = only billable entries."},
         "reviewed": {"type": "boolean", "description": "false = entries not yet reviewed."},
-        "limit": {"type": "integer", "description": "Max rows (default 25, max 100)."},
+        "view": {
+            "type": "string",
+            "enum": ["summary", "list"],
+            "description": (
+                "summary (default): you receive the entries' titles and notes and write a short prose summary "
+                "of the work; exact totals are added for you. list: every entry verbatim, for 'show/list the "
+                "time entries'."
+            ),
+        },
+        "limit": {"type": "integer", "description": "Max rows for view=list (default 25, max 100). Summaries read up to 100."},
     },
 }
 
@@ -472,8 +481,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     _fn(
         LIST_TIME_ENTRIES,
         "List individual time entries. Needs ticket_id, client_code, assignee_code, or a work_after/work_before "
-        "range. 'What did I work on last week' -> assignee_code=me + dates. 'Time entries not reviewed' -> "
-        "reviewed=false. For totals ('how many hours') use ticket_stats instead of adding rows yourself.",
+        "range. 'What did I work on last week' -> assignee_code=me + work_after=<last Monday> + "
+        "work_before=<this Monday> (summary view, you write the prose). 'Show my time entries' -> view=list. "
+        "'Time entries not reviewed' -> reviewed=false. For totals ('how many hours') use ticket_stats instead "
+        "of adding rows yourself.",
         _LIST_TIME_ENTRIES_SCHEMA,
     ),
     _fn(
