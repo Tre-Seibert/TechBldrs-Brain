@@ -1114,6 +1114,29 @@ def _signed_in_technician(source: FlowSource) -> tuple[TechnicianRecord | None, 
     return None, f"No Flow technician uses the signed-in email {email}."
 
 
+def _closest_technicians(source: FlowSource, text: str) -> list[tuple[int, TechnicianRecord]]:
+    """Technicians whose first or full name is within two typos of `text`, closest tier only.
+
+    One technician at distance 1 is an obvious typo and is used directly; anything fuzzier is
+    offered back as "Did you mean ...?" so the tool never silently guesses a person.
+    """
+    query = _fold_apostrophes(text).strip().lower()
+    if len(query) < 4:
+        return []
+    scored: list[tuple[int, TechnicianRecord]] = []
+    for tech in source.search_technician(query="", limit=100):
+        name = _fold_apostrophes(tech.display_name).strip().lower()
+        if not tech.assignee_code or not name:
+            continue
+        distance = min(_damerau(query, name), _damerau(query, name.split()[0]))
+        if distance <= 2:
+            scored.append((distance, tech))
+    if not scored:
+        return []
+    best = min(distance for distance, _ in scored)
+    return [(d, t) for d, t in scored if d == best]
+
+
 def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, str | None]:
     """Return (assignee_code, error). A two-letter code passes through; a name or email is
     resolved through search_technician — never a hardcoded alias table.
@@ -1136,6 +1159,12 @@ def _resolve_assignee(source: FlowSource, raw: str | None) -> tuple[str | None, 
     if len(codes) == 1:
         return codes[0], None
     if not codes:
+        close = _closest_technicians(source, text)
+        if len(close) == 1 and close[0][0] <= 1:
+            return (close[0][1].assignee_code or "").lower(), None  # one letter off: "Eddoe" -> Eddie
+        if close:
+            options = " or ".join(f"{t.display_name} ({t.assignee_code})" for _, t in close)
+            return None, f"No active technician matches {text!r}. Did you mean {options}? Ask again with that name."
         return None, f"No active technician matches {text!r}. Try search_technician with another spelling."
     options = ", ".join(f"{m.display_name} ({m.assignee_code})" for m in matches if m.assignee_code)
     return None, f"{text!r} matches more than one technician: {options}. Ask which one."

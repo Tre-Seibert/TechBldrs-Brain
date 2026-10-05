@@ -1144,3 +1144,28 @@ class LongestTimeOwnTimeTests(unittest.TestCase):
         self.assertIsNotNone(
             answer_longest_time_worked(source, ChatTurn(user_text="Show me the open ticket with the longest time worked"))
         )
+
+
+class TechnicianTypoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_one_letter_off_resolves_the_technician(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tomm", stage="open"))
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("WDON-1842", [row["ticket_label"] for row in result.data])  # Tom Rivera (tr)
+
+    def test_two_letters_off_asks_instead_of_guessing(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tomas", stage="open"))
+        self.assertFalse(result.ok)
+        self.assertIn("Did you mean Tom Rivera (tr)?", result.error)
+
+    def test_a_name_nothing_like_any_technician_is_still_not_found(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="Zachariah", stage="open"))
+        self.assertFalse(result.ok)
+        self.assertNotIn("Did you mean", result.error)
+
+    def test_short_names_are_never_fuzzy_matched(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tim", stage="open"))
+        self.assertFalse(result.ok)
+        self.assertNotIn("Did you mean", result.error)
