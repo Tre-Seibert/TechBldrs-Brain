@@ -100,6 +100,14 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "true = tickets with no assignee.",
         },
+        "summarize": {
+            "type": "boolean",
+            "description": (
+                "true when the user asks to summarize, recap, or 'what's going on with' these tickets, or asks "
+                "for the status of a ticket. You then receive each ticket's notes and recent log and write the "
+                "summary yourself; the tool does not list them."
+            ),
+        },
         "q": {
             "type": "string",
             "description": "Search text in topic, subject, requestor, machine name, or a label like ZINT-5466.",
@@ -381,6 +389,15 @@ _GET_TICKET_DETAIL_SCHEMA: dict[str, Any] = {
         "ticket_label": {
             "type": "string",
             "description": "Ticket label such as ZTB-1691. Prefer this; it is resolved for you.",
+        },
+        "view": {
+            "type": "string",
+            "enum": ["brief", "full"],
+            "description": (
+                "brief (default): the fields, then you write a two-paragraph summary of what the ticket is "
+                "about and its latest update from its notes, emails and time entries. full: the raw log text, "
+                "only when the user asks for the full log."
+            ),
         },
         "ticket_id": {
             "type": "integer",

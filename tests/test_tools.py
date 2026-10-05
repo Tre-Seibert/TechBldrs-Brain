@@ -324,7 +324,7 @@ class ToolStubTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertTrue(result.ok, result.error)
         self.assertEqual(result.data, [])
-        self.assertIn("No live tickets", result.reply or "")
+        self.assertIn("No tickets about 'Flow Reporting'", result.reply or "")
         self.assertNotRegex(result.reply or "", r"\b[A-Z]{2,8}-[A-Z0-9]{3,6}\b")
 
     def test_list_tickets_text_search(self) -> None:

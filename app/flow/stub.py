@@ -324,7 +324,10 @@ class StubFlowSource:
                 reverse=reverse,
             )
             return ranked[: _clamp_limit(limit, default=100, maximum=500)]
-        matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)
+        if _norm(sort) == "created_at":
+            matches.sort(key=lambda t: (t.created_at, t.id), reverse=reverse)
+        else:
+            matches.sort(key=lambda t: (t.last_activity_at, t.id), reverse=reverse)
         return matches[: _clamp_limit(limit, default=100)]
 
     def find_similar_tickets(

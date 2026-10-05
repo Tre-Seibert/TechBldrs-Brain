@@ -264,6 +264,9 @@ class ListTicketsArgs(BaseModel):
     requestor: str | None = None
     needs_response: bool | None = None
     unassigned: bool | None = None
+    # true when the user asks to summarize / recap / "what's going on with" these tickets: the model
+    # then reads each ticket's notes and recent log and writes prose instead of the tool listing them.
+    summarize: bool | None = None
     stage: str | None = None
     sort: str | None = None
     order: str | None = None
@@ -423,6 +426,9 @@ class ListMachinesArgs(BaseModel):
 class GetTicketDetailArgs(BaseModel):
     ticket_id: int | None = None
     ticket_label: str | None = None
+    # brief (default): the fields, then a prose summary of what the ticket is about and its latest
+    # update, written from the notes, mail and time entries. full: the raw log text, verbatim.
+    view: str = "brief"
 
     @model_validator(mode="after")
     def _need_one(self) -> GetTicketDetailArgs:
@@ -459,6 +465,7 @@ class ToolResult(BaseModel):
     # Summary mode (list_time_entries): the model reads `digest` and writes prose; `footer` holds the
     # exact numbers and is appended after the model's text so the totals never come from the model.
     digest: str | None = None
+    header: str | None = None
     footer: str | None = None
 
 
@@ -491,6 +498,10 @@ def _technician_payload(row: TechnicianRecord) -> dict[str, Any]:
     }
 
 
+def _derived_stage(category: str | None) -> str:
+    return "review" if (category or "").strip().lower() == "9 review" else "open"
+
+
 def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
     payload = {
         "id": row.id,
@@ -502,7 +513,8 @@ def _ticket_payload(row: TicketRecord) -> dict[str, Any]:
         "topic": row.topic,
         "status": row.status,
         "category": row.category,
-        "stage": row.stage,
+        "stage": row.stage
+        or ("archived" if (row.archived or row.archived_at) else _derived_stage(row.category)),
         "requestor_text": row.requestor_text,
         "contact_id": row.contact_id,
         "machine_name": row.machine_name,
@@ -703,6 +715,23 @@ def _due_text(value: Any, now: datetime) -> str:
     return f"due {_stamp(due, with_time=True)} ({state})"
 
 
+def _ago(moment: datetime, now: datetime) -> str:
+    days = (now.date() - moment.date()).days  # calendar days, so it agrees with the date shown
+    delta = now - moment
+    if days >= 1:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    if delta.total_seconds() >= 3600:
+        return f"{int(delta.total_seconds() // 3600)}h ago"
+    return "just now"
+
+
+def _created_text(value: Any, now: datetime) -> str:
+    created = _when(value)
+    if created is None:
+        return "created date unknown"
+    return f"created {_stamp(created, with_time=False)} ({_ago(created, now)})"
+
+
 def _activity_text(value: Any, now: datetime) -> str:
     last = _when(value)
     if last is None:
@@ -747,6 +776,10 @@ def format_ticket_list(
         hours = row.get("hrs_actual_total")
         if isinstance(hours, (int, float)):
             extra = f"{extra} · {_format_hours(float(hours))}"
+        if "stage" in extras and row.get("stage") in _STAGE_TAGS:
+            extra = f"{extra} · {_STAGE_TAGS[row['stage']]}"
+        if "created" in extras:
+            extra = f"{extra} · {_created_text(row.get('created_at'), now)}"
         if "due" in extras:
             extra = f"{extra} · {_due_text(row.get('due_at'), now)}"
         if "activity" in extras:
@@ -1366,6 +1399,57 @@ def _default_list_stage(
     return wanted or "live"
 
 
+_SEARCH_STOPWORDS = frozenset(
+    "issue issues problem problems ticket tickets about with for the and any from related regarding "
+    "support help need needs".split()
+)
+_OPEN_WORD_RE = re.compile(r"\bopen\b", re.IGNORECASE)
+_NOT_OPEN_RE = re.compile(r"\b(?:review|archived?|closed|all)\b", re.IGNORECASE)
+_STAGE_LABELS = {
+    "open": "open",
+    "review": "in-review",
+    "archived": "archived",
+    "live": "open and in-review",
+    "all": "",
+}
+_STAGE_TAGS = {"open": "open", "review": "in review", "archived": "archived"}
+
+
+def _stem(word: str) -> str:
+    """imaging / images / imaged -> imag, so a search for one finds the others (and 'reimage')."""
+    low = word.lower()
+    if any(ch.isdigit() or ch == "-" for ch in low):
+        return low  # labels and codes are matched exactly
+    for suffix, minimum in (("ing", 6), ("ies", 5), ("es", 5), ("ed", 5), ("s", 4)):
+        if low.endswith(suffix) and len(low) >= minimum:
+            return low[: -len(suffix)]
+    return low
+
+
+def _search_terms(query: str) -> list[str]:
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", query)
+    terms: list[str] = []
+    for word in words:
+        if word.lower() in _SEARCH_STOPWORDS or len(word) < 3:
+            continue
+        stem = _stem(word)
+        if stem not in terms:
+            terms.append(stem)
+    return terms[:3]
+
+
+def _text_search(run: Any, query: str) -> list[TicketRecord]:
+    """Word-by-word, stemmed text search. Flow only does one substring match, so each word is searched
+    on its own and the results are intersected (every word must appear)."""
+    terms = _search_terms(query)
+    if not terms:
+        return run(query)
+    found: list[list[TicketRecord]] = [run(term) for term in terms]
+    keep = set.intersection(*({row.id for row in rows} for rows in found))
+    merged = [row for row in found[0] if row.id in keep]
+    return merged or (run(query) if len(terms) > 1 else merged)
+
+
 def list_tickets(
     source: FlowSource,
     args: ListTicketsArgs,
@@ -1431,8 +1515,10 @@ def list_tickets(
     contact_id = args.contact_id
     requestor = (args.requestor or "").strip() or None
     person = None if force_text_query else (requestor or _person_name_from_turn(turn))
+    person_from_q = False
     if not force_text_query and not person and raw_q and _looks_like_person_name(raw_q):
-        person = raw_q
+        person = raw_q  # a guess: two plain words might be a name, or might be "printer issues"
+        person_from_q = True
     if error and raw_assignee and _looks_like_person_name(raw_assignee):
         person = person or raw_assignee
         error = None
@@ -1452,6 +1538,8 @@ def list_tickets(
             person_label = pick.full_name
             if raw_q and _looks_like_person_name(raw_q):
                 raw_q = None
+        elif person_from_q:
+            person = None  # no contact by that name: search the words as text instead of as a requestor
         else:
             requestor = person
             person_label = person
@@ -1486,42 +1574,51 @@ def list_tickets(
         "all",
     ):
         stage = "live"
+    stage_given = (args.stage or "").strip().lower() in ("open", "review", "live", "archived", "all")
+    said = turn.user_text if turn else ""
+    if not stage_given and stage in ("live", "open") and _OPEN_WORD_RE.search(said) and not _NOT_OPEN_RE.search(said):
+        stage = "open"  # the user said "open": never hand back review tickets
+    elif not stage_given and stage == "live" and raw_q and not (person_label or contact_id is not None):
+        stage = "all"  # "tickets about X" is a search of everything; each row says which stage it is in
     limit = 1 if _asked_latest_for_person(turn) else args.limit
     resolved_sort = (args.sort or "last_activity_at").strip() or "last_activity_at"
     # Placeholder tickets get filtered out *after* fetching below, which would just
     # shrink an already-capped page -- overfetch here so trimming to the caller's
     # real limit still happens after that filter, not before it.
     fetch_limit = max(limit, 100) if (resolved_sort == "hrs_actual_total" and not category) else limit
-    rows = source.list_tickets(
-        client_code=client,
-        assignee_code=assignee,
-        query=raw_q,
-        contact_id=contact_id,
-        status=args.status,
-        ticket_num=(args.ticket_num or "").strip() or None,
-        category=category,
-        reason=reason,
-        complete=complete,
-        project=args.project,
-        machine_name=(args.machine_name or "").strip() or None,
-        invoice_num=(args.invoice_num or "").strip() or None,
-        job=(args.job or "").strip() or None,
-        cause=(args.cause or "").strip() or None,
-        overdue=overdue,
-        due_before=(args.due_before or "").strip() or None,
-        due_after=(args.due_after or "").strip() or None,
-        created_before=(args.created_before or "").strip() or None,
-        created_after=(args.created_after or "").strip() or None,
-        last_activity_before=(args.last_activity_before or "").strip() or None,
-        last_activity_after=(args.last_activity_after or "").strip() or None,
-        requestor=requestor,
-        needs_response=args.needs_response,
-        unassigned=args.unassigned,
-        stage=stage,
-        sort=resolved_sort,
-        order=(args.order or "desc").strip() or "desc",
-        limit=fetch_limit,
-    )
+    def run(query: str | None) -> list[TicketRecord]:
+        return source.list_tickets(
+            client_code=client,
+            assignee_code=assignee,
+            query=query,
+            contact_id=contact_id,
+            status=args.status,
+            ticket_num=(args.ticket_num or "").strip() or None,
+            category=category,
+            reason=reason,
+            complete=complete,
+            project=args.project,
+            machine_name=(args.machine_name or "").strip() or None,
+            invoice_num=(args.invoice_num or "").strip() or None,
+            job=(args.job or "").strip() or None,
+            cause=(args.cause or "").strip() or None,
+            overdue=overdue,
+            due_before=(args.due_before or "").strip() or None,
+            due_after=(args.due_after or "").strip() or None,
+            created_before=(args.created_before or "").strip() or None,
+            created_after=(args.created_after or "").strip() or None,
+            last_activity_before=(args.last_activity_before or "").strip() or None,
+            last_activity_after=(args.last_activity_after or "").strip() or None,
+            requestor=requestor,
+            needs_response=args.needs_response,
+            unassigned=args.unassigned,
+            stage=stage,
+            sort=resolved_sort,
+            order=(args.order or "desc").strip() or "desc",
+            limit=fetch_limit,
+        )
+
+    rows = _text_search(run, raw_q) if raw_q and not force_text_query else run(raw_q)
     if resolved_sort == "hrs_actual_total" and not category:
         # A catch-all bucket ticket (e.g. a running "Meetings" ticket) always wins a
         # by-hours ranking otherwise -- never the real answer, whether the model got
@@ -1554,21 +1651,33 @@ def list_tickets(
     )
     column_label = bool(category or reason or overdue)
     latest_person = _asked_latest_for_person(turn)
+    label = _STAGE_LABELS.get(stage, stage)
+    sl = f"{label} " if label else ""
     if latest_person:
         heading = f"Latest ticket for {who}" if rows else f"No ticket found for {who}."
     elif not rows:
         if column_label:
-            heading = f"No {stage} {who} tickets."
+            heading = f"No {sl}{who} tickets."
         elif assignee:
-            heading = f"No {stage} tickets assigned to {who}."
+            heading = f"No {sl}tickets assigned to {who}."
         else:
-            heading = f"No {stage} tickets for {who}."
+            heading = f"No {sl}tickets for {who}."
     elif column_label:
-        heading = f"{len(rows)} open {who} ticket(s)" if stage == "open" else f"{len(rows)} {stage} {who} ticket(s)"
-    elif stage == "open":
-        heading = f"{len(rows)} open ticket(s) for {who}"
+        heading = f"{len(rows)} {sl}{who} ticket(s)"
     else:
-        heading = f"{len(rows)} {stage} ticket(s) for {who}"
+        heading = f"{len(rows)} {sl}ticket(s) for {who}"
+    if raw_q and not person_label and not column_label and not latest_person:
+        scope = f" for {client}" if client else (f" for {assignee}" if assignee else "")
+        heading = (
+            f"{len(rows)} {sl}ticket(s) about '{raw_q}'{scope}"
+            if rows
+            else f"No {sl}tickets about '{raw_q}'{scope}."
+        )
+    if rows and stage in ("live", "all") and not latest_person:
+        counts = {key: sum(1 for row in data if row.get("stage") == key) for key in _STAGE_TAGS}
+        parts = [f"{n} {_STAGE_TAGS[k]}" for k, n in counts.items() if n]
+        if parts:
+            heading += " (" + ", ".join(parts) + ")"
     if args.needs_response and not latest_person:
         whose = assignee or client or "you"
         heading = (
@@ -1576,7 +1685,11 @@ def list_tickets(
             if rows
             else f"No {stage} tickets for {whose} are waiting on a reply."
         )
+    if args.summarize and rows and not latest_person:
+        return _ticket_summary_result(source, rows, data, heading=heading, scoped=scoped)
     extras: list[str] = []
+    if stage in ("live", "all"):
+        extras.append("stage")
     if overdue or args.due_before or args.due_after:
         extras.append("due")
     if args.last_activity_before or args.last_activity_after or args.needs_response:
@@ -1589,6 +1702,59 @@ def list_tickets(
         client_code=scoped,
         note=note,
         reply=format_ticket_list(data, heading=heading, note=note if rows else None, extras=tuple(extras)),
+    )
+
+
+_SUMMARY_MAX_TICKETS = 15
+
+
+def _ticket_summary_result(
+    source: FlowSource, rows: list[TicketRecord], data: list[dict[str, Any]], *, heading: str, scoped: str | None
+) -> ToolResult:
+    """Digest for the model to summarize: each ticket's notes and the tail of its log, not just titles."""
+    now = datetime.now()
+    shown = rows[:_SUMMARY_MAX_TICKETS]
+    lines = [
+        f"{heading}.",
+        "Write a short plain-English summary of these tickets: one or two sentences per ticket on what it "
+        "was about, where it stands, and who handled it. Group routine automated tickets (alerts, digests, "
+        "phishing or junk reports) into a single sentence. Name tickets by label. Use only the facts below.",
+        "",
+    ]
+    for row in shown:
+        notes = tail = ""
+        try:
+            detail = source.get_ticket(ticket_id=row.id)
+            notes = " ".join((detail.notes_text or "").split())[:250]
+            log_lines = [line.strip() for line in (detail.log_text or "").splitlines() if line.strip()]
+            tail = " | ".join(log_lines[-3:])[:350]
+        except FlowRequestError:
+            pass
+        facts = [
+            ticket_label(row.client_code, row.ticket_num),
+            row.status or "no status",
+            row.category or "no category",
+            row.assignee_code or "unassigned",
+        ]
+        if row.hrs_actual_total:
+            facts.append(_format_hours(float(row.hrs_actual_total)))
+        facts.append(_activity_text(row.last_activity_at.isoformat(sep=" "), now))
+        topic = (row.topic or row.subject or "").strip() or "(no topic)"
+        lines.append(f"[{' | '.join(facts)}] {topic}")
+        if notes:
+            lines.append(f"    notes: {notes}")
+        if tail:
+            lines.append(f"    recent log: {tail}")
+    extra = f" (summarized the {_SUMMARY_MAX_TICKETS} most recently active)" if len(rows) > len(shown) else ""
+    footer = f"{len(rows)} ticket(s){extra}: " + ", ".join(ticket_label(r.client_code, r.ticket_num) for r in rows)
+    return ToolResult(
+        tool=LIST_TICKETS,
+        source=source.source_name,
+        data=data,
+        row_ids=[r.id for r in rows],
+        client_code=scoped,
+        digest="\n".join(lines),
+        footer=footer,
     )
 
 
@@ -1615,11 +1781,28 @@ def _list_tickets_multi(
         return failed
     data = [row for r in results for row in (r.data or [])]
     data.sort(key=lambda row: (row.get("last_activity_at") or "", row.get("id") or 0), reverse=True)
+    available = len(data)
     data = data[: max(args.limit, 1)]
-    stage = (args.stage or "").strip().lower() or ("open" if args.assignee_code else "live")
+    said = turn.user_text if turn else ""
+    stage = (args.stage or "").strip().lower()
+    if not stage:
+        if args.assignee_code or (_OPEN_WORD_RE.search(said) and not _NOT_OPEN_RE.search(said)):
+            stage = "open"
+        else:
+            stage = "live"
     label = ", ".join(codes)
+    stage_label = _STAGE_LABELS.get(stage, stage)
+    sl = f"{stage_label} " if stage_label else ""
+    heading = f"{len(data)} {sl}ticket(s) for {label}" if data else f"No {sl}tickets for {label}."
+    if data and stage in ("live", "all"):
+        counts = {key: sum(1 for row in data if row.get("stage") == key) for key in _STAGE_TAGS}
+        parts = [f"{n} {_STAGE_TAGS[k]}" for k, n in counts.items() if n]
+        if parts:
+            heading += " (" + ", ".join(parts) + ")"
     note = f"{len(data)} ticket(s) across {label}."
-    heading = f"{len(data)} {stage} ticket(s) for {label}" if data else f"No {stage} tickets for {label}."
+    if available > len(data):
+        note = f"Showing the {len(data)} most recently active of {available}. Ask for one client or a narrower filter to see the rest."
+    extras = ("stage",) if stage in ("live", "all") else ()
     return ToolResult(
         tool=LIST_TICKETS,
         source=source.source_name,
@@ -1627,7 +1810,7 @@ def _list_tickets_multi(
         row_ids=[row["id"] for row in data],
         client_code=None,
         note=note,
-        reply=format_ticket_list(data, heading=heading, note=note if data else None),
+        reply=format_ticket_list(data, heading=heading, note=note if data else None, extras=extras),
     )
 
 
@@ -1657,7 +1840,7 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
         contact_id=args.contact_id,
         status=args.status,
         stage="live",
-        sort="last_activity_at",
+        sort="created_at",  # "the last BUCK ticket" is the newest one opened
         order="desc",
         limit=1,
     )
@@ -1679,7 +1862,7 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
         data=data,
         row_ids=[row.id],
         client_code=row.client_code.upper(),
-        reply=format_ticket_list([data], heading=f"Latest ticket for {code}"),
+        reply=format_ticket_list([data], heading=f"Latest ticket for {code}", extras=("created", "activity")),
     )
 
 
@@ -1737,7 +1920,7 @@ def _about_stage(turn: ChatTurn | None) -> str:
         return "review"
     if re.search(r"\bopen\b", text):
         return "open"
-    return "live"
+    return "all"
 
 
 def _format_hours(hours: float) -> str:
@@ -2307,6 +2490,8 @@ def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResu
     except FlowRequestError as exc:
         return _refuse(GET_TICKET_DETAIL, source, str(exc))
     data = _ticket_detail_payload(row)
+    if (args.view or "brief").strip().lower() != "full":
+        return _ticket_briefing(source, row, data)
     lines = [f"{data['ticket_label']} — {data['topic']} ({data['status']}, {data['category']})"]
     if row.log_text:
         lines.append(f"Log: {row.log_text}")
@@ -2321,6 +2506,94 @@ def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs) -> ToolResu
         row_ids=[row.id],
         client_code=row.client_code.upper(),
         reply="\n".join(lines).rstrip(),
+    )
+
+
+def _field_block(row: TicketDetail, now: datetime) -> str:
+    """The ticket's fields as a short, exact block that goes before the prose summary."""
+    label = ticket_label(row.client_code, row.ticket_num)
+    stage = _STAGE_TAGS.get(row.stage or "", row.stage or "")
+    lines = [
+        f"{label} — {(row.topic or row.subject or '').strip() or '(no topic)'}",
+        f"Client {row.client_code} · {row.status or 'no status'} · {row.category or 'no category'}"
+        + (f" · {stage}" if stage else "")
+        + (" · complete" if row.complete else ""),
+        f"Assigned to {row.assignee_code or 'nobody'}"
+        + (f" · requestor {row.requestor_text}" if row.requestor_text else "")
+        + (f" · reason {row.reason}" if row.reason else "")
+        + (f" · cause {row.cause}" if row.cause else ""),
+        f"{_created_text(row.created_at.isoformat(sep=' '), now)} · "
+        f"{_activity_text(row.last_activity_at.isoformat(sep=' '), now)}"
+        + (f" · {_due_text(row.due_at.isoformat(sep=' '), now)}" if row.due_at else ""),
+    ]
+    if row.hrs_actual_total is not None:
+        lines.append(f"Time logged: {_format_hours(float(row.hrs_actual_total))}")
+    if row.machine_name:
+        lines.append(f"Machine: {row.machine_name}")
+    return "\n".join(lines)
+
+
+_BRIEF_ENTRIES = 12
+_BRIEF_MAIL = 8
+
+
+def _ticket_briefing(source: FlowSource, row: TicketDetail, data: dict[str, Any]) -> ToolResult:
+    """Fields (exact) + a digest of notes, mail and time entries for the model to summarize."""
+    now = datetime.now()
+    label = data["ticket_label"]
+    notes = " ".join((row.notes_text or "").split())[:600]
+    log_lines = [
+        line.strip() for line in (row.log_text or "").splitlines() if line.strip() and "Time entry" not in line
+    ]
+    mail_rows: list[MailRecord] = []
+    entry_rows: list[TimeEntryRecord] = []
+    try:
+        mail_rows = source.list_mail(ticket_id=row.id, direction="all", limit=_BRIEF_MAIL)
+    except FlowRequestError:
+        pass
+    try:
+        entry_rows = source.list_time_entries(ticket_id=row.id, limit=_BRIEF_ENTRIES)
+    except FlowRequestError:
+        pass
+    events: list[tuple[datetime, str]] = []
+    lines = [
+        f"{label}: {(row.topic or row.subject or '').strip()}",
+        "Write a short plain-English briefing on this ticket in two short paragraphs: first what it is about "
+        "and why it was opened, then the latest update (who did or said what most recently, and what is "
+        "pending or next). Use only the facts below; do not repeat the fields or give totals.",
+        "",
+    ]
+    if notes:
+        lines.append(f"Ticket notes: {notes}")
+    if log_lines:
+        lines.append("Ticket log (non-time lines): " + " | ".join(log_lines[-6:])[:700])
+    for mail in mail_rows:
+        when = mail.received_at or mail.created_at
+        who = (mail.from_name or mail.from_address or "unknown").strip()
+        events.append((when, f"mail {mail.direction} from {who} -- {(mail.subject or '').strip()}: {mail.snippet[:260]}"))
+    for entry in entry_rows:
+        when = entry.work_date or entry.start_at or entry.created_at
+        subject = _SUBJECT_PREFIX_RE.sub("", entry.subject or "").strip() or "(no title)"
+        body = " ".join((entry.body or "").split())[:260]
+        events.append((when, f"time entry {_format_minutes(_worked_minutes(entry))} -- {subject}" + (f": {body}" if body else "")))
+    events.sort(key=lambda item: item[0], reverse=True)
+    if events:
+        lines.append("")
+        lines.append("Activity, newest first:")
+        for when, text in events[:14]:
+            lines.append(f"- {when:%Y-%m-%d}: {text}")
+        newest = events[0]
+        lines.append(f"(Most recent activity: {newest[0]:%Y-%m-%d}, {newest[1].split(' -- ')[0]}.)")
+    else:
+        lines.append("There are no emails or time entries on this ticket yet.")
+    return ToolResult(
+        tool=GET_TICKET_DETAIL,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id],
+        client_code=row.client_code.upper(),
+        header=_field_block(row, now),
+        digest="\n".join(lines),
     )
 
 

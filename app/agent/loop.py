@@ -401,6 +401,7 @@ async def run_tool_loop(
     relayed: list[str] = []
     digests: list[str] = []  # what summary-mode tools gave the model to write prose from
     footers: list[str] = []  # exact numbers appended after the model's prose
+    field_headers: list[str] = []  # exact fields printed before the model's prose
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
     async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
@@ -459,13 +460,25 @@ async def run_tool_loop(
                     if blocked:
                         payload = _set_assistant_content(payload, blocked)
                     elif skipped:
+                        # The model twice failed to call a tool. A pattern router is a better safety net
+                        # than a refusal, even for routers the operator turned off.
+                        fallback = _direct_answer_named(source, turn)
+                        if fallback is not None:
+                            name, direct = fallback
+                            payload = _assistant_payload(
+                                direct.reply or direct.error or _NO_TOOL_ENGLISH,
+                                settings.llm_model.strip() or "tb-brain",
+                            )
+                            payload["x_tb_brain"] = {"router": f"fallback:{name}", "tool_calls": trace}
+                            return payload
                         payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
                 payload = _apply_english_reply(payload, relayed)
-                if footers and not relayed:
+                if (footers or field_headers) and not relayed:
                     prose = str(payload["choices"][0]["message"].get("content") or "").strip()
                     if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH):
                         prose = ""
-                    payload = _set_assistant_content(payload, (prose + "\n\n" if prose else "") + footers[-1])
+                    parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
+                    payload = _set_assistant_content(payload, "\n\n".join(part for part in parts if part))
                 payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
                 return payload
             chat.append(message)
@@ -496,6 +509,8 @@ async def run_tool_loop(
                     digests.append(result.digest)
                 if result.footer:
                     footers.append(result.footer)
+                if result.header:
+                    field_headers.append(result.header)
                 chat.append(
                     {
                         "role": "tool",

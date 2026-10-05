@@ -1380,6 +1380,117 @@
           }
         }
       ]
+    },
+    {
+      "id": "S1",
+      "group": "summary",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Can you summarize review tickets for ACME?"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "client_code": "ACME",
+            "stage": "review",
+            "summarize": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "S2",
+      "group": "summary",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tell me about ACME-0041"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "get_ticket_detail",
+          "args": {
+            "ticket_label": "ACME-0041"
+          }
+        }
+      ],
+      "forbid_calls": [
+        {
+          "tool": "get_ticket_detail",
+          "args": {
+            "view": "full"
+          }
+        }
+      ],
+      "must_contain": [
+        "ACME-0041"
+      ]
+    },
+    {
+      "id": "S3",
+      "group": "summary",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tickets for Michael Sodl"
+        }
+      ],
+      "expect": [
+        {
+          "any": [
+            {
+              "tool": "list_tickets",
+              "args": {
+                "requestor": {
+                  "re": "(?i)sodl"
+                }
+              }
+            },
+            {
+              "tool": "list_tickets",
+              "args": {
+                "contact_id": "*"
+              }
+            }
+          ]
+        }
+      ],
+      "routers_ok": [
+        "person_ticket"
+      ],
+      "must_contain": [
+        "ACME-0400"
+      ]
+    },
+    {
+      "id": "S4",
+      "group": "summary",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tickets about imaging"
+        }
+      ],
+      "expect": [
+        {
+          "tool": "list_tickets",
+          "args": {
+            "q": {
+              "re": "(?i)imag"
+            }
+          }
+        }
+      ],
+      "routers_ok": [
+        "tickets_about"
+      ],
+      "must_contain": [
+        "WDON-1842"
+      ]
     }
   ]
 }
