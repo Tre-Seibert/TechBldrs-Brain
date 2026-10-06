@@ -220,10 +220,11 @@ _LATEST_TICKET_SCHEMA: dict[str, Any] = {
         },
         "stage": {
             "type": "string",
-            "enum": ["open", "review", "live", "archived"],
+            "enum": ["archived"],
             "description": (
-                "Which kind of ticket. archived = 'the most recent archived {CODE} ticket'. "
-                "Omit for the default (open + in review); archives are searched on their own only if nothing live matches."
+                "Set to archived ONLY when the user said archived ('the most recent archived {CODE} ticket'). "
+                "Otherwise omit it: the default covers open and in-review tickets, and the archive is searched "
+                "on its own only if nothing live matches."
             ),
         },
     },

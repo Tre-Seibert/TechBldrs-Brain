@@ -13,8 +13,11 @@ from app.tools.handlers import (
     ChatTurn,
     GetTicketDetailArgs,
     LatestTicketArgs,
+    ListTimeEntriesArgs,
+    _latest_stage,
     get_ticket_detail,
     latest_ticket,
+    list_time_entries,
 )
 
 
@@ -73,6 +76,65 @@ class LatestTicketStageTests(unittest.TestCase):
         self.assertEqual(stages, ["live"])
 
 
+class ModelStageHabitTests(unittest.TestCase):
+    def test_a_model_filled_open_does_not_hide_in_review_tickets(self) -> None:
+        # Seen live: the model sent stage=open for "the last BUCK ticket", which skipped the newest
+        # ticket because it was in 9 REVIEW.
+        stage = _latest_stage(LatestTicketArgs(client_code="BUCK", stage="open"), ChatTurn(user_text="What was the last BUCK ticket?"))
+        self.assertEqual(stage, "live")
+
+    def test_only_the_users_words_or_an_explicit_archived_change_the_stage(self) -> None:
+        self.assertEqual(_latest_stage(LatestTicketArgs(stage="archived"), ChatTurn(user_text="last BUCK ticket")), "archived")
+        self.assertEqual(_latest_stage(LatestTicketArgs(), ChatTurn(user_text="last open BUCK ticket")), "open")
+        self.assertEqual(_latest_stage(LatestTicketArgs(), ChatTurn(user_text="last BUCK ticket in review")), "review")
+
+
+class GuessedLabelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def _one_open_ticket(self):
+        real = self.source.list_tickets
+        only = real(client_code="ACME", ticket_num="0041", stage="live")[0]
+
+        def fake(**kwargs):
+            if kwargs.get("ticket_num"):
+                return []  # the guessed label does not exist
+            if kwargs.get("stage") == "open":
+                return [only]
+            return real(**kwargs)
+
+        return mock.patch.object(self.source, "list_tickets", side_effect=fake), only
+
+    def test_a_label_the_user_never_typed_falls_back_to_the_clients_one_open_ticket(self) -> None:
+        patch, only = self._one_open_ticket()
+        with patch:
+            result = list_time_entries(
+                self.source,
+                ListTimeEntriesArgs(ticket_label="ACME-9999", view="list"),
+                ChatTurn(user_text="Summarize the time entries logged on the ACME ticket"),
+            )
+        self.assertTrue(result.ok, result.error)
+
+    def test_several_open_tickets_ask_which_instead_of_guessing(self) -> None:
+        result = list_time_entries(
+            self.source,
+            ListTimeEntriesArgs(ticket_label="ACME-9999", view="list"),
+            ChatTurn(user_text="Summarize the time entries logged on the ACME ticket"),
+        )
+        self.assertFalse(result.ok)
+        self.assertIn("Which one do you mean", result.error)
+
+    def test_a_label_the_user_did_type_is_never_swapped_for_another_ticket(self) -> None:
+        patch, _ = self._one_open_ticket()
+        with patch:
+            result = get_ticket_detail(
+                self.source, GetTicketDetailArgs(ticket_label="ACME-9999"), ChatTurn(user_text="Show me ACME-9999")
+            )
+        self.assertFalse(result.ok)
+        self.assertIn("No single ticket found", result.error)
+
+
 class ArchivedLabelLookupTests(unittest.TestCase):
     def setUp(self) -> None:
         self.source = StubFlowSource()
@@ -128,6 +190,32 @@ def _tool_call(name: str, arguments: dict) -> dict:
         "content": None,
         "tool_calls": [{"id": "c1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}],
     }
+
+
+class BlankReplyLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_model_that_says_nothing_after_a_tool_error_shows_the_error(self) -> None:
+        script = iter(
+            [
+                _tool_call("get_ticket_detail", {"ticket_label": "ZTB-1681"}),
+                {"role": "assistant", "content": ""},
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"id": "x", "choices": [{"index": 0, "message": next(script)}]})
+
+        real = httpx.AsyncClient
+        transport = httpx.MockTransport(handler)
+        with mock.patch("app.agent.loop.httpx.AsyncClient", lambda **kw: real(transport=transport, **kw)):
+            payload = await run_tool_loop(
+                settings=Settings(llm_model="fake", llm_base_url="http://llm.test/v1", _env_file=None),
+                source=StubFlowSource(),
+                messages=[{"role": "user", "content": "Show me ZTB-1681"}],
+                model=None,
+                actor="test",
+            )
+        text = payload["choices"][0]["message"]["content"]
+        self.assertIn("No single ticket found", text)
 
 
 class TimeSummaryFiguresLoopTests(unittest.IsolatedAsyncioTestCase):

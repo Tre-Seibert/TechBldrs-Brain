@@ -1897,7 +1897,6 @@ def _list_tickets_multi(
 
 _REVIEW_WORD_RE = re.compile(r"\breview\b", re.IGNORECASE)
 _ARCHIVED_WORD_RE = re.compile(r"\barchived?\b", re.IGNORECASE)
-_LATEST_STAGES = frozenset({"open", "review", "live", "archived"})
 
 
 def _latest_stage(args: LatestTicketArgs, turn: ChatTurn | None) -> str:
@@ -1910,8 +1909,9 @@ def _latest_stage(args: LatestTicketArgs, turn: ChatTurn | None) -> str:
         return "open"
     if _REVIEW_WORD_RE.search(said):
         return "review"
-    given = (args.stage or "").strip().lower()
-    return given if given in _LATEST_STAGES else "live"
+    # The model fills in "open" for plain 'last ticket' questions, which would hide 9 REVIEW tickets, so
+    # only "archived" is taken from its arguments; everything else comes from the user's words.
+    return "archived" if (args.stage or "").strip().lower() == "archived" else "live"
 
 
 def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | None = None) -> ToolResult:
@@ -2487,7 +2487,7 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
         if pick is None:
             return _refuse(LIST_TIME_ENTRIES, source, f"No active technician matches {assignee!r}.")
         tech_user_id = pick.id
-    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
+    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label, turn)
     if label_error:
         return _refuse(LIST_TIME_ENTRIES, source, label_error)
     client = (args.client_code or "").strip().upper() or None
@@ -2832,15 +2832,32 @@ def list_machines(source: FlowSource, args: ListMachinesArgs) -> ToolResult:
     )
 
 
-def _ticket_id_for(source: FlowSource, ticket_id: int | None, label: str | None) -> tuple[int | None, str | None]:
+def _ticket_id_for(
+    source: FlowSource, ticket_id: int | None, label: str | None, turn: ChatTurn | None = None
+) -> tuple[int | None, str | None]:
     """A ticket id from an explicit id or a label like ACME-0041. Returns (id, error)."""
     text = (label or "").strip()
     if not text:
         return ticket_id, None
     row = _resolve_label(source, text.upper())
-    if row is None:
-        return None, f"No single ticket found for label {text!r}. Check the client code and number."
-    return row.id, None
+    if row is not None:
+        return row.id, None
+    said = (turn.user_text if turn else "") or ""
+    match = _LABEL_RE.match(text)
+    if match and turn is not None and text.lower() not in said.lower():
+        # The user never typed this label ('the VANG ticket'), so the model guessed it. Use the client's
+        # one open ticket if there is exactly one; otherwise ask which, never guess.
+        code = match.group(1).upper()
+        try:
+            open_rows = source.list_tickets(client_code=code, stage="open", limit=6)
+        except FlowRequestError:
+            open_rows = []
+        if len(open_rows) == 1:
+            return open_rows[0].id, None
+        if open_rows:
+            labels = ", ".join(ticket_label(r.client_code, r.ticket_num) for r in open_rows)
+            return None, f"{code} has several open tickets ({labels}). Which one do you mean? Give the ticket label."
+    return None, f"No single ticket found for label {text!r}. Check the client code and number."
 
 
 _FULL_LOG_RE = re.compile(
@@ -2880,7 +2897,7 @@ def _archived_ticket_result(source: FlowSource, row: TicketRecord) -> ToolResult
 
 
 def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs, turn: ChatTurn | None = None) -> ToolResult:
-    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
+    ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label, turn)
     if label_error:
         # Nothing live matched, so (and only then) look in the archive.
         archived = _resolve_archived_label(source, (args.ticket_label or "").strip().upper())
@@ -2963,7 +2980,10 @@ def _ticket_briefing(source: FlowSource, row: TicketDetail, data: dict[str, Any]
         f"{label}: {(row.topic or row.subject or '').strip()}",
         "Write a short plain-English briefing on this ticket in two short paragraphs: first what it is about "
         "and why it was opened, then the latest update (who did or said what most recently, and what is "
-        "pending or next). Use only the facts below; do not repeat the fields or give totals.",
+        "pending or next). Use only the facts below; do not repeat the fields or give totals. "
+        f"The ticket is titled '{(row.topic or row.subject or '').strip()}': do not rename it or give it a "
+        "different subject. If the facts below do not say why it was opened, say that is not recorded "
+        "instead of guessing, and never say a ticket was completed unless the facts say so.",
         "",
     ]
     if notes:

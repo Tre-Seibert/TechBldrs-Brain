@@ -531,6 +531,7 @@ async def run_tool_loop(
     footers: list[str] = []  # exact numbers appended after the model's prose
     field_headers: list[str] = []  # exact fields printed before the model's prose
     scrub_figures = False  # the digest had no numbers, so any the model writes are invented
+    tool_errors: list[str] = []  # what to show if the model answers a failed tool call with nothing
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
     async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
@@ -617,6 +618,10 @@ async def run_tool_loop(
                         elif skipped:
                             payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
                     payload = _apply_english_reply(payload, relayed)
+                    if not relayed and not (footers or field_headers):
+                        blank = not str(payload["choices"][0]["message"].get("content") or "").strip()
+                        if blank:  # the model said nothing: show the tool's own error, never an empty reply
+                            payload = _set_assistant_content(payload, tool_errors[-1] if tool_errors else _NO_SEARCH_RUN)
                     if (footers or field_headers) and not relayed:
                         prose = str(payload["choices"][0]["message"].get("content") or "").strip()
                         if scrub_figures and prose not in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) and not unusable:
@@ -651,6 +656,8 @@ async def run_tool_loop(
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in _RELAY_TOOLS:
                     relayed.append(result.reply)
+                if not result.ok and result.error:
+                    tool_errors.append(result.error)
                 if result.chunks:
                     findings = []
                     for chunk in result.chunks:
