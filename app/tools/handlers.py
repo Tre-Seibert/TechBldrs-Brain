@@ -237,6 +237,7 @@ class LatestTicketArgs(BaseModel):
     contact_id: int | None = None
     requestor: str | None = None
     status: str | None = None
+    stage: str | None = None
 
 
 class ListTicketsArgs(BaseModel):
@@ -478,6 +479,9 @@ class ToolResult(BaseModel):
     reduce_suffix: str | None = None
     # Plain list shown instead of prose if the model never produces a usable summary.
     fallback: str | None = None
+    # True when the digest carries no figures (time summaries): any hours/minutes the model still writes
+    # are invented, so the loop strips them and keeps only paragraphs that name a ticket from the digest.
+    prose_without_figures: bool = False
 
 
 def _contact_payload(row: ContactRecord) -> dict[str, Any]:
@@ -1891,20 +1895,50 @@ def _list_tickets_multi(
     )
 
 
+_REVIEW_WORD_RE = re.compile(r"\breview\b", re.IGNORECASE)
+_ARCHIVED_WORD_RE = re.compile(r"\barchived?\b", re.IGNORECASE)
+_LATEST_STAGES = frozenset({"open", "review", "live", "archived"})
+
+
+def _latest_stage(args: LatestTicketArgs, turn: ChatTurn | None) -> str:
+    """Which kind of ticket 'the latest ticket' means. The user's words win over the model's argument:
+    archived / open / review when they said so, otherwise open + in review (live)."""
+    said = (turn.user_text if turn else "") or ""
+    if _ARCHIVED_WORD_RE.search(said):
+        return "archived"
+    if _OPEN_WORD_RE.search(said):
+        return "open"
+    if _REVIEW_WORD_RE.search(said):
+        return "review"
+    given = (args.stage or "").strip().lower()
+    return given if given in _LATEST_STAGES else "live"
+
+
 def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | None = None) -> ToolResult:
-    """Single most recent ticket for a client code, or for a named person from the turn."""
+    """Single most recent ticket for a client code, or for a named person from the turn.
+
+    Live tickets are searched first. The archive is searched only when the user asked for archived
+    tickets, or when nothing live matched (and the reply says so).
+    """
+    stage = _latest_stage(args, turn)
     person = _person_name_from_turn(turn) or (args.requestor or "").strip() or None
     if person:
-        return list_tickets(
+        person_turn = turn or ChatTurn(user_text=f"latest ticket involving {person}")
+        result = list_tickets(
             source,
-            ListTicketsArgs(
-                contact_id=args.contact_id,
-                requestor=person,
-                stage="live",
-                limit=1,
-            ),
-            turn or ChatTurn(user_text=f"latest ticket involving {person}"),
+            ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage=stage, limit=1),
+            person_turn,
         )
+        if not result.data and stage != "archived":
+            archived = list_tickets(
+                source,
+                ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage="archived", limit=1),
+                person_turn,
+            )
+            if archived.data:
+                archived.reply = f"Nothing open or in review matched, so this is the latest archived ticket.\n\n{archived.reply}"
+                return archived
+        return result
     code = (args.client_code or "").strip().upper()
     if not code:
         return _refuse(
@@ -1912,16 +1946,26 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
             source,
             "latest_ticket needs a client_code or a person's name (e.g. latest ticket involving Thomas Carter).",
         )
-    rows = source.list_tickets(
-        client_code=code,
-        contact_id=args.contact_id,
-        status=args.status,
-        stage="live",
-        sort="created_at",  # "the last BUCK ticket" is the newest one opened
-        order="desc",
-        limit=1,
-    )
+
+    def newest(wanted: str) -> list[TicketRecord]:
+        return source.list_tickets(
+            client_code=code,
+            contact_id=args.contact_id,
+            status=args.status,
+            stage=wanted,
+            sort="created_at",  # "the last BUCK ticket" is the newest one opened
+            order="desc",
+            limit=1,
+        )
+
+    rows = newest(stage)
+    fallback_note = ""
+    if not rows and stage != "archived":
+        rows = newest("archived")
+        if rows:
+            fallback_note = f"Nothing open or in review matched for {code}, so this is the latest archived ticket.\n\n"
     if not rows:
+        none = f"No archived ticket found for {code}." if stage == "archived" else f"No ticket found for {code}."
         return ToolResult(
             tool=LATEST_TICKET,
             source=source.source_name,
@@ -1929,17 +1973,19 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
             row_ids=[],
             client_code=code,
             note="No matching ticket.",
-            reply=f"No ticket found for {code}.",
+            reply=none,
         )
     row = rows[0]
     data = _ticket_payload(row)
+    archived_row = data.get("stage") == "archived"
+    heading = f"Latest {'archived ' if archived_row else ''}ticket for {code}"
     return ToolResult(
         tool=LATEST_TICKET,
         source=source.source_name,
         data=data,
         row_ids=[row.id],
         client_code=row.client_code.upper(),
-        reply=format_ticket_list([data], heading=f"Latest ticket for {code}", extras=("created", "activity")),
+        reply=fallback_note + format_ticket_list([data], heading=heading, extras=("created", "activity")),
     )
 
 
@@ -2388,21 +2434,22 @@ def _worked_minutes(row: TimeEntryRecord) -> int:
 
 def _time_digest(rows: list[TimeEntryRecord], *, scope: str, span: str, total_minutes: int) -> str:
     """What the model reads to write the summary: one line per entry, notes trimmed to fit."""
+    # No durations, dates or totals in here on purpose: given numbers, the model re-adds them and gets
+    # them wrong. The exact figures are the footer's, appended after the model's text.
     per_note = max(120, min(400, 12000 // max(len(rows), 1)))
     ordered = sorted(rows, key=lambda r: (r.ticket_label, r.work_date or r.start_at or r.created_at))
     lines = [
-        f"Time entries for {scope}{span}: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}, "
-        f"{_format_minutes(total_minutes)} worked.",
-        "Write a plain-English summary of what was worked on, as 2 or 3 short paragraphs grouped by "
-        "ticket or theme. Name the tickets (like ZTB-1680). Past tense. Use only what the notes below say. "
-        "Do not list every entry and do not state totals; the exact totals are added after your text.",
+        f"Time entries for {scope}{span}: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}.",
+        "Write a plain-English summary of what was worked on, as short paragraphs grouped by ticket. "
+        "Start every paragraph with its ticket label (like ZTB-1680). Past tense. Use only what the notes "
+        "below say. No intro or closing sentence. Do not state dates, hours, minutes, counts or client "
+        "names; the exact totals are added after your text.",
         "",
     ]
     for row in ordered:
-        when = (row.work_date or row.start_at or row.created_at).strftime("%Y-%m-%d")
         subject = _SUBJECT_PREFIX_RE.sub("", row.subject or "").strip() or "(no title)"
         notes = " ".join((row.body or "").split())[:per_note]
-        line = f"[{row.ticket_label} | {when} | {_format_minutes(_worked_minutes(row))}] {subject}"
+        line = f"[{row.ticket_label}] {subject}"
         lines.append(f"{line} -- notes: {notes}" if notes else line)
     return "\n".join(lines)
 
@@ -2524,6 +2571,7 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
         digest=_time_digest(rows, scope=scope, span=span, total_minutes=total_minutes),
         footer=_time_footer(rows, total_minutes=total_minutes, truncated=len(rows) >= _TIME_SUMMARY_FETCH),
         header=f"Period: {period[2]}" if period else None,
+        prose_without_figures=True,
     )
 
 
@@ -2801,9 +2849,43 @@ _FULL_LOG_RE = re.compile(
 )
 
 
+def _resolve_archived_label(source: FlowSource, label: str) -> TicketRecord | None:
+    """A label that is not a live ticket may be an archived one. Read-only; never used for merging."""
+    match = _LABEL_RE.match(label)
+    if match is None:
+        return None
+    try:
+        rows = source.list_tickets(
+            client_code=match.group(1).upper(), ticket_num=match.group(2), stage="archived", limit=2
+        )
+    except FlowRequestError:
+        return None
+    return rows[0] if len(rows) == 1 else None
+
+
+def _archived_ticket_result(source: FlowSource, row: TicketRecord) -> ToolResult:
+    data = _ticket_payload(row)
+    label = data["ticket_label"]
+    reply = format_ticket_list([data], heading=f"{label} is an archived ticket", extras=("created", "activity"))
+    return ToolResult(
+        tool=GET_TICKET_DETAIL,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id],
+        client_code=row.client_code.upper(),
+        note="Archived ticket: fields only.",
+        reply=f"{reply}\n\nIt was found in the archive, not in live tickets. The archive only gives these fields here, "
+        "not the notes, emails or time entries.",
+    )
+
+
 def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs, turn: ChatTurn | None = None) -> ToolResult:
     ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label)
     if label_error:
+        # Nothing live matched, so (and only then) look in the archive.
+        archived = _resolve_archived_label(source, (args.ticket_label or "").strip().upper())
+        if archived is not None:
+            return _archived_ticket_result(source, archived)
         return _refuse(GET_TICKET_DETAIL, source, label_error)
     try:
         row = source.get_ticket(ticket_id=ticket_id)

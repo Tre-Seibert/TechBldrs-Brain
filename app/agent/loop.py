@@ -407,6 +407,31 @@ def _tool_message_content(result: Any) -> str:
     return result.model_dump_json()
 
 
+_DURATION_WORD = r"\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)\b"
+_DURATION_RE = re.compile(_DURATION_WORD, re.IGNORECASE)
+_DURATION_PAREN_RE = re.compile(rf"\s*\([^()]*{_DURATION_WORD}[^()]*\)", re.IGNORECASE)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_BLANK_LINE_RE = re.compile(r"\n\s*\n")
+
+
+def strip_unbacked_figures(prose: str, digest_text: str) -> str:
+    """Prose written from a digest that had no hours or minutes in it can only have invented them.
+
+    Drops parenthetical and sentence-level durations, then keeps only paragraphs that name a ticket
+    the digest had (which also drops invented intros and closing sentences). The exact totals come
+    from the tool's footer, not from the model.
+    """
+    labels = set(_TICKET_LABEL_RE.findall(digest_text))
+    kept: list[str] = []
+    for block in _BLANK_LINE_RE.split(prose.strip()):
+        block = _DURATION_PAREN_RE.sub("", block)
+        sentences = [s for s in _SENTENCE_SPLIT_RE.split(block) if not _DURATION_RE.search(s)]
+        block = " ".join(sentences).strip()
+        if block and any(label in block for label in labels):
+            kept.append(block)
+    return "\n\n".join(kept)
+
+
 def _has_non_english_script(text: str) -> bool:
     """True if any letter is not a Latin letter (Thai, Chinese, Cyrillic, Arabic, ...)."""
     for char in text or "":
@@ -505,6 +530,7 @@ async def run_tool_loop(
     digests: list[str] = []  # what summary-mode tools gave the model to write prose from
     footers: list[str] = []  # exact numbers appended after the model's prose
     field_headers: list[str] = []  # exact fields printed before the model's prose
+    scrub_figures = False  # the digest had no numbers, so any the model writes are invented
     headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
     timeout = httpx.Timeout(settings.llm_timeout_seconds)
     async with httpx.AsyncClient(base_url=settings.llm_base_url, headers=headers, timeout=timeout) as client:
@@ -593,6 +619,8 @@ async def run_tool_loop(
                     payload = _apply_english_reply(payload, relayed)
                     if (footers or field_headers) and not relayed:
                         prose = str(payload["choices"][0]["message"].get("content") or "").strip()
+                        if scrub_figures and prose not in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) and not unusable:
+                            prose = strip_unbacked_figures(prose, " ".join(digests)) or (fallbacks[-1] if fallbacks else "")
                         if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) or unusable:
                             prose = fallbacks[-1] if fallbacks else ""  # no usable summary: show the plain list
                         parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
@@ -643,6 +671,7 @@ async def run_tool_loop(
                         result = result.model_copy(update={"chunks": None})  # keep the title-only digest
                 if result.digest:
                     digests.append(result.digest)
+                    scrub_figures = result.prose_without_figures
                 if result.fallback:
                     fallbacks.append(result.fallback)
                 if result.footer:

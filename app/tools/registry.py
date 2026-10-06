@@ -218,6 +218,14 @@ _LATEST_TICKET_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "Optional ticket status filter (Open, Closed, New, ...).",
         },
+        "stage": {
+            "type": "string",
+            "enum": ["open", "review", "live", "archived"],
+            "description": (
+                "Which kind of ticket. archived = 'the most recent archived {CODE} ticket'. "
+                "Omit for the default (open + in review); archives are searched on their own only if nothing live matches."
+            ),
+        },
     },
 }
 
