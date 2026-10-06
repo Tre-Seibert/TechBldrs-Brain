@@ -2489,6 +2489,23 @@ def _time_footer(rows: list[TimeEntryRecord], *, total_minutes: int, truncated: 
     return "\n".join(lines)
 
 
+def _placeholder_labels(source: FlowSource, rows: list[TimeEntryRecord]) -> set[str]:
+    """Labels of the tickets in `rows` whose category is Place Holder (one lookup per ticket)."""
+    found: set[str] = set()
+    checked: set[str] = set()
+    for row in rows:
+        if row.ticket_label in checked:
+            continue
+        checked.add(row.ticket_label)
+        try:
+            tickets = source.list_tickets(client_code=row.client_code, ticket_num=row.ticket_num, stage="all", limit=1)
+        except FlowRequestError:
+            continue
+        if tickets and _is_placeholder_category(tickets[0].category):
+            found.add(row.ticket_label)
+    return found
+
+
 def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatTurn | None = None) -> ToolResult:
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
@@ -2535,6 +2552,14 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
         return _refuse(LIST_TIME_ENTRIES, source, str(exc))
     data = [_time_entry_payload(r) for r in rows]
     total_minutes = sum(_worked_minutes(r) for r in rows)
+    digest_rows = rows
+    if summary and rows:
+        # Catch-all "Place Holder" tickets (huddles, meetings) are not work worth describing: the prose
+        # leaves them out. The footer still counts their time, so the totals stay exact.
+        placeholders = _placeholder_labels(source, rows)
+        digest_rows = [r for r in rows if r.ticket_label not in placeholders]
+        if not digest_rows:
+            summary = False  # nothing but placeholder time: show the plain list instead of prose
     if ticket_id and rows:
         scope = rows[0].ticket_label
     else:
@@ -2581,7 +2606,7 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
         data=data,
         row_ids=[r.id for r in rows],
         client_code=client,
-        digest=_time_digest(rows, scope=scope, span=span, total_minutes=total_minutes),
+        digest=_time_digest(digest_rows, scope=scope, span=span, total_minutes=total_minutes),
         footer=_time_footer(rows, total_minutes=total_minutes, truncated=len(rows) >= _TIME_SUMMARY_FETCH),
         header=f"Period: {period[2]}" if period else None,
         prose_without_figures=True,

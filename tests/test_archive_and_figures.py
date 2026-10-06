@@ -165,6 +165,50 @@ class ArchivedLabelLookupTests(unittest.TestCase):
         self.assertFalse(result.ok)
 
 
+class PlaceholderTimeSummaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+        real_entries = self.source.list_time_entries
+        real_tickets = self.source.list_tickets
+        base = real_entries(ticket_id=3100, limit=1)[0]
+        self.huddle = base.model_copy(update={"id": 7001, "client_code": "ZTB", "ticket_num": "0006", "subject": "Huddle"})
+        self.real = base
+        self.entries = [self.real, self.huddle]
+        self.real_tickets = real_tickets
+
+    def _run(self, entries):
+        real_tickets = self.real_tickets
+        placeholder = real_tickets(client_code="ACME", ticket_num="0041", stage="all")[0].model_copy(
+            update={"category": "Place Holder"}
+        )
+
+        def fake_tickets(**kwargs):
+            if kwargs.get("ticket_num") == "0006":
+                return [placeholder]
+            return real_tickets(**kwargs)
+
+        with mock.patch.object(self.source, "list_time_entries", return_value=entries), mock.patch.object(
+            self.source, "list_tickets", side_effect=fake_tickets
+        ):
+            return list_time_entries(self.source, ListTimeEntriesArgs(assignee_code="ts"))
+
+    def test_placeholder_tickets_are_left_out_of_what_the_model_writes_about(self) -> None:
+        result = self._run(self.entries)
+        self.assertIn("ACME-0041", result.digest)
+        self.assertNotIn("ZTB-0006", result.digest)
+        self.assertNotIn("Huddle", result.digest)
+
+    def test_their_time_still_counts_in_the_exact_footer(self) -> None:
+        result = self._run(self.entries)
+        self.assertIn("ZTB-0006", result.footer)
+        self.assertIn("2 entries on 2 tickets", result.footer)
+
+    def test_only_placeholder_time_shows_the_plain_list_not_prose(self) -> None:
+        result = self._run([self.huddle])
+        self.assertIsNone(result.digest)
+        self.assertIsNotNone(result.reply)
+
+
 class ListByTicketNumberTests(unittest.TestCase):
     def setUp(self) -> None:
         self.source = StubFlowSource()
