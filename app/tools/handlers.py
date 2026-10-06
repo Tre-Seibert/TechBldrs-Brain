@@ -1662,6 +1662,12 @@ def list_tickets(
         # tool directly for some other "which ticket took the most X" question.
         # Skipped only if the user is deliberately asking for that category by name.
         rows = [r for r in rows if not _is_placeholder_category(r.category)][:limit]
+    wanted_num = (args.ticket_num or "").strip()
+    archived_hit = False
+    if not rows and client and wanted_num and not raw_q and stage in ("live", "open", "review"):
+        # A specific ticket number that is not live: only now look in the archive.
+        rows = run(None, "archived")
+        archived_hit = bool(rows)
     codes = sorted({(r.client_code or "") for r in rows if r.client_code})
     scoped = client or (codes[0] if len(codes) == 1 else None)
     archive_offer = None
@@ -1713,6 +1719,12 @@ def list_tickets(
             if rows
             else f"No {sl}tickets about '{raw_q}'{scope}."
         )
+    if client and wanted_num and not raw_q and not latest_person:
+        ticket_name = f"{client}-{wanted_num}"
+        if archived_hit:
+            heading = f"{ticket_name} is an archived ticket (not found in live tickets)"
+        elif not rows:
+            heading = f"No ticket found for {ticket_name}."
     if rows and stage in ("live", "all") and not latest_person:
         counts = {key: sum(1 for row in data if row.get("stage") == key) for key in _STAGE_TAGS}
         parts = [f"{n} {_STAGE_TAGS[k]}" for k, n in counts.items() if n]
@@ -2440,8 +2452,9 @@ def _time_digest(rows: list[TimeEntryRecord], *, scope: str, span: str, total_mi
     ordered = sorted(rows, key=lambda r: (r.ticket_label, r.work_date or r.start_at or r.created_at))
     lines = [
         f"Time entries for {scope}{span}: {len(rows)} entr{'y' if len(rows) == 1 else 'ies'}.",
-        "Write a plain-English summary of what was worked on, as short paragraphs grouped by ticket. "
-        "Start every paragraph with its ticket label (like ZTB-1680). Past tense. Use only what the notes "
+        "Write a plain-English summary of what was worked on: exactly one short paragraph for each ticket "
+        "listed below, so every ticket appears once. Put a blank line between paragraphs and start each "
+        "with its ticket label (like ZTB-1680). No bullets or dashes. Past tense. Use only what the notes "
         "below say. No intro or closing sentence. Do not state dates, hours, minutes, counts or client "
         "names; the exact totals are added after your text.",
         "",

@@ -412,6 +412,7 @@ _DURATION_RE = re.compile(_DURATION_WORD, re.IGNORECASE)
 _DURATION_PAREN_RE = re.compile(rf"\s*\([^()]*{_DURATION_WORD}[^()]*\)", re.IGNORECASE)
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 _BLANK_LINE_RE = re.compile(r"\n\s*\n")
+_LABEL_LINE_START_RE = re.compile(r"\n+(?=[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b)")
 
 
 def strip_unbacked_figures(prose: str, digest_text: str) -> str:
@@ -423,7 +424,9 @@ def strip_unbacked_figures(prose: str, digest_text: str) -> str:
     """
     labels = set(_TICKET_LABEL_RE.findall(digest_text))
     kept: list[str] = []
-    for block in _BLANK_LINE_RE.split(prose.strip()):
+    # A new ticket label at the start of a line starts a new paragraph, blank line or not.
+    prose = _LABEL_LINE_START_RE.sub("\n\n", prose.strip())
+    for block in _BLANK_LINE_RE.split(prose):
         block = _DURATION_PAREN_RE.sub("", block)
         sentences = [s for s in _SENTENCE_SPLIT_RE.split(block) if not _DURATION_RE.search(s)]
         block = " ".join(sentences).strip()

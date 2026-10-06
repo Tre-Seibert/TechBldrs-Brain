@@ -13,10 +13,12 @@ from app.tools.handlers import (
     ChatTurn,
     GetTicketDetailArgs,
     LatestTicketArgs,
+    ListTicketsArgs,
     ListTimeEntriesArgs,
     _latest_stage,
     get_ticket_detail,
     latest_ticket,
+    list_tickets,
     list_time_entries,
 )
 
@@ -163,8 +165,39 @@ class ArchivedLabelLookupTests(unittest.TestCase):
         self.assertFalse(result.ok)
 
 
+class ListByTicketNumberTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_a_number_that_is_only_archived_is_found_after_live_comes_up_empty(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(client_code="ACME", ticket_num="0010"))
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0010"])
+        self.assertIn("ACME-0010 is an archived ticket", result.reply)
+
+    def test_a_number_that_exists_nowhere_names_the_ticket_not_the_client(self) -> None:
+        result = list_tickets(self.source, ListTicketsArgs(client_code="ACME", ticket_num="9999"))
+        self.assertEqual(result.reply, "No ticket found for ACME-9999.")
+
+    def test_a_live_number_never_looks_in_the_archive(self) -> None:
+        real = self.source.list_tickets
+        stages: list[str | None] = []
+
+        def spy(**kwargs):
+            stages.append(kwargs.get("stage"))
+            return real(**kwargs)
+
+        with mock.patch.object(self.source, "list_tickets", side_effect=spy):
+            result = list_tickets(self.source, ListTicketsArgs(client_code="ACME", ticket_num="0041"))
+        self.assertNotIn("archived", stages)
+        self.assertEqual([row["ticket_label"] for row in result.data], ["ACME-0041"])
+
+
 class StripUnbackedFiguresTests(unittest.TestCase):
     DIGEST = "[ZINT-5426] Contact sync -- notes: x\n[ZTB-0006] Meetings -- notes: y"
+
+    def test_tickets_on_consecutive_lines_become_separate_paragraphs(self) -> None:
+        text = strip_unbacked_figures("ZINT-5426 Did the sync.\nZTB-0006 Held meetings.", self.DIGEST)
+        self.assertEqual(text, "ZINT-5426 Did the sync.\n\nZTB-0006 Held meetings.")
 
     def test_durations_intro_and_closing_lines_are_removed(self) -> None:
         prose = (
