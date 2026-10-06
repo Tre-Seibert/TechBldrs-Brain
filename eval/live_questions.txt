@@ -1,0 +1,116 @@
+# Questions for scripts/live_run.py against REAL Flow data (FLOW_MODE=http).
+# One question per line. A blank line starts a new conversation; lines in the same block are
+# follow-up turns of one conversation. Lines starting with # are comments.
+# Nothing here changes data: merging is only asked for suggestions, never asked to merge.
+
+# My queue
+What are my open tickets?
+
+What are my urgent tickets?
+
+Which of my tickets are overdue?
+
+What tickets do I need to respond to?
+
+Which of my tickets have had no activity in 1 week?
+
+What did I work on last week?
+
+What tickets are assigned to Eddie?
+
+# Finding tickets
+What was the last BUCK ticket?
+
+What was the last open BUCK ticket?
+
+What was the most recent archived BUCK ticket?
+
+Show open tickets for BPIE
+
+Show me ZTB-1680
+
+Show me ZTB-1691
+
+Show me ZTB-1681
+
+Any urgent tickets?
+
+What's in review for BPIE?
+
+Archived tickets for VANG
+
+Tickets about printer issues at ZEBB
+
+What internal tickets are open?
+
+Tickets still open for JDUG that have no assignee
+
+What's the status of the VANG Platform infrastructure ticket?
+
+Any tickets about imaging?
+
+Tickets for Michael Sodl
+
+the latest ticket involving Thomas Carter
+
+# Time and hours
+Which open ticket has the most time on it?
+
+Top 5 longest-worked tickets for BUCK
+
+How much time was logged on ACME-0041?
+
+Summarize the time entries logged on the VANG ticket
+
+How many hours did we bill BPIE this month?
+
+How many hours did I log yesterday?
+
+What did I work on yesterday?
+
+What was the longest ticket we spent time on last week?
+
+What ticket have I spent the most amount of time working on?
+
+Which tickets have time that isn't reviewed?
+
+# Email and contacts
+When did Debe last reach out?
+
+Last email from BUCK
+Show me the full email
+
+Has anyone from BUCK emailed today?
+
+Show all emails from WDON to our tenant
+
+Who contacts us the most from ZEBB?
+
+What's Debe's phone number?
+
+# Patterns and counts
+What problem does BUCK face the most?
+
+What are the top causes across all tickets this quarter?
+
+Which client has the most open tickets?
+
+Which clients use the most time this month?
+
+Any tickets that look like repeat issues for NGMC?
+
+What is the most common issue for BUCK?
+
+# Merging (suggestions only)
+What tickets need merged?
+
+What tickets need merged for ZINT?
+
+Does any of my tickets need merged?
+
+# Machines, clients and procedures
+What machines does ACME have?
+
+What's BUCK's contract / balance / renewal dates?
+
+How do we usually fix VPN dropouts on a FortiGate?
