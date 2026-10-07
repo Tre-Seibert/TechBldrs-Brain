@@ -73,11 +73,28 @@ class ResolveAdviceTests(unittest.TestCase):
             self.source, self.args, ChatTurn(user_text="suggestions to fix this ticket"), FakeKnowledge([])
         )
         self.assertIn("Past fixes: none found", result.digest)
-        self.assertIn("general IT advice, not from our records", result.digest)
+        self.assertIn("general IT advice, not from our records", result.footer)  # added by the code, not the model
 
-    def test_without_a_knowledge_index_it_says_so(self) -> None:
-        result = get_ticket_detail(self.source, self.args, ChatTurn(user_text="how do we fix this?"), None)
-        self.assertIn("knowledge search is not available", result.digest)
+    def test_without_a_knowledge_index_flow_supplies_past_fixes_with_the_same_cause(self) -> None:
+        base = self.source.list_tickets(client_code="ACME", ticket_num="0041", stage="live")[0]
+        other = base.model_copy(update={"id": 5555, "ticket_num": "0999", "hrs_actual_total": 1.5})
+        entry = self.source.list_time_entries(client_code="ACME", limit=1)[0].model_copy(
+            update={"subject": "Cleared temp files", "body": "Freed 13GB on the C: drive"}
+        )
+        with mock.patch.object(self.source, "list_tickets", wraps=self.source.list_tickets) as listed:
+            with mock.patch.object(self.source, "list_time_entries", return_value=[entry]):
+                listed.side_effect = lambda **kw: [other] if kw.get("cause") else [base]
+                result = get_ticket_detail(self.source, self.args, ChatTurn(user_text="how do we fix this?"), None)
+        self.assertIn("[ACME-0999] Cleared temp files: Freed 13GB", result.digest)
+        self.assertIsNone(result.footer)
+
+    def test_without_knowledge_or_a_matching_ticket_the_advice_is_marked_general(self) -> None:
+        with mock.patch.object(self.source, "list_tickets", wraps=self.source.list_tickets) as listed:
+            base = self.source.list_tickets(client_code="ACME", ticket_num="0041", stage="live")[0]
+            listed.side_effect = lambda **kw: [] if kw.get("cause") else [base]
+            result = get_ticket_detail(self.source, self.args, ChatTurn(user_text="how do we fix this?"), None)
+        self.assertIn("Past fixes: none found", result.digest)
+        self.assertIn("not from our records", result.footer)
 
     def test_a_plain_summary_does_not_search_for_fixes(self) -> None:
         knowledge = FakeKnowledge([])

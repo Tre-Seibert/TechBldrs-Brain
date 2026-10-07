@@ -31,6 +31,7 @@ from app.tools.handlers import (
     answer_person_mail_question,
     answer_person_ticket_question,
     answer_tickets_about,
+    dispatch,
     find_similar_tickets,
     format_similar_list,
     get_client_detail,
@@ -981,7 +982,8 @@ class NewCapabilityTests(unittest.TestCase):
         by_key = {row["key"]: row for row in result.data["rows"]}
         self.assertEqual(by_key["WDON"]["billed_minutes"], 45)
         self.assertEqual(by_key["ACME"]["minutes"], 20)
-        self.assertIn("45m billed", result.reply)
+        self.assertIn("41m logged", result.reply)
+        self.assertNotIn("billed", result.reply)  # billed means an invoice number; see BilledMeansInvoicedTests
 
     def test_stats_time_by_tech_resolves_me(self) -> None:
         token = current_signed_in_email.set("tseibert@techbldrs.example")
@@ -1266,6 +1268,7 @@ class TimeRankingTests(unittest.TestCase):
         self.assertEqual(spy.call_args.kwargs["reviewed"], False)
         self.assertEqual([r["key"] for r in result.data["rows"]], ["ACME-0041"])
         self.assertIsNone(result.digest)
+        self.assertIn("Unreviewed time by ticket", result.reply or "")
 
     def test_how_much_time_on_a_ticket_is_the_totals_only(self) -> None:
         from app.tools.handlers import ListTimeEntriesArgs, list_time_entries
@@ -1323,3 +1326,43 @@ class BilledMeansInvoicedTests(unittest.TestCase):
                 ChatTurn(user_text="How many hours did we work for WDON?"),
             )
         self.assertIsNone(spy.call_args.kwargs["invoiced"])
+
+class GuessedLabelAndLatestPersonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+        self.base = self.source.list_tickets(client_code="ACME", ticket_num="0041", stage="live")[0]
+
+    def test_a_client_code_plus_a_made_up_title_falls_back_to_the_clients_one_open_ticket(self) -> None:
+        def listed(**kw):
+            return [] if kw.get("ticket_num") else [self.base]
+
+        with mock.patch.object(self.source, "list_tickets", side_effect=listed):
+            result = dispatch(
+                self.source,
+                "get_ticket_detail",
+                {"ticket_label": "ACME-Platform infrastructure"},
+                ChatTurn(user_text="What's the status of the ACME Platform infrastructure ticket?"),
+            )
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("ACME-0041", result.header or result.reply or "")
+
+    def test_a_made_up_title_for_a_client_the_user_never_named_is_not_guessed(self) -> None:
+        with mock.patch.object(self.source, "list_tickets", return_value=[]):
+            result = dispatch(
+                self.source,
+                "get_ticket_detail",
+                {"ticket_label": "ZZZZ-Platform infrastructure"},
+                ChatTurn(user_text="What's the status of the platform infrastructure ticket?"),
+            )
+        self.assertFalse(result.ok)
+
+    def test_the_latest_ticket_for_a_person_is_the_newest_created_not_the_newest_activity(self) -> None:
+        with mock.patch.object(self.source, "list_tickets", wraps=self.source.list_tickets) as spy:
+            dispatch(
+                self.source,
+                "latest_ticket",
+                {"requestor": "Riley Chen"},
+                ChatTurn(user_text="the latest ticket involving Riley Chen"),
+            )
+        from_person = {call.kwargs.get("sort") for call in spy.call_args_list if call.kwargs.get("requestor") or call.kwargs.get("contact_id")}
+        self.assertEqual(from_person, {"created_at"})

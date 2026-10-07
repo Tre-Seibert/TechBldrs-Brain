@@ -46,6 +46,7 @@ _CLIENT_CODE_TOKEN_RE = re.compile(r"[A-Z]{3,8}")
 # "... for BUCK", "... at client ZEBB": a client scope the pattern routers do not handle.
 _CLIENT_SCOPE_RE = re.compile(r"\b(?:at|for|from|of|in)\s+(?:client\s+)?[A-Z]{3,8}\b")
 _LABEL_RE = re.compile(r"^([A-Za-z0-9]+)-([A-Za-z0-9]+)$")
+_GUESSED_LABEL_RE = re.compile(r"^([A-Za-z0-9]{2,6})[-\s]+(\S.*)$")
 _SELF_ASSIGNEE = frozenset({"me", "my", "myself", "i"})
 _OWN_TICKETS_RE = re.compile(r"\b(my|mine|assigned to me|i have)\b", re.IGNORECASE)
 _TICKETS_FOR_RE = re.compile(r"\btickets?\b[^.?!\n]*\bfor\s+(?P<name>.+)", re.IGNORECASE)
@@ -2037,13 +2038,13 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
         person_turn = turn or ChatTurn(user_text=f"latest ticket involving {person}")
         result = list_tickets(
             source,
-            ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage=stage, limit=1),
+            ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage=stage, sort="created_at", limit=1),
             person_turn,
         )
         if not result.data and stage != "archived":
             archived = list_tickets(
                 source,
-                ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage="archived", limit=1),
+                ListTicketsArgs(contact_id=args.contact_id, requestor=person, stage="archived", sort="created_at", limit=1),
                 person_turn,
             )
             if archived.data:
@@ -2854,6 +2855,7 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
         reply=format_stats(
             stats, client=client, assignee=assignee, after=args.after, before=args.before,
             invoiced=bool(args.invoiced) and entity_said == "time",
+            unreviewed=args.reviewed is False and entity_said == "time",
         ),
     )
 
@@ -2986,6 +2988,7 @@ def format_stats(
     after: str | None,
     before: str | None,
     invoiced: bool = False,
+    unreviewed: bool = False,
 ) -> str:
     entity = stats.get("entity", "tickets")
     group_by = stats.get("group_by", "")
@@ -2998,11 +3001,17 @@ def format_stats(
     if after or before:
         scope.append(f"{after or 'start'} to {before or 'now'}")
     head = ", ".join(scope)
+    if unreviewed and not invoiced:
+        head = "Unreviewed " + head
     if invoiced:
         # billed = the entry has an invoice number; show billed minutes only, never a second 'billed' figure
-        head = f"billed time (entries with an invoice number) by {group_by}" + head[len(f'{entity} by {group_by}'):]
+        where = head[len(f'{entity} by {group_by}'):].lstrip(", ")
+        head = f"Billed time by {group_by}" + (f", {where}" if where else "")
         if not rows:
-            return f"No billed time found ({head}). An entry counts as billed when it has an invoice number."
+            return (
+                f"No billed time found" + (f" ({where})" if where else "")
+                + ". An entry counts as billed when it has an invoice number."
+            )
         lines = [f"{head}: {_format_minutes(stats.get('total_billed_minutes', 0))} billed across {stats.get('total_count', 0)} entries.", ""]
         for i, row in enumerate(rows, 1):
             lines.append(f"{i}. {row['key']} — {_format_minutes(row['billed_minutes'])} billed ({row['count']} entries)")
@@ -3010,12 +3019,15 @@ def format_stats(
     if not rows:
         return f"No {entity} found ({head})."
     if entity == "time":
-        total = f"{_format_minutes(stats.get('total_minutes', 0))} logged, {_format_minutes(stats.get('total_billed_minutes', 0))} billed"
-        lines = [f"{head}: {stats.get('total_count', 0)} entries, {total}.", ""]
+        # only time worked here: "billed" means an invoice number and has its own invoiced=true answer
+        lines = [
+            f"{head}: {_format_minutes(stats.get('total_minutes', 0))} logged across {stats.get('total_count', 0)} entries.",
+            "",
+        ]
         for i, row in enumerate(rows, 1):
             lines.append(
-                f"{i}. {row['key']} — {_format_minutes(row['minutes'])} logged, "
-                f"{_format_minutes(row['billed_minutes'])} billed ({row['count']} entries)"
+                f"{i}. {row['key']} — {_format_minutes(row['minutes'])} logged "
+                f"({row['count']} entr{'y' if row['count'] == 1 else 'ies'})"
             )
     elif entity == "tickets":
         lines = [f"{head}: {stats.get('total_count', 0)} tickets, {stats.get('total_hours', 0)} h worked.", ""]
@@ -3066,6 +3078,11 @@ def _ticket_id_for(
         return row.id, None
     said = (turn.user_text if turn else "") or ""
     match = _LABEL_RE.match(text)
+    if match is None:
+        # 'VANG-Platform infrastructure': a client code plus the model's idea of a title, no ticket number
+        guess = _GUESSED_LABEL_RE.match(text)
+        if guess and re.search(rf"\b{re.escape(guess.group(1))}\b", said, re.IGNORECASE):
+            match = guess
     if match and turn is not None and text.lower() not in said.lower():
         # The user never typed this label ('the VANG ticket'), so the model guessed it. Use the client's
         # one open ticket if there is exactly one; otherwise ask which, never guess.
@@ -3219,6 +3236,44 @@ def _past_fix_lines(knowledge: KnowledgeSource | None, row: TicketDetail, query:
     return lines[:5]
 
 
+_PAST_FIX_TICKETS = 5
+
+
+def _past_fix_from_flow(source: FlowSource, row: TicketDetail) -> list[str]:
+    """Time-entry notes from other tickets with the same cause, straight from Flow. Used when the knowledge
+    index is not set up or finds nothing, so advice still rests on our own records when they exist."""
+    cause = (row.cause or "").strip()
+    if not cause:
+        return []
+    own = ticket_label(row.client_code, row.ticket_num)
+    try:
+        similar = source.list_tickets(cause=cause, stage="live", sort="last_activity_at", order="desc", limit=40)
+    except FlowRequestError:
+        return []
+    lines: list[str] = []
+    seen = 0
+    for ticket in similar:
+        label = ticket_label(ticket.client_code, ticket.ticket_num)
+        if label == own or not (ticket.hrs_actual_total or 0) > 0:
+            continue
+        try:
+            entries = source.list_time_entries(ticket_id=ticket.id, limit=3)
+        except FlowRequestError:
+            continue
+        notes = [
+            f"{(e.subject or '').strip()}: {' '.join((e.body or '').split())[:260]}".strip(": ")
+            for e in entries
+            if (e.body or "").strip() or (e.subject or "").strip()
+        ]
+        if not notes:
+            continue
+        lines.append(f"- [{label}] " + " | ".join(notes))
+        seen += 1
+        if seen >= _PAST_FIX_TICKETS:
+            break
+    return lines
+
+
 def _ticket_briefing(
     source: FlowSource,
     row: TicketDetail,
@@ -3251,8 +3306,8 @@ def _ticket_briefing(
             "The user wants advice on resolving this ticket. You can only advise; never say you did or will "
             "do anything. Write: one sentence on what the ticket is, then 3 to 6 numbered suggested steps. "
             "If 'Past fixes' below has relevant notes, base the steps on them and say they come from past "
-            "tickets, naming the ticket labels. If there are none, say no similar past fix was found, then "
-            "give two or three steps marked as general IT advice, not from our records. "
+            "tickets, naming the ticket labels. If there are none, just give two or three general steps; "
+            "a line saying they are not from our records is added for you. "
             f"The ticket is titled '{title}': do not rename it. Do not give totals or dates."
         )
     else:
@@ -3288,16 +3343,18 @@ def _ticket_briefing(
         lines.append(f"(Most recent activity: {newest[0]:%Y-%m-%d}, {newest[1].split(' -- ')[0]}.)")
     else:
         lines.append("There are no emails or time entries on this ticket yet.")
+    footer = None
     if wants_fix:
         past = _past_fix_lines(knowledge, row, _issue_query(title))
+        if not past:
+            past = _past_fix_from_flow(source, row)  # no knowledge index, or it found nothing
         lines.append("")
-        if past is None:
-            lines.append("Past fixes: knowledge search is not available, so no past fixes could be looked up.")
-        elif past:
+        if past:
             lines.append("Past fixes for similar issues (time-entry notes and runbooks):")
             lines.extend(past)
         else:
             lines.append("Past fixes: none found for a similar issue.")
+            footer = "No similar past fix is on record, so these steps are general IT advice, not from our records."
     return ToolResult(
         tool=GET_TICKET_DETAIL,
         source=source.source_name,
@@ -3306,6 +3363,7 @@ def _ticket_briefing(
         client_code=row.client_code.upper(),
         header=_field_block(row, now),
         digest="\n".join(lines),
+        footer=footer,
     )
 
 
