@@ -99,6 +99,8 @@ Which clients use the most time this month?
 
 Any tickets that look like repeat issues for NGMC?
 
+What is the most common issue for BUCK?
+
 # Merging (suggestions only)
 What tickets need merged?
 
@@ -125,5 +127,3 @@ Show me ZTB-1681
 Summarize the time entries logged on the VANG ticket
 
 What did I work on yesterday?
-
-What is the most common issue for BUCK?

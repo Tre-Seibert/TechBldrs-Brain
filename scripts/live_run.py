@@ -2,6 +2,9 @@ r"""Ask every question in eval/live_questions.txt against a running tb-brain and
 
     python scripts/live_run.py                       # all questions, saves eval/results/live-<time>.md
     python scripts/live_run.py --only BUCK           # only questions containing "BUCK"
+    python scripts/live_run.py --through Time        # sections from the top through "Time and hours"
+    python scripts/live_run.py --sections queue,time # only sections whose name contains queue or time
+    (a chosen subset also runs the "Regression extras"; add --no-extras to skip them)
     python scripts/live_run.py --label after-fix     # name the output file live-after-fix.md
     python scripts/live_run.py --url http://127.0.0.1:8765 --as-email tseibert@techbldrs.com
 
@@ -39,22 +42,62 @@ def _load(name: str):
     return module
 
 
-def load_conversations(path: Path = QUESTIONS, only: str | None = None) -> list[list[str]]:
-    """Blocks of questions separated by blank lines; '#' lines are comments."""
-    blocks: list[list[str]] = []
+EXTRAS_SECTION = "regression extras"
+
+
+def parse_sections(path: Path = QUESTIONS) -> list[tuple[str, list[str]]]:
+    """[(section name, one conversation)] in file order. Blocks of questions are separated by blank
+    lines; a '#' line directly above a question is a section name, every other '#' line is a comment."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    out: list[tuple[str, list[str]]] = []
+    section = ""
     current: list[str] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for index, raw in enumerate(lines):
         line = raw.strip()
         if line.startswith("#"):
+            following = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            if following and not following.startswith("#"):
+                section = line.lstrip("# ").strip()
             continue
         if not line:
             if current:
-                blocks.append(current)
+                out.append((section, current))
                 current = []
             continue
         current.append(line)
     if current:
-        blocks.append(current)
+        out.append((section, current))
+    return out
+
+
+def load_conversations(
+    path: Path = QUESTIONS,
+    only: str | None = None,
+    *,
+    sections: list[str] | None = None,
+    through: str | None = None,
+    extras: bool = True,
+) -> list[list[str]]:
+    """Conversations to ask. `sections` keeps sections whose name contains any of the words; `through`
+    keeps every section from the top of the file up to and including the last one that matches. When a
+    subset is chosen the regression extras still run unless extras=False."""
+    parsed = parse_sections(path)
+    names = list(dict.fromkeys(name for name, _ in parsed))
+    chosen: set[str] | None = None
+    if through:
+        hits = [i for i, name in enumerate(names) if through.lower() in name.lower() and not name.lower().startswith(EXTRAS_SECTION)]
+        if not hits:
+            raise SystemExit(f"no section matches {through!r}; sections are: " + "; ".join(names))
+        chosen = {name for name in names[: hits[-1] + 1] if not name.lower().startswith(EXTRAS_SECTION)}
+    if sections:
+        words = [word.lower() for word in sections if word.strip()]
+        picked = {name for name in names if any(word in name.lower() for word in words)}
+        if not picked:
+            raise SystemExit(f"no section matches {sections}; sections are: " + "; ".join(names))
+        chosen = (chosen or set()) | picked
+    if chosen is not None and extras:
+        chosen |= {name for name in names if name.lower().startswith(EXTRAS_SECTION)}
+    blocks = [block for name, block in parsed if chosen is None or name in chosen]
     if only:
         needle = only.lower()
         blocks = [block for block in blocks if any(needle in turn.lower() for turn in block)]
@@ -77,6 +120,9 @@ def main() -> int:
     parser.add_argument("--url", default="http://127.0.0.1:8765")
     parser.add_argument("--questions", default=str(QUESTIONS))
     parser.add_argument("--only", default=None, help="only conversations containing this text")
+    parser.add_argument("--through", default=None, help="run sections from the top through this one (e.g. Time)")
+    parser.add_argument("--sections", default=None, help="comma-separated section names to run (e.g. 'queue,time')")
+    parser.add_argument("--no-extras", action="store_true", help="skip the regression extras when picking sections")
     parser.add_argument("--label", default=None)
     parser.add_argument("--as-email", default=REAL_EMAIL, help="who 'me' is")
     parser.add_argument("--jwt-secret", default=None)
@@ -86,7 +132,13 @@ def main() -> int:
 
     base = args.url.rstrip("/")
     ask_mod, eval_mod = _load("ask"), _load("eval")
-    conversations = load_conversations(Path(args.questions), args.only)
+    conversations = load_conversations(
+        Path(args.questions),
+        args.only,
+        sections=[w for w in (args.sections or "").split(",") if w.strip()] or None,
+        through=args.through,
+        extras=not args.no_extras,
+    )
     if not conversations:
         print("no questions matched", file=sys.stderr)
         return 2

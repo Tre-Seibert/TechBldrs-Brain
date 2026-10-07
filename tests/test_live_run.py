@@ -26,6 +26,49 @@ class LiveQuestionFileTests(unittest.TestCase):
             self.assertEqual(live.load_conversations(path), [["One?"], ["Two?", "Follow up"], ["Three?"]])
             self.assertEqual(live.load_conversations(path, only="follow"), [["Two?", "Follow up"]])
 
+    def test_sections_and_through_pick_parts_of_the_list(self) -> None:
+        live = _load()
+        text = (
+            "# intro comment\n\n# Queue\nQ1?\n\nQ2?\n\n# Finding\nF1?\nF1 follow up\n\n"
+            "# Time\nT1?\n\n# Email\nE1?\n\n# Regression extras (old)\nR1?\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.txt"
+            path.write_text(text, encoding="utf-8")
+
+            def flat(blocks):
+                return [turn for block in blocks for turn in block]
+
+            everything = ["Q1?", "Q2?", "F1?", "F1 follow up", "T1?", "E1?", "R1?"]
+            self.assertEqual(flat(live.load_conversations(path)), everything)
+            self.assertEqual(
+                flat(live.load_conversations(path, through="time")),
+                ["Q1?", "Q2?", "F1?", "F1 follow up", "T1?", "R1?"],
+            )
+            self.assertEqual(
+                flat(live.load_conversations(path, through="time", extras=False)),
+                ["Q1?", "Q2?", "F1?", "F1 follow up", "T1?"],
+            )
+            self.assertEqual(
+                flat(live.load_conversations(path, sections=["queue", "email"])), ["Q1?", "Q2?", "E1?", "R1?"]
+            )
+            self.assertEqual(
+                flat(live.load_conversations(path, sections=["finding"], only="follow")), ["F1?", "F1 follow up"]
+            )
+            with self.assertRaises(SystemExit):
+                live.load_conversations(path, through="nope")
+
+    def test_the_shipped_list_runs_through_time_with_the_listed_sections(self) -> None:
+        live = _load()
+        names = list(dict.fromkeys(name for name, _ in live.parse_sections()))
+        self.assertEqual(names[0], "My queue")
+        self.assertLess(names.index("Finding tickets"), names.index("Time and hours"))
+        upto = [t for b in live.load_conversations(through="Time") for t in b]
+        self.assertIn("Which tickets have time that isn't reviewed?", upto)
+        self.assertIn("Show me ZTB-1691", upto)  # a regression extra rides along
+        self.assertNotIn("What machines does ACME have?", upto)
+        self.assertNotIn("When did Debe last reach out?", upto)
+
     def test_the_shipped_question_list_has_no_merge_command(self) -> None:
         live = _load()
         turns = [turn for block in live.load_conversations() for turn in block]
