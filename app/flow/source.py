@@ -129,6 +129,7 @@ class FlowSource(Protocol):
         stage: str = "all",
         direction: str = "inbound",
         billable: bool | None = None,
+        reviewed: bool | None = None,
         after: str | None = None,
         before: str | None = None,
         exclude_alerts: bool = False,

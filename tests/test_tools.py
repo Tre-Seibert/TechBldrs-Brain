@@ -1212,3 +1212,69 @@ class NoActivityCutoffTests(unittest.TestCase):
         sent = listed.call_args.kwargs["last_activity_before"]
         self.assertNotEqual(sent, "2020-01-01")
         self.assertGreater(sent, "2026-01-01")
+
+
+class TimeRankingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_tickets_grouped_by_ticket_becomes_a_time_ranking(self) -> None:
+        from app.tools.handlers import TicketStatsArgs, ticket_stats
+
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            result = ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="tickets", group_by="ticket", client_code="ACME", limit=5),
+                ChatTurn(user_text="Top 5 longest-worked tickets for ACME"),
+            )
+        self.assertTrue(result.ok, result.error)
+        sent = spy.call_args.kwargs
+        self.assertEqual((sent["entity"], sent["group_by"], sent["metric"]), ("time", "ticket", "hours"))
+        self.assertIn("ACME-0041", result.reply or "")
+
+    def test_a_placeholder_ticket_never_wins_a_time_ranking(self) -> None:
+        from app.tools.handlers import TicketStatsArgs, ticket_stats
+
+        rows = [
+            {"key": "ZTST-0006", "count": 9, "hours": 40.0, "minutes": 2400, "billed_minutes": 2400},
+            {"key": "ACME-0041", "count": 1, "hours": 0.33, "minutes": 20, "billed_minutes": 30},
+            {"key": "WDON-1842", "count": 1, "hours": 0.68, "minutes": 41, "billed_minutes": 45},
+        ]
+        stats = {"entity": "time", "group_by": "ticket", "total_minutes": 2461, "total_billed_minutes": 2475,
+                 "total_count": 11, "groups": 3, "rows": rows}
+        with mock.patch.object(self.source, "ticket_stats", return_value=stats):
+            result = ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="time", group_by="ticket", metric="hours", limit=2),
+                ChatTurn(user_text="What was the longest ticket we spent time on last week?"),
+            )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual([r["key"] for r in result.data["rows"]], ["ACME-0041", "WDON-1842"])
+        self.assertIn("Left out placeholder tickets", result.reply or "")
+        self.assertIn("ZTST-0006", (result.reply or "").split("Left out")[1])
+
+    def test_unreviewed_time_is_a_per_ticket_tally_not_entry_prose(self) -> None:
+        from app.tools.handlers import ListTimeEntriesArgs, list_time_entries
+
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            result = list_time_entries(
+                self.source,
+                ListTimeEntriesArgs(reviewed=False, limit=100),
+                ChatTurn(user_text="Which tickets have time that isn't reviewed?"),
+            )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(spy.call_args.kwargs["reviewed"], False)
+        self.assertEqual([r["key"] for r in result.data["rows"]], ["ACME-0041"])
+        self.assertIsNone(result.digest)
+
+    def test_how_much_time_on_a_ticket_is_the_totals_only(self) -> None:
+        from app.tools.handlers import ListTimeEntriesArgs, list_time_entries
+
+        result = list_time_entries(
+            self.source,
+            ListTimeEntriesArgs(ticket_label="ACME-0041"),
+            ChatTurn(user_text="How much time was logged on ACME-0041?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIsNone(result.digest)
+        self.assertIn("Total: 20m worked across 1 entry", result.reply or "")

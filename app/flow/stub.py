@@ -593,6 +593,7 @@ class StubFlowSource:
         stage: str = "all",
         direction: str = "inbound",
         billable: bool | None = None,
+        reviewed: bool | None = None,
         after: str | None = None,
         before: str | None = None,
         exclude_alerts: bool = False,
@@ -660,7 +661,7 @@ class StubFlowSource:
             names = {tech.id: tech.display_name for tech in TECHNICIANS}
             for e in self._filtered_time(
                 client_code=client_code, tech_user_id=tech_user_id, after_dt=after_dt, before_dt=before_dt,
-                billable=billable,
+                billable=billable, reviewed=reviewed,
             ):
                 key = {
                     "client": e.client_code,

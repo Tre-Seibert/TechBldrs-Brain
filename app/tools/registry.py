@@ -389,6 +389,7 @@ _TICKET_STATS_SCHEMA: dict[str, Any] = {
             "description": "mail only. Default inbound (client to us).",
         },
         "billable": {"type": "boolean", "description": "time only: true = billable entries only."},
+        "reviewed": {"type": "boolean", "description": "time only: false = entries not yet reviewed."},
         "after": {"type": "string", "description": "ISO date (YYYY-MM-DD), inclusive. Tickets: created. Time: worked. Mail: received."},
         "before": {"type": "string", "description": "ISO date (YYYY-MM-DD), exclusive."},
         "limit": {"type": "integer", "description": "How many top groups to return (default 10, max 100)."},

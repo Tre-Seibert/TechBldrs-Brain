@@ -405,6 +405,7 @@ class TicketStatsArgs(BaseModel):
     stage: str = "all"
     direction: str = "inbound"
     billable: bool | None = None
+    reviewed: bool | None = None
     after: str | None = None
     before: str | None = None
     # issue analysis only: leave out automated alert tickets (default true there)
@@ -2602,7 +2603,23 @@ def _placeholder_labels(source: FlowSource, rows: list[TimeEntryRecord]) -> set[
     return found
 
 
+_HOW_MUCH_TIME_RE = re.compile(r"\bhow\s+(?:much|many)\s+(?:time|hours?)\b", re.IGNORECASE)
+
+
 def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatTurn | None = None) -> ToolResult:
+    unscoped = not any((args.ticket_id, (args.ticket_label or "").strip(), (args.client_code or "").strip()))
+    if unscoped and (args.view or "summary").strip().lower() != "list" and _UNREVIEWED_RE.search(
+        turn.user_text if turn else ""
+    ):
+        # "which tickets have time that isn't reviewed": a per-ticket tally, not 100 entries of prose
+        return ticket_stats(
+            source,
+            TicketStatsArgs(
+                entity="time", group_by="ticket", metric="hours", reviewed=False,
+                assignee_code=args.assignee_code, limit=10,
+            ),
+            turn,
+        )
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
         return _refuse(LIST_TIME_ENTRIES, source, error)
@@ -2691,6 +2708,16 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
             client_code=client,
             reply="\n".join(lines).rstrip(),
         )
+    if _HOW_MUCH_TIME_RE.search(turn.user_text if turn else "") and not _SUMMARIZE_WORD_RE.search(turn.user_text or ""):
+        # "how much time was logged on X": the exact totals, not a retelling of every entry
+        return ToolResult(
+            tool=LIST_TIME_ENTRIES,
+            source=source.source_name,
+            data=data,
+            row_ids=[r.id for r in rows],
+            client_code=client,
+            reply=f"{scope}{span}:\n" + _time_footer(rows, total_minutes=total_minutes, truncated=len(rows) >= _TIME_SUMMARY_FETCH),
+        )
     plain = [f"{count} for {scope}{span} ({_format_minutes(total_minutes)} total).", ""]
     for row in data:
         when = (row["work_date"] or row["start_at"] or "")[:10]
@@ -2709,7 +2736,41 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
     )
 
 
+_UNREVIEWED_RE = re.compile(r"\b(?:unreviewed|(?:isn'?t|aren'?t|not|never)\s+(?:been\s+)?reviewed)\b", re.IGNORECASE)
+_STATS_PLACEHOLDER_FETCH = 40
+
+
+def _without_placeholder_tickets(source: FlowSource, stats: dict[str, Any], limit: int) -> dict[str, Any]:
+    """'Longest' / 'most time' rankings never answer with a catch-all Place Holder ticket (meetings, out of
+    office). Walk the ranking, skip those, keep `limit` real tickets, and say what was left out."""
+    kept: list[dict[str, Any]] = []
+    left_out: list[str] = []
+    for row in stats.get("rows") or []:
+        if len(kept) >= limit:
+            break
+        client, _, number = str(row.get("key") or "").rpartition("-")
+        try:
+            found = source.list_tickets(client_code=client or None, ticket_num=number, stage="all", limit=1) if client else []
+        except FlowRequestError:
+            found = []
+        if found and _is_placeholder_category(found[0].category):
+            left_out.append(str(row["key"]))
+            continue
+        kept.append(row)
+    return {**stats, "rows": kept, "left_out_placeholders": left_out}
+
+
 def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | None = None) -> ToolResult:
+    entity_said = (args.entity or "tickets").strip().lower()
+    group_said = (args.group_by or "").strip().lower()
+    if entity_said == "tickets" and group_said in ("ticket", "tickets", "ticket_label", "label"):
+        # "top 5 longest-worked tickets" is a time ranking; tickets cannot be grouped by ticket
+        args = args.model_copy(update={"entity": "time", "group_by": "ticket", "metric": "hours"})
+        entity_said, group_said = "time", "ticket"
+    if entity_said == "time" and group_said == "ticket" and (args.metric or "count").strip().lower() != "hours":
+        args = args.model_copy(update={"metric": "hours"})
+    if entity_said == "time" and args.reviewed is None and _UNREVIEWED_RE.search(turn.user_text if turn else ""):
+        args = args.model_copy(update={"reviewed": False})
     assignee, error = _resolve_assignee(source, args.assignee_code)
     if error:
         return _refuse(TICKET_STATS, source, error)
@@ -2734,6 +2795,7 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
 
         args = args.model_copy(update={"after": (datetime.now() - timedelta(days=365)).date().isoformat()})
         defaulted_period = True  # an unbounded history is too much to read; say so in the answer
+    ranks_tickets = entity_said == "time" and group_said == "ticket"
     skip_alerts = bool(args.exclude_alerts) if args.exclude_alerts is not None else (
         issue_analysis and not re.search(r"\balerts?\b", (turn.user_text if turn else "") or "", re.IGNORECASE)
     )
@@ -2749,12 +2811,15 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
             stage=(args.stage or "all").strip().lower(),
             direction=(args.direction or "inbound").strip().lower(),
             billable=args.billable,
+            reviewed=args.reviewed if entity_said == "time" else None,
             after=(args.after or "").strip() or None,
             before=(args.before or "").strip() or None,
-            limit=25 if issue_analysis else args.limit,
+            limit=25 if issue_analysis else (max(args.limit, _STATS_PLACEHOLDER_FETCH) if ranks_tickets else args.limit),
         )
     except FlowRequestError as exc:
         return _refuse(TICKET_STATS, source, str(exc))
+    if ranks_tickets:
+        stats = _without_placeholder_tickets(source, stats, args.limit)
     if issue_analysis and stats.get("rows"):
         samples = None
         try:
@@ -2943,6 +3008,9 @@ def format_stats(
     shown = len(rows)
     if stats.get("groups", shown) > shown:
         lines.append(f"(top {shown} of {stats['groups']} groups)")
+    left_out = stats.get("left_out_placeholders") or []
+    if left_out:
+        lines.append(f"Left out placeholder tickets (meetings, out of office): {', '.join(left_out)}.")
     return "\n".join(lines)
 
 
