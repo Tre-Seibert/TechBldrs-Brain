@@ -545,6 +545,19 @@ class ToolStubTests(unittest.TestCase):
         self.assertEqual(result.data, [])
         self.assertIn("No open 0 Urgent tickets", result.reply or "")
 
+    def test_list_tickets_ignores_a_made_up_status(self) -> None:
+        token = current_signed_in_email.set("tseibert@techbldrs.example")
+        try:
+            turn = ChatTurn(user_text="what tickets are assigned to me?")
+            plain = list_tickets(self.source, ListTicketsArgs(assignee_code="me", stage="open"), turn)
+            guessed = list_tickets(
+                self.source, ListTicketsArgs(assignee_code="me", stage="open", status="Open"), turn
+            )
+        finally:
+            current_signed_in_email.reset(token)
+        self.assertTrue(plain.data)
+        self.assertEqual(guessed.data, plain.data)
+
     def test_list_tickets_billable_is_reason_not_my_open_list(self) -> None:
         token = current_signed_in_email.set("tseibert@techbldrs.example")
         try:

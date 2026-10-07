@@ -1176,6 +1176,15 @@ def _resolve_category(raw: str | None) -> str | None:
     return _CATEGORY_ALIASES.get(text.lower(), text)
 
 
+_TICKET_STATUSES = {"done": "Done", "new": "New", "email sent": "Email Sent", "client replied": "Client Replied"}
+
+
+def _resolve_status(raw: str | None) -> str | None:
+    """Flow matches status exactly. A model-made 'open' / 'active' matches nothing, so a value that is
+    not a real status is dropped; open vs review is the stage filter's job."""
+    return _TICKET_STATUSES.get((raw or "").strip().lower())
+
+
 def _resolve_reason(raw: str | None) -> str | None:
     text = (raw or "").strip()
     if not text:
@@ -1692,7 +1701,7 @@ def list_tickets(
             assignee_code=assignee,
             query=query,
             contact_id=contact_id,
-            status=args.status,
+            status=_resolve_status(args.status),
             ticket_num=(args.ticket_num or "").strip() or None,
             category=category,
             reason=reason,
@@ -2029,7 +2038,7 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
         return source.list_tickets(
             client_code=code,
             contact_id=args.contact_id,
-            status=args.status,
+            status=_resolve_status(args.status),
             stage=wanted,
             sort="created_at",  # "the last BUCK ticket" is the newest one opened
             order="desc",
@@ -2291,7 +2300,7 @@ def find_similar_tickets(
         ticket_id=args.ticket_id,
         client_code=client,
         assignee_code=assignee,
-        status=args.status,
+        status=_resolve_status(args.status),
         stage=stage,
         limit=args.limit,
     )
