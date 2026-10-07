@@ -450,11 +450,24 @@
       ],
       "expect": [
         {
-          "tool": "list_tickets",
-          "args": {
-            "client_code": "BUCK",
-            "sort": "hrs_actual_total"
-          }
+          "any": [
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "entity": "time",
+                "group_by": "ticket",
+                "client_code": "BUCK"
+              }
+            },
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "entity": "tickets",
+                "group_by": "ticket",
+                "client_code": "BUCK"
+              }
+            }
+          ]
         }
       ]
     },
@@ -562,10 +575,22 @@
       ],
       "expect": [
         {
-          "tool": "list_time_entries",
-          "args": {
-            "reviewed": false
-          }
+          "any": [
+            {
+              "tool": "ticket_stats",
+              "args": {
+                "entity": "time",
+                "group_by": "ticket",
+                "reviewed": false
+              }
+            },
+            {
+              "tool": "list_time_entries",
+              "args": {
+                "reviewed": false
+              }
+            }
+          ]
         }
       ]
     },

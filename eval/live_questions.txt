@@ -2,6 +2,7 @@
 # One question per line. A blank line starts a new conversation; lines in the same block are
 # follow-up turns of one conversation. Lines starting with # are comments.
 # Nothing here changes data: merging is only asked for suggestions, never asked to merge.
+# Mirrors the user's refined benchmark list; "Regression extras" are earlier verified variants.
 
 # My queue
 What are my open tickets?
@@ -21,17 +22,9 @@ What tickets are assigned to Eddie?
 # Finding tickets
 What was the last BUCK ticket?
 
-What was the last open BUCK ticket?
-
-What was the most recent archived BUCK ticket?
-
 Show open tickets for BPIE
 
 Show me ZTB-1680
-
-Show me ZTB-1691
-
-Show me ZTB-1681
 
 Any urgent tickets?
 
@@ -53,20 +46,27 @@ Tickets for Michael Sodl
 
 the latest ticket involving Thomas Carter
 
+# Advice on one ticket (follow-ups share a conversation)
+What do you think this ticket is about AMBS-6298
+What would be the best way to resolve this ticket now that you summarized it?
+What would be some suggestions to resolve this ticket?
+
+Best way to resolve this ticket AMBS-6298
+
+# Client-initiated tickets (follow-up shares the conversation)
+Client initiated tickets today
+Can you remove alert tickets from that list
+
 # Time and hours
 Which open ticket has the most time on it?
 
 Top 5 longest-worked tickets for BUCK
 
-How much time was logged on ACME-0041?
-
-Summarize the time entries logged on the VANG ticket
+How much time was logged on ZINT-5466?
 
 How many hours did we bill BPIE this month?
 
 How many hours did I log yesterday?
-
-What did I work on yesterday?
 
 What was the longest ticket we spent time on last week?
 
@@ -99,19 +99,6 @@ Which clients use the most time this month?
 
 Any tickets that look like repeat issues for NGMC?
 
-What is the most common issue for BUCK?
-
-# Advice on one ticket (follow-ups share a conversation)
-What do you think this ticket is about AMBS-6298
-What would be the best way to resolve this ticket now that you summarized it?
-What would be some suggestions to resolve this ticket?
-
-What would be the best way to resolve this ticket AMBS-6298 ?
-
-# Client-initiated tickets (follow-up shares the conversation)
-What are some client initiated tickets today
-Can you remove alert tickets from that list
-
 # Merging (suggestions only)
 What tickets need merged?
 
@@ -125,3 +112,18 @@ What machines does ACME have?
 What's BUCK's contract / balance / renewal dates?
 
 How do we usually fix VPN dropouts on a FortiGate?
+
+# Regression extras (verified earlier; keep so fixes do not break them)
+What was the last open BUCK ticket?
+
+What was the most recent archived BUCK ticket?
+
+Show me ZTB-1691
+
+Show me ZTB-1681
+
+Summarize the time entries logged on the VANG ticket
+
+What did I work on yesterday?
+
+What is the most common issue for BUCK?
