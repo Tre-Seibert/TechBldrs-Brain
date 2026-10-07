@@ -1183,3 +1183,32 @@ class TechnicianTypoTests(unittest.TestCase):
         result = list_tickets(self.source, ListTicketsArgs(assignee_code="Tim", stage="open"))
         self.assertFalse(result.ok)
         self.assertNotIn("Did you mean", result.error)
+
+
+class NoActivityCutoffTests(unittest.TestCase):
+    def test_cutoff_is_worked_out_from_the_users_words(self) -> None:
+        from datetime import datetime
+        from app.tools.handlers import _no_activity_cutoff
+
+        now = datetime(2026, 10, 7, 12, 0, 0)
+        cases = {
+            "Which of my tickets have had no activity in 1 week?": "2026-09-30T12:00:00",
+            "tickets with no activity for 3 days": "2026-10-04T12:00:00",
+            "any tickets without activity in the past two weeks": "2026-09-23T12:00:00",
+            "tickets with no updates in a month": "2026-09-07T12:00:00",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(_no_activity_cutoff(ChatTurn(user_text=text), now), expected, text)
+        self.assertIsNone(_no_activity_cutoff(ChatTurn(user_text="what are my open tickets?"), now))
+
+    def test_the_codes_date_replaces_a_date_the_model_made_up(self) -> None:
+        source = StubFlowSource()
+        with mock.patch.object(source, "list_tickets", return_value=[]) as listed:
+            list_tickets(
+                source,
+                ListTicketsArgs(assignee_code="ts", stage="open", last_activity_before="2020-01-01"),
+                ChatTurn(user_text="Which of my tickets have had no activity in 1 week?"),
+            )
+        sent = listed.call_args.kwargs["last_activity_before"]
+        self.assertNotEqual(sent, "2020-01-01")
+        self.assertGreater(sent, "2026-01-01")

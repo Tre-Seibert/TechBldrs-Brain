@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -1229,6 +1229,25 @@ def _overdue_from_turn(turn: ChatTurn | None) -> bool:
     return bool(text and _OVERDUE_RE.search(text))
 
 
+_NO_ACTIVITY_RE = re.compile(
+    r"\b(?:no|without|hasn'?t\s+had|haven'?t\s+had|not\s+had)\s+(?:any\s+)?(?:activity|updates?|movement|replies)\b"
+    r"[^.?]*?\b(?:in|for|since|over|within|past|last)\s+(?:the\s+)?(?:(?:past|last)\s+)?(\d+|a|an|one|two|three|four)?\s*(day|week|month)s?\b",
+    re.IGNORECASE,
+)
+_WORD_NUMBERS = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4}
+
+
+def _no_activity_cutoff(turn: ChatTurn | None, now: datetime | None = None) -> str | None:
+    """'no activity in 1 week' is a date the code works out, never the model."""
+    match = _NO_ACTIVITY_RE.search(turn.user_text if turn else "")
+    if not match:
+        return None
+    count_text = (match.group(1) or "1").lower()
+    count = int(count_text) if count_text.isdigit() else _WORD_NUMBERS.get(count_text, 1)
+    days = {"day": 1, "week": 7, "month": 30}[match.group(2).lower()] * count
+    return ((now or datetime.now()) - timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
 def _complete_from_turn(turn: ChatTurn | None) -> bool | None:
     text = turn.user_text if turn else ""
     if text and _INCOMPLETE_RE.search(text):
@@ -1695,6 +1714,8 @@ def list_tickets(
     # shrink an already-capped page -- overfetch here so trimming to the caller's
     # real limit still happens after that filter, not before it.
     fetch_limit = max(limit, 100) if (resolved_sort == "hrs_actual_total" and not category) else limit
+    no_activity_before = _no_activity_cutoff(turn)
+
     def run(query: str | None, stage_override: str | None = None) -> list[TicketRecord]:
         return source.list_tickets(
             client_code=client,
@@ -1716,7 +1737,7 @@ def list_tickets(
             due_after=(args.due_after or "").strip() or None,
             created_before=(args.created_before or "").strip() or None,
             created_after=(args.created_after or "").strip() or None,
-            last_activity_before=(args.last_activity_before or "").strip() or None,
+            last_activity_before=no_activity_before or (args.last_activity_before or "").strip() or None,
             last_activity_after=(args.last_activity_after or "").strip() or None,
             requestor=requestor,
             needs_response=args.needs_response,
