@@ -87,5 +87,3 @@ Show me ZTB-1681
 Summarize the time entries logged on the VANG ticket
 
 What did I work on yesterday?
-
-What is the most common issue for BUCK?
