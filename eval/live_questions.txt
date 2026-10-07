@@ -101,6 +101,17 @@ Any tickets that look like repeat issues for NGMC?
 
 What is the most common issue for BUCK?
 
+# Advice on one ticket (follow-ups share a conversation)
+What do you think this ticket is about AMBS-6298
+What would be the best way to resolve this ticket now that you summarized it?
+What would be some suggestions to resolve this ticket?
+
+What would be the best way to resolve this ticket AMBS-6298 ?
+
+# Client-initiated tickets (follow-up shares the conversation)
+What are some client initiated tickets today
+Can you remove alert tickets from that list
+
 # Merging (suggestions only)
 What tickets need merged?
 

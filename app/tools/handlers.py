@@ -268,6 +268,11 @@ class ListTicketsArgs(BaseModel):
     # true when the user asks to summarize / recap / "what's going on with" these tickets: the model
     # then reads each ticket's notes and recent log and writes prose instead of the tool listing them.
     summarize: bool | None = None
+    # true leaves out tickets whose reason is Alert (RMM, SaaS Alerts, RocketCyber and similar).
+    exclude_alerts: bool | None = None
+    # true = tickets a client started: no alerts, no automated senders (RMM, Datto, NAS, no-reply),
+    # no internal clients. Defaults to tickets created today unless the question names a period.
+    client_initiated: bool | None = None
     stage: str | None = None
     sort: str | None = None
     order: str | None = None
@@ -275,6 +280,8 @@ class ListTicketsArgs(BaseModel):
 
     @model_validator(mode="after")
     def _need_scope(self) -> ListTicketsArgs:
+        if self.client_initiated:
+            return self
         if any(
             (value or "").strip()
             for value in (
@@ -1485,6 +1492,61 @@ def _text_search(run: Any, query: str) -> list[TicketRecord]:  # noqa: C901
     return merged or (run(query) if len(terms) > 1 else merged)
 
 
+_AUTOMATED_REQUESTOR_RE = re.compile(r"@|\brmm\b|datto|synology|\bnas\b|no-?reply|alert|monitor|backup|\d", re.IGNORECASE)
+
+
+def _is_client_initiated(row: TicketRecord) -> bool:
+    """A ticket a client person started: not an alert, not an automated sender, not an internal client."""
+    if (row.reason or "").strip().lower() == "alert":
+        return False
+    if (row.client_code or "").upper() in INTERNAL_CLIENT_CODES:
+        return False
+    who = (row.requestor_text or "").strip()
+    return bool(who) and not _AUTOMATED_REQUESTOR_RE.search(who)
+
+
+def _client_initiated_tickets(source: FlowSource, args: ListTicketsArgs, turn: ChatTurn | None) -> ToolResult:
+    """Tickets created in a period (today unless the question says otherwise) that a client started."""
+    period = _period_from_turn(turn)
+    if period:
+        after, before, label = period[0], period[1], period[2]
+    elif (args.created_after or "").strip():
+        after, before = args.created_after.strip(), (args.created_before or "").strip() or None
+        label = f"since {after}"
+    else:
+        after, before, label = datetime.now().date().isoformat(), None, "today"
+    from datetime import timedelta
+
+    today = datetime.now().date()
+    if after == today.isoformat() and before in (None, (today + timedelta(days=1)).isoformat()):
+        label = "today"
+    codes = _client_codes(args.client_code)
+    rows = source.list_tickets(
+        client_code=codes[0] if len(codes) == 1 else None,
+        created_after=after,
+        created_before=before,
+        stage="all",
+        sort="created_at",
+        order="desc",
+        limit=100,
+    )
+    kept = [row for row in rows if _is_client_initiated(row)]
+    left_out = len(rows) - len(kept)
+    data = [_ticket_payload(row) for row in kept]
+    heading = f"{len(kept)} client-initiated ticket(s) created {label}"
+    reply = format_ticket_list(data, heading=heading, extras=("created",)) if kept else f"No client-initiated tickets created {label}."
+    if left_out:
+        reply += f"\n\nLeft out {left_out} alert or automated ticket(s) (RMM, Datto, NAS, SaaS Alerts, no-reply)."
+    return ToolResult(
+        tool=LIST_TICKETS,
+        source=source.source_name,
+        data=data,
+        row_ids=[row.id for row in kept],
+        note=f"{len(kept)} ticket(s).",
+        reply=reply,
+    )
+
+
 def list_tickets(
     source: FlowSource,
     args: ListTicketsArgs,
@@ -1492,6 +1554,8 @@ def list_tickets(
     *,
     force_text_query: bool = False,
 ) -> ToolResult:
+    if args.client_initiated:
+        return _client_initiated_tickets(source, args, turn)
     codes = _client_codes(args.client_code)
     if len(codes) > 1:
         return _list_tickets_multi(source, args, turn, codes)
@@ -1662,6 +1726,8 @@ def list_tickets(
         # tool directly for some other "which ticket took the most X" question.
         # Skipped only if the user is deliberately asking for that category by name.
         rows = [r for r in rows if not _is_placeholder_category(r.category)][:limit]
+    if args.exclude_alerts:
+        rows = [r for r in rows if (r.reason or "").strip().lower() != "alert"]
     wanted_num = (args.ticket_num or "").strip()
     archived_hit = False
     if not rows and client and wanted_num and not raw_q and stage in ("live", "open", "review"):
@@ -2934,7 +3000,12 @@ def _archived_ticket_result(source: FlowSource, row: TicketRecord) -> ToolResult
     )
 
 
-def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs, turn: ChatTurn | None = None) -> ToolResult:
+def get_ticket_detail(
+    source: FlowSource,
+    args: GetTicketDetailArgs,
+    turn: ChatTurn | None = None,
+    knowledge: KnowledgeSource | None = None,
+) -> ToolResult:
     ticket_id, label_error = _ticket_id_for(source, args.ticket_id, args.ticket_label, turn)
     if label_error:
         # Nothing live matched, so (and only then) look in the archive.
@@ -2949,7 +3020,7 @@ def get_ticket_detail(source: FlowSource, args: GetTicketDetailArgs, turn: ChatT
     data = _ticket_detail_payload(row)
     asked_for_log = bool(turn and _FULL_LOG_RE.search(turn.user_text or ""))
     if (args.view or "brief").strip().lower() != "full" or (turn is not None and not asked_for_log):
-        return _ticket_briefing(source, row, data)
+        return _ticket_briefing(source, row, data, turn, knowledge)
     lines = [f"{data['ticket_label']} — {data['topic']} ({data['status']}, {data['category']})"]
     if row.log_text:
         lines.append(f"Log: {row.log_text}")
@@ -2995,10 +3066,52 @@ _BRIEF_ENTRIES = 12
 _BRIEF_MAIL = 8
 
 
-def _ticket_briefing(source: FlowSource, row: TicketDetail, data: dict[str, Any]) -> ToolResult:
+_RESOLVE_ASK_RE = re.compile(
+    r"\b(?:resolve|resolution|fix|fixing|solve|troubleshoot|remediat\w*|suggestions?|next steps?|best way|"
+    r"what should (?:i|we) do|how (?:do|would|can|should) (?:i|we))\b",
+    re.IGNORECASE,
+)
+
+
+def _issue_query(topic: str) -> str:
+    """The part of a ticket title that describes the problem, for searching past fixes.
+
+    Alert titles look like 'host | code | CLIENT name | performance | Disk Space Monitor | C drive ...':
+    the last two segments are the issue, the rest is who and where. Ticket labels and numbers are dropped.
+    """
+    parts = [part.strip() for part in topic.split("|") if part.strip()]
+    text = " ".join(parts[-2:]) if len(parts) >= 4 else topic
+    text = re.sub(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b", " ", text)
+    text = re.sub(r"\b\d+(?:\.\d+)?\b", " ", text)
+    return " ".join(text.split())[:160]
+
+
+def _past_fix_lines(knowledge: KnowledgeSource | None, row: TicketDetail, query: str) -> list[str] | None:
+    """Notes from past tickets and runbooks about a similar issue; None when knowledge search is off."""
+    if knowledge is None or not getattr(knowledge, "configured", False) or not query:
+        return None
+    try:
+        hits = knowledge.search(query=query, client_code=None, limit=8)
+    except Exception:  # an unreachable index must not break the ticket briefing
+        return None
+    own = ticket_label(row.client_code, row.ticket_num)
+    lines = [
+        f"- [{hit.source_label}] {' '.join(hit.text.split())[:320]}" for hit in hits if hit.source_label != own
+    ]
+    return lines[:5]
+
+
+def _ticket_briefing(
+    source: FlowSource,
+    row: TicketDetail,
+    data: dict[str, Any],
+    turn: ChatTurn | None = None,
+    knowledge: KnowledgeSource | None = None,
+) -> ToolResult:
     """Fields (exact) + a digest of notes, mail and time entries for the model to summarize."""
     now = datetime.now()
     label = data["ticket_label"]
+    wants_fix = bool(turn and _RESOLVE_ASK_RE.search(turn.user_text or ""))
     notes = " ".join((row.notes_text or "").split())[:600]
     log_lines = [
         line.strip() for line in (row.log_text or "").splitlines() if line.strip() and "Time entry" not in line
@@ -3014,16 +3127,26 @@ def _ticket_briefing(source: FlowSource, row: TicketDetail, data: dict[str, Any]
     except FlowRequestError:
         pass
     events: list[tuple[datetime, str]] = []
-    lines = [
-        f"{label}: {(row.topic or row.subject or '').strip()}",
-        "Write a short plain-English briefing on this ticket in two short paragraphs: first what it is about "
-        "and why it was opened, then the latest update (who did or said what most recently, and what is "
-        "pending or next). Use only the facts below; do not repeat the fields or give totals. "
-        f"The ticket is titled '{(row.topic or row.subject or '').strip()}': do not rename it or give it a "
-        "different subject. If the facts below do not say why it was opened, say that is not recorded "
-        "instead of guessing, and never say a ticket was completed unless the facts say so.",
-        "",
-    ]
+    title = (row.topic or row.subject or "").strip()
+    if wants_fix:
+        instruction = (
+            "The user wants advice on resolving this ticket. You can only advise; never say you did or will "
+            "do anything. Write: one sentence on what the ticket is, then 3 to 6 numbered suggested steps. "
+            "If 'Past fixes' below has relevant notes, base the steps on them and say they come from past "
+            "tickets, naming the ticket labels. If there are none, say no similar past fix was found, then "
+            "give two or three steps marked as general IT advice, not from our records. "
+            f"The ticket is titled '{title}': do not rename it. Do not give totals or dates."
+        )
+    else:
+        instruction = (
+            "Write a short plain-English briefing on this ticket in two short paragraphs: first what it is "
+            "about and why it was opened, then the latest update (who did or said what most recently, and "
+            "what is pending or next). Use only the facts below; do not repeat the fields or give totals. "
+            f"The ticket is titled '{title}': do not rename it or give it a different subject. If the facts "
+            "below do not say why it was opened, say that is not recorded instead of guessing, and never say "
+            "a ticket was completed unless the facts say so."
+        )
+    lines = [f"{label}: {title}", instruction, ""]
     if notes:
         lines.append(f"Ticket notes: {notes}")
     if log_lines:
@@ -3047,6 +3170,16 @@ def _ticket_briefing(source: FlowSource, row: TicketDetail, data: dict[str, Any]
         lines.append(f"(Most recent activity: {newest[0]:%Y-%m-%d}, {newest[1].split(' -- ')[0]}.)")
     else:
         lines.append("There are no emails or time entries on this ticket yet.")
+    if wants_fix:
+        past = _past_fix_lines(knowledge, row, _issue_query(title))
+        lines.append("")
+        if past is None:
+            lines.append("Past fixes: knowledge search is not available, so no past fixes could be looked up.")
+        elif past:
+            lines.append("Past fixes for similar issues (time-entry notes and runbooks):")
+            lines.extend(past)
+        else:
+            lines.append("Past fixes: none found for a similar issue.")
     return ToolResult(
         tool=GET_TICKET_DETAIL,
         source=source.source_name,
@@ -3144,6 +3277,19 @@ def search_knowledge(knowledge: KnowledgeSource | None, args: SearchKnowledgeArg
     )
 
 
+_LABEL_ONLY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{1,8}-[A-Za-z0-9]{3,6}$")
+
+
+def _label_only_query(args: ListTicketsArgs) -> str | None:
+    """The ticket label when a list_tickets call is only a text search for one (q='AMBS-6298')."""
+    text = (args.q or "").strip()
+    if not _LABEL_ONLY_RE.match(text):
+        return None
+    if any((value or "").strip() for value in (args.client_code, args.ticket_num, args.assignee_code, args.requestor)):
+        return None
+    return text.upper()
+
+
 def dispatch(
     source: FlowSource,
     name: str,
@@ -3157,7 +3303,12 @@ def dispatch(
     if name == SEARCH_TECHNICIAN:
         return search_technician(source, SearchTechnicianArgs.model_validate(raw_args))
     if name == LIST_TICKETS:
-        return list_tickets(source, ListTicketsArgs.model_validate(raw_args), turn)
+        list_args = ListTicketsArgs.model_validate(raw_args)
+        only_label = _label_only_query(list_args)
+        if only_label:
+            # "what is AMBS-6298 about" is a lookup of that one ticket, not a text search for its label.
+            return get_ticket_detail(source, GetTicketDetailArgs(ticket_label=only_label), turn, knowledge)
+        return list_tickets(source, list_args, turn)
     if name == LATEST_TICKET:
         return latest_ticket(source, LatestTicketArgs.model_validate(raw_args), turn)
     if name == FIND_SIMILAR_TICKETS:
@@ -3173,7 +3324,7 @@ def dispatch(
     if name == LIST_MACHINES:
         return list_machines(source, ListMachinesArgs.model_validate(raw_args))
     if name == GET_TICKET_DETAIL:
-        return get_ticket_detail(source, GetTicketDetailArgs.model_validate(raw_args), turn)
+        return get_ticket_detail(source, GetTicketDetailArgs.model_validate(raw_args), turn, knowledge)
     if name == GET_MAIL_DETAIL:
         return get_mail_detail(source, GetMailDetailArgs.model_validate(raw_args))
     if name == GET_CLIENT_DETAIL:

@@ -100,6 +100,18 @@ _LIST_TICKETS_SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "true = tickets with no assignee.",
         },
+        "client_initiated": {
+            "type": "boolean",
+            "description": (
+                "true for 'client initiated / client opened / client-created tickets': tickets a client person "
+                "started, with alerts and automated senders (RMM, Datto, NAS, no-reply) already left out. "
+                "Covers today unless the question names a period. Use this instead of list_mail for these."
+            ),
+        },
+        "exclude_alerts": {
+            "type": "boolean",
+            "description": "true to drop tickets whose reason is Alert ('remove the alert tickets', 'not alerts').",
+        },
         "summarize": {
             "type": "boolean",
             "description": (
@@ -538,9 +550,10 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     _fn(
         GET_TICKET_DETAIL,
-        "Fuller read of one ticket: full log/notes text and hours, beyond what list_tickets/"
-        "latest_ticket return. Only call after another tool already gave you the ticket_id — "
-        "never to find a ticket in the first place.",
+        "Everything about ONE ticket given its label (ticket_label, e.g. AMBS-6298): its fields, notes, mail and "
+        "time entries, written up for you to explain. Use it for 'what is {LABEL} about', 'summarize {LABEL}', "
+        "and for advice questions about a ticket ('best way to resolve {LABEL}', 'suggestions to fix it'): then "
+        "it also looks up how similar past issues were fixed. Archived labels are found on their own.",
         _GET_TICKET_DETAIL_SCHEMA,
     ),
     _fn(
