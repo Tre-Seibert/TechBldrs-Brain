@@ -1278,3 +1278,48 @@ class TimeRankingTests(unittest.TestCase):
         self.assertTrue(result.ok, result.error)
         self.assertIsNone(result.digest)
         self.assertIn("Total: 20m worked across 1 entry", result.reply or "")
+
+
+class BilledMeansInvoicedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_billed_hours_are_entries_with_an_invoice_number(self) -> None:
+        from app.tools.handlers import TicketStatsArgs, ticket_stats
+
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            result = ticket_stats(
+                self.source,
+                # the model reaches for the billable flag; "billed" overrides it
+                TicketStatsArgs(entity="time", group_by="client", billable=True, client_code="ACME"),
+                ChatTurn(user_text="How many hours did we bill ACME?"),
+            )
+        self.assertTrue(result.ok, result.error)
+        sent = spy.call_args.kwargs
+        self.assertIs(sent["invoiced"], True)
+        self.assertIsNone(sent["billable"])
+        self.assertIn("30m billed", result.reply or "")  # ACME-0041 carries INV-441
+        self.assertNotIn("logged", result.reply or "")
+
+    def test_entries_without_an_invoice_number_are_not_billed(self) -> None:
+        from app.tools.handlers import TicketStatsArgs, ticket_stats
+
+        result = ticket_stats(
+            self.source,
+            TicketStatsArgs(entity="time", group_by="client", client_code="WDON"),
+            ChatTurn(user_text="How many hours did we bill WDON?"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertIn("No billed time found", result.reply or "")
+        self.assertIn("invoice number", result.reply or "")
+
+    def test_logged_hours_do_not_need_an_invoice(self) -> None:
+        from app.tools.handlers import TicketStatsArgs, ticket_stats
+
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="time", group_by="client", client_code="WDON"),
+                ChatTurn(user_text="How many hours did we work for WDON?"),
+            )
+        self.assertIsNone(spy.call_args.kwargs["invoiced"])

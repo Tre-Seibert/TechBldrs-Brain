@@ -390,6 +390,7 @@ _TICKET_STATS_SCHEMA: dict[str, Any] = {
         },
         "billable": {"type": "boolean", "description": "time only: true = billable entries only."},
         "reviewed": {"type": "boolean", "description": "time only: false = entries not yet reviewed."},
+        "invoiced": {"type": "boolean", "description": "time only: true = billed, meaning the entry has an invoice number."},
         "after": {"type": "string", "description": "ISO date (YYYY-MM-DD), inclusive. Tickets: created. Time: worked. Mail: received."},
         "before": {"type": "string", "description": "ISO date (YYYY-MM-DD), exclusive."},
         "limit": {"type": "integer", "description": "How many top groups to return (default 10, max 100)."},
@@ -538,7 +539,7 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
         "group_by=requestor, client_code=X. Most open tickets by client -> entity=tickets, group_by=client, "
         "stage=open. Longest ticket worked last week/this month -> entity=time, group_by=ticket, metric=hours, "
         "after/before (the all-time longest uses list_tickets sort=hrs_actual_total instead). "
-        "Hours billed to X this month -> entity=time, group_by=client, billable=true, client_code=X, "
+        "Hours billed to X this month -> entity=time, group_by=client, invoiced=true (billed = has an invoice number), client_code=X, "
         "after/before. My hours yesterday -> entity=time, group_by=tech, assignee_code=me, after/before. "
         "The ticket I spent the most time on -> entity=time, group_by=ticket, metric=hours, assignee_code=me.",
         _TICKET_STATS_SCHEMA,

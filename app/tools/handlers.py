@@ -406,6 +406,8 @@ class TicketStatsArgs(BaseModel):
     direction: str = "inbound"
     billable: bool | None = None
     reviewed: bool | None = None
+    # time only: true = entries with an invoice number, which is what 'billed' means here
+    invoiced: bool | None = None
     after: str | None = None
     before: str | None = None
     # issue analysis only: leave out automated alert tickets (default true there)
@@ -2738,6 +2740,7 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
 
 _UNREVIEWED_RE = re.compile(r"\b(?:unreviewed|(?:isn'?t|aren'?t|not|never)\s+(?:been\s+)?reviewed)\b", re.IGNORECASE)
 _STATS_PLACEHOLDER_FETCH = 40
+_BILLED_RE = re.compile(r"\b(?:billed|bill|invoiced)\b", re.IGNORECASE)
 
 
 def _without_placeholder_tickets(source: FlowSource, stats: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -2769,6 +2772,9 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
         entity_said, group_said = "time", "ticket"
     if entity_said == "time" and group_said == "ticket" and (args.metric or "count").strip().lower() != "hours":
         args = args.model_copy(update={"metric": "hours"})
+    if entity_said == "time" and _BILLED_RE.search(turn.user_text if turn else ""):
+        # 'billed' means an invoice number is on the entry; the billable flag is a different thing
+        args = args.model_copy(update={"invoiced": True, "billable": None})
     if entity_said == "time" and args.reviewed is None and _UNREVIEWED_RE.search(turn.user_text if turn else ""):
         args = args.model_copy(update={"reviewed": False})
     assignee, error = _resolve_assignee(source, args.assignee_code)
@@ -2812,6 +2818,7 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
             direction=(args.direction or "inbound").strip().lower(),
             billable=args.billable,
             reviewed=args.reviewed if entity_said == "time" else None,
+            invoiced=args.invoiced if entity_said == "time" else None,
             after=(args.after or "").strip() or None,
             before=(args.before or "").strip() or None,
             limit=25 if issue_analysis else (max(args.limit, _STATS_PLACEHOLDER_FETCH) if ranks_tickets else args.limit),
@@ -2844,7 +2851,10 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
         data=stats,
         client_code=client,
         note="Counts and hours are computed by Flow. Quote them as given; do not recount.",
-        reply=format_stats(stats, client=client, assignee=assignee, after=args.after, before=args.before),
+        reply=format_stats(
+            stats, client=client, assignee=assignee, after=args.after, before=args.before,
+            invoiced=bool(args.invoiced) and entity_said == "time",
+        ),
     )
 
 
@@ -2975,6 +2985,7 @@ def format_stats(
     assignee: str | None,
     after: str | None,
     before: str | None,
+    invoiced: bool = False,
 ) -> str:
     entity = stats.get("entity", "tickets")
     group_by = stats.get("group_by", "")
@@ -2987,6 +2998,15 @@ def format_stats(
     if after or before:
         scope.append(f"{after or 'start'} to {before or 'now'}")
     head = ", ".join(scope)
+    if invoiced:
+        # billed = the entry has an invoice number; show billed minutes only, never a second 'billed' figure
+        head = f"billed time (entries with an invoice number) by {group_by}" + head[len(f'{entity} by {group_by}'):]
+        if not rows:
+            return f"No billed time found ({head}). An entry counts as billed when it has an invoice number."
+        lines = [f"{head}: {_format_minutes(stats.get('total_billed_minutes', 0))} billed across {stats.get('total_count', 0)} entries.", ""]
+        for i, row in enumerate(rows, 1):
+            lines.append(f"{i}. {row['key']} — {_format_minutes(row['billed_minutes'])} billed ({row['count']} entries)")
+        return "\n".join(lines)
     if not rows:
         return f"No {entity} found ({head})."
     if entity == "time":

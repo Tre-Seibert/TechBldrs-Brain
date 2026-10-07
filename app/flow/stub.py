@@ -594,6 +594,7 @@ class StubFlowSource:
         direction: str = "inbound",
         billable: bool | None = None,
         reviewed: bool | None = None,
+        invoiced: bool | None = None,
         after: str | None = None,
         before: str | None = None,
         exclude_alerts: bool = False,
@@ -663,6 +664,8 @@ class StubFlowSource:
                 client_code=client_code, tech_user_id=tech_user_id, after_dt=after_dt, before_dt=before_dt,
                 billable=billable, reviewed=reviewed,
             ):
+                if invoiced is not None and bool((e.invoice_num or "").strip()) != invoiced:
+                    continue
                 key = {
                     "client": e.client_code,
                     "tech": names.get(e.tech_user_id, str(e.tech_user_id)),
