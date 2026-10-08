@@ -1588,6 +1588,19 @@ def list_tickets(
 ) -> ToolResult:
     if args.client_initiated:
         return _client_initiated_tickets(source, args, turn)
+    mail_answer = answer_person_mail_question(source, turn)
+    if mail_answer is not None:
+        return mail_answer
+    if (args.sort or "").strip().lower() == "hrs_actual_total" and _period_from_turn(turn):
+        # 'the longest ticket last week' is time logged in that week, not a ticket's all-time total
+        return ticket_stats(
+            source,
+            TicketStatsArgs(
+                entity="time", group_by="ticket", metric="hours", client_code=args.client_code,
+                assignee_code=args.assignee_code, limit=10,
+            ),
+            turn,
+        )
     codes = _client_codes(args.client_code)
     if len(codes) > 1:
         return _list_tickets_multi(source, args, turn, codes)
@@ -2032,6 +2045,9 @@ def latest_ticket(source: FlowSource, args: LatestTicketArgs, turn: ChatTurn | N
     Live tickets are searched first. The archive is searched only when the user asked for archived
     tickets, or when nothing live matched (and the reply says so).
     """
+    mail_answer = answer_person_mail_question(source, turn)
+    if mail_answer is not None:
+        return mail_answer
     stage = _latest_stage(args, turn)
     person = _person_name_from_turn(turn) or (args.requestor or "").strip() or None
     if person:
@@ -2438,10 +2454,20 @@ def merge_tickets(source: FlowSource, args: MergeTicketsArgs, turn: ChatTurn | N
     )
 
 
+_LAST_MAIL_RE = re.compile(r"\b(?:last|latest|most\s+recent|newest)\s+(?:e-?mail|mail|message)\b", re.IGNORECASE)
+_FULL_MAIL_RE = re.compile(
+    r"\b(?:full|whole|entire|complete)\s+(?:e-?mail|mail|message)\b|\be-?mail\s+body\b", re.IGNORECASE
+)
+
+
 def list_mail(source: FlowSource, args: ListMailArgs, turn: ChatTurn | None = None) -> ToolResult:
     period = _period_from_turn(turn)
+    said = (turn.user_text if turn else "") or ""
     if period:
         args = args.model_copy(update={"received_after": period[0], "received_before": period[1]})
+    elif _LAST_MAIL_RE.search(said) or _FULL_MAIL_RE.search(said):
+        # 'last email from X' has no date range: the model's guess at one (today) hides the real answer
+        args = args.model_copy(update={"received_after": None, "received_before": None, "limit": 1})
     client = (args.client_code or "").strip().upper() or None
     try:
         rows = source.list_mail(
@@ -2455,6 +2481,8 @@ def list_mail(source: FlowSource, args: ListMailArgs, turn: ChatTurn | None = No
         )
     except FlowRequestError as exc:
         return _refuse(LIST_MAIL, source, str(exc))
+    if rows and _FULL_MAIL_RE.search(said):
+        return get_mail_detail(source, GetMailDetailArgs(mail_id=rows[0].id))
     data = [_mail_payload(r) for r in rows]
     lines = [f"{len(data)} {args.direction} mail row(s) for {client or 'that search'}.", ""]
     if not data:
@@ -2508,6 +2536,15 @@ def _period_from_turn(turn: ChatTurn | None, now: datetime | None = None) -> tup
         span = (last_month, first)
     elif re.search(r"\bthis\s+month\b", low):
         span = (first, next_month)
+    elif re.search(r"\b(?:this|current|last)\s+quarter\b", low):
+        q_month = 3 * ((today.month - 1) // 3)  # 0, 3, 6 or 9 months into the year
+        step = -3 if re.search(r"\blast\s+quarter\b", low) else 0
+        start_idx = today.year * 12 + q_month + step
+        end_idx = start_idx + 3
+        span = (
+            today.replace(year=start_idx // 12, month=start_idx % 12 + 1, day=1),
+            today.replace(year=end_idx // 12, month=end_idx % 12 + 1, day=1),
+        )
     elif year:
         y = int(year.group(1))
         span = (today.replace(year=y, month=1, day=1), today.replace(year=y + 1, month=1, day=1))
@@ -2742,6 +2779,7 @@ def list_time_entries(source: FlowSource, args: ListTimeEntriesArgs, turn: ChatT
 _UNREVIEWED_RE = re.compile(r"\b(?:unreviewed|(?:isn'?t|aren'?t|not|never)\s+(?:been\s+)?reviewed)\b", re.IGNORECASE)
 _STATS_PLACEHOLDER_FETCH = 40
 _BILLED_RE = re.compile(r"\b(?:billed|bill|invoiced)\b", re.IGNORECASE)
+_UNBILLED_RE = re.compile(r"\b(?:unbilled|uninvoiced|not\s+(?:yet\s+)?(?:been\s+)?(?:billed|invoiced))\b", re.IGNORECASE)
 
 
 def _without_placeholder_tickets(source: FlowSource, stats: dict[str, Any], limit: int) -> dict[str, Any]:
@@ -2773,9 +2811,16 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
         entity_said, group_said = "time", "ticket"
     if entity_said == "time" and group_said == "ticket" and (args.metric or "count").strip().lower() != "hours":
         args = args.model_copy(update={"metric": "hours"})
-    if entity_said == "time" and _BILLED_RE.search(turn.user_text if turn else ""):
+    said = (turn.user_text if turn else "") or ""
+    if entity_said == "time" and _UNBILLED_RE.search(said):
+        args = args.model_copy(update={"invoiced": False, "billable": None})
+    elif entity_said == "time" and _BILLED_RE.search(said):
         # 'billed' means an invoice number is on the entry; the billable flag is a different thing
         args = args.model_copy(update={"invoiced": True, "billable": None})
+    elif entity_said == "time" and args.invoiced is not None:
+        args = args.model_copy(update={"invoiced": None})  # the model added a billing filter nobody asked for
+    if entity_said == "time" and (args.metric or "count").strip().lower() != "hours":
+        args = args.model_copy(update={"metric": "hours"})  # 'who uses the most time' ranks by hours
     if entity_said == "time" and args.reviewed is None and _UNREVIEWED_RE.search(turn.user_text if turn else ""):
         args = args.model_copy(update={"reviewed": False})
     assignee, error = _resolve_assignee(source, args.assignee_code)
@@ -2802,7 +2847,12 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
 
         args = args.model_copy(update={"after": (datetime.now() - timedelta(days=365)).date().isoformat()})
         defaulted_period = True  # an unbounded history is too much to read; say so in the answer
+    if issue_analysis and (args.stage or "all").strip().lower() in ("open", "review", "live") and not re.search(
+        r"\b(?:open|in\s+review|currently|right\s+now)\b", said, re.IGNORECASE
+    ):
+        args = args.model_copy(update={"stage": "all"})  # 'repeat issues' needs the history, not just what is open now
     ranks_tickets = entity_said == "time" and group_said == "ticket"
+    ranks_requestors = entity_said == "tickets" and group_said == "requestor"
     skip_alerts = bool(args.exclude_alerts) if args.exclude_alerts is not None else (
         issue_analysis and not re.search(r"\balerts?\b", (turn.user_text if turn else "") or "", re.IGNORECASE)
     )
@@ -2822,12 +2872,20 @@ def ticket_stats(source: FlowSource, args: TicketStatsArgs, turn: ChatTurn | Non
             invoiced=args.invoiced if entity_said == "time" else None,
             after=(args.after or "").strip() or None,
             before=(args.before or "").strip() or None,
-            limit=25 if issue_analysis else (max(args.limit, _STATS_PLACEHOLDER_FETCH) if ranks_tickets else args.limit),
+            limit=25 if issue_analysis else (
+                max(args.limit, _STATS_PLACEHOLDER_FETCH) if (ranks_tickets or ranks_requestors) else args.limit
+            ),
         )
     except FlowRequestError as exc:
         return _refuse(TICKET_STATS, source, str(exc))
     if ranks_tickets:
         stats = _without_placeholder_tickets(source, stats, args.limit)
+    if ranks_requestors:
+        # 'who contacts us the most' is people: robots and alert senders are counted separately
+        people = [r for r in stats.get("rows") or [] if not _AUTOMATED_REQUESTOR_RE.search(str(r.get("key") or ""))
+                  and str(r.get("key")) != "(none)"]
+        robots = [str(r["key"]) for r in stats.get("rows") or [] if r not in people and str(r.get("key")) != "(none)"]
+        stats = {**stats, "rows": people[: args.limit], "left_out_automated": robots}
     if issue_analysis and stats.get("rows"):
         samples = None
         try:
@@ -3040,6 +3098,9 @@ def format_stats(
     shown = len(rows)
     if stats.get("groups", shown) > shown:
         lines.append(f"(top {shown} of {stats['groups']} groups)")
+    robots = stats.get("left_out_automated") or []
+    if robots:
+        lines.append(f"Left out automated senders: {', '.join(robots[:6])}.")
     left_out = stats.get("left_out_placeholders") or []
     if left_out:
         lines.append(f"Left out placeholder tickets (meetings, out of office): {', '.join(left_out)}.")
@@ -3408,6 +3469,8 @@ def get_client_detail(source: FlowSource, args: GetClientDetailArgs) -> ToolResu
     ):
         if value:
             lines.append(f"{label}: {value}")
+    if not (row.support_renewal or row.antivirus_renewal or row.spam_filter_renewal):
+        lines.append("Renewal dates: none recorded in Flow.")
     return ToolResult(
         tool=GET_CLIENT_DETAIL,
         source=source.source_name,

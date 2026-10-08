@@ -1366,3 +1366,111 @@ class GuessedLabelAndLatestPersonTests(unittest.TestCase):
             )
         from_person = {call.kwargs.get("sort") for call in spy.call_args_list if call.kwargs.get("requestor") or call.kwargs.get("contact_id")}
         self.assertEqual(from_person, {"created_at"})
+
+
+class SecondLiveRunFixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = StubFlowSource()
+
+    def test_this_and_last_quarter_are_worked_out_by_the_code(self) -> None:
+        from datetime import datetime as dt
+
+        from app.tools.handlers import _period_from_turn
+
+        now = dt(2026, 10, 8)
+        self.assertEqual(_period_from_turn(ChatTurn(user_text="top causes this quarter"), now)[:2], ("2026-10-01", "2027-01-01"))
+        self.assertEqual(_period_from_turn(ChatTurn(user_text="hours last quarter"), now)[:2], ("2026-07-01", "2026-10-01"))
+        self.assertEqual(_period_from_turn(ChatTurn(user_text="hours last quarter"), dt(2026, 1, 15))[:2], ("2025-10-01", "2026-01-01"))
+
+    def test_last_email_ignores_a_date_the_model_made_up(self) -> None:
+        with mock.patch.object(self.source, "list_mail", wraps=self.source.list_mail) as spy:
+            result = dispatch(
+                self.source,
+                "list_mail",
+                {"client_code": "WDON", "direction": "inbound", "received_after": "2099-01-01"},
+                ChatTurn(user_text="Last email from WDON"),
+            )
+        self.assertTrue(result.ok, result.error)
+        self.assertIsNone(spy.call_args.kwargs["received_after"])
+        self.assertEqual(spy.call_args.kwargs["limit"], 1)
+        self.assertEqual(len(result.data), 1)
+
+    def test_show_me_the_full_email_returns_the_body(self) -> None:
+        result = dispatch(
+            self.source,
+            "list_mail",
+            {"client_code": "WDON", "direction": "inbound", "limit": 1},
+            ChatTurn(user_text="Show me the full email"),
+        )
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.tool, "get_mail_detail")
+
+    def test_when_did_someone_reach_out_is_a_mail_answer_from_any_starting_tool(self) -> None:
+        turn = ChatTurn(user_text="when did Sean O'Brien last reach out?")
+        latest = dispatch(self.source, "latest_ticket", {"requestor": "Sean O'Brien"}, turn)
+        listed = dispatch(self.source, "list_tickets", {"requestor": "Sean O'Brien"}, turn)
+        for result in (latest, listed):
+            self.assertEqual(result.tool, "list_mail")
+            self.assertIn("last reached out", result.reply or "")
+
+    def test_longest_ticket_last_week_is_time_logged_that_week_not_an_all_time_total(self) -> None:
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            dispatch(
+                self.source,
+                "list_tickets",
+                {"limit": 1, "sort": "hrs_actual_total", "stage": "open"},
+                ChatTurn(user_text="What was the longest ticket we spent time on last week?"),
+            )
+        sent = spy.call_args.kwargs
+        self.assertEqual((sent["entity"], sent["group_by"]), ("time", "ticket"))
+
+    def test_time_rankings_use_hours_and_drop_a_billing_filter_nobody_asked_for(self) -> None:
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="time", group_by="client", invoiced=False, metric="count"),
+                ChatTurn(user_text="Which clients use the most time this month?"),
+            )
+            sent = spy.call_args.kwargs
+            self.assertEqual(sent["metric"], "hours")
+            self.assertIsNone(sent["invoiced"])
+            ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="time", group_by="client"),
+                ChatTurn(user_text="How many hours are still unbilled?"),
+            )
+            self.assertIs(spy.call_args.kwargs["invoiced"], False)
+
+    def test_repeat_issue_analysis_reads_the_history_not_just_open_tickets(self) -> None:
+        with mock.patch.object(self.source, "ticket_stats", wraps=self.source.ticket_stats) as spy:
+            ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="tickets", group_by="issue", client_code="ACME", stage="open"),
+                ChatTurn(user_text="Any tickets that look like repeat issues for ACME?"),
+            )
+        self.assertEqual(spy.call_args.kwargs["stage"], "all")
+
+    def test_who_contacts_us_most_counts_people_not_alert_senders(self) -> None:
+        rows = [
+            {"key": "no-reply@rocketcyber.com", "count": 13, "hours": 0.0, "minutes": 0, "billed_minutes": 0},
+            {"key": "Tammi Talese", "count": 9, "hours": 3.0, "minutes": 0, "billed_minutes": 0},
+            {"key": "Techbldrs RMM", "count": 6, "hours": 0.0, "minutes": 0, "billed_minutes": 0},
+            {"key": "Zebby Sulecki", "count": 5, "hours": 1.0, "minutes": 0, "billed_minutes": 0},
+        ]
+        stats = {"entity": "tickets", "group_by": "requestor", "total_count": 33, "total_hours": 4.0, "groups": 4, "rows": rows}
+        with mock.patch.object(self.source, "ticket_stats", return_value=stats):
+            result = ticket_stats(
+                self.source,
+                TicketStatsArgs(entity="tickets", group_by="requestor", client_code="ACME", limit=2),
+                ChatTurn(user_text="Who contacts us the most from ACME?"),
+            )
+        self.assertEqual([r["key"] for r in result.data["rows"]], ["Tammi Talese", "Zebby Sulecki"])
+        self.assertIn("Left out automated senders: no-reply@rocketcyber.com, Techbldrs RMM", result.reply or "")
+
+    def test_a_client_with_no_renewal_dates_says_so(self) -> None:
+        row = self.source.get_client(client_code="ACME").model_copy(
+            update={"support_renewal": None, "antivirus_renewal": None, "spam_filter_renewal": None}
+        )
+        with mock.patch.object(self.source, "get_client", return_value=row):
+            result = dispatch(self.source, "get_client_detail", {"client_code": "ACME"}, ChatTurn(user_text="renewal dates for ACME"))
+        self.assertIn("Renewal dates: none recorded in Flow.", result.reply or "")
