@@ -1,7 +1,7 @@
 """Flow adapters. The model never sees SQL.
 
 Reads are SELECT-equivalent. The one write, merge_tickets, is only reached
-through the confirm gate in app/tools/handlers.py and must carry a verified
+through the confirm gate in app/tools/flow/merge.py and must carry a verified
 actor on the HTTP adapter.
 """
 
