@@ -10,6 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Pattern-matched answers that run before the LLM sees a question (app/agent/loop.py).
 ROUTER_NAMES = ("merge_suggestion", "person_mail", "person_ticket", "tickets_about", "longest_time")
 
+# System prompt and tool schemas (app/agent/system.py). legacy: the full Flow prompt and schemas, as live today.
+# lean: general rules plus each enabled source's section, guidance in the tool descriptions, and the signed-in
+# technician and today's date in a message after the static prefix so the model server can reuse its cache.
+PROMPT_STYLES = ("legacy", "lean")
+
 
 def _default_data_dir() -> Path:
     local = os.environ.get("LOCALAPPDATA")
@@ -39,6 +44,16 @@ class Settings(BaseSettings):
     # JSON object merged into every LLM request body, e.g. {"reasoning_effort":"none"} or
     # {"think":false}. Whatever your Ollama build accepts for turning thinking off.
     llm_extra_body: str = Field(default="")
+    # One of PROMPT_STYLES. legacy until lean is proven on the eval.
+    prompt_style: str = Field(default="legacy")
+
+    @field_validator("prompt_style")
+    @classmethod
+    def _known_prompt_style(cls, value: str) -> str:
+        style = (value or "legacy").strip().lower()
+        if style not in PROMPT_STYLES:
+            raise ValueError(f"unknown PROMPT_STYLE {value!r}; valid: {', '.join(PROMPT_STYLES)}")
+        return style
 
     @field_validator("llm_extra_body")
     @classmethod

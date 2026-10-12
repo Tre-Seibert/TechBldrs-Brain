@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from app.agent.system import SYSTEM_PROMPT, signed_in_prompt_line
+from app.agent.system import SYSTEM_PROMPT, lean_system_prompt, session_context_message, signed_in_prompt_line
 from app.config import ROUTER_NAMES, Settings
 from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
@@ -318,9 +318,12 @@ def _today_line() -> str:
 
 
 def _ensure_system(
-    messages: list[dict[str, Any]], *, source: Sources | FlowSource, no_think: bool = False
+    messages: list[dict[str, Any]], *, source: Sources | FlowSource, no_think: bool = False, style: str = "legacy"
 ) -> list[dict[str, Any]]:
-    out = _ensure_system_prompt(messages, source=source)
+    if style == "lean":
+        out = _ensure_lean_prompt(messages, source=source)
+    else:
+        out = _ensure_system_prompt(messages, source=source)
     if no_think:
         first = dict(out[0])
         first["content"] = str(first.get("content") or "").rstrip() + "\n/no_think"
@@ -340,6 +343,25 @@ def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: Sources | F
             first["content"] = content.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
         return [first, *messages[1:]]
     return [{"role": "system", "content": prompt}, *messages]
+
+
+def _ensure_lean_prompt(messages: list[dict[str, Any]], *, source: Sources | FlowSource) -> list[dict[str, Any]]:
+    """PROMPT_STYLE=lean: [static system message][session context][conversation].
+
+    The system message is the same bytes for every user and day, and the model server puts the tool list right
+    after it, so that whole prefix can come from its cache. Who is signed in and today's date follow it in
+    their own message (see session_context_message for why that is not a system message).
+    """
+    sources = as_sources(source)
+    prompt = lean_system_prompt(sources.prompt_sections())
+    context = session_context_message([_signed_in_line(sources.flow), _today_line()])
+    if messages and messages[0].get("role") == "system":
+        first = dict(messages[0])
+        content = str(first.get("content") or "")
+        if "tb-brain" not in content:
+            first["content"] = prompt + "\n\n" + content
+        return [first, context, *messages[1:]]
+    return [{"role": "system", "content": prompt}, context, *messages]
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:
@@ -495,7 +517,7 @@ async def run_tool_loop(
 ) -> dict[str, Any]:
     """`sources` is the enabled Sources bundle. `source` is the pre-A2 keyword for a bare Flow client."""
     sources = as_sources(sources if sources is not None else source)
-    tools = openai_tools(sources)
+    tools = openai_tools(sources, style=settings.prompt_style)
     relay_tools = {*sources.relay_tool_names(), SEARCH_KNOWLEDGE}
     write_names = sources.write_tool_names()
     ignored = _ignored_client_tool_names(client_tools, tuple(tool["function"]["name"] for tool in tools))
@@ -515,7 +537,9 @@ async def run_tool_loop(
     nudged = False
     forced_tried = False
     fallbacks: list[str] = []  # plain lists, used if a summary never comes out of the model
-    chat = _ensure_system(_compact_history(list(messages)), source=sources, no_think=settings.llm_no_think)
+    chat = _ensure_system(
+        _compact_history(list(messages)), source=sources, no_think=settings.llm_no_think, style=settings.prompt_style
+    )
     prompt_tokens = 0
     relayed: list[str] = []
     digests: list[str] = []  # what summary-mode tools gave the model to write prose from

@@ -51,6 +51,8 @@ class SourceSpec:
     # Errors whose message is safe to show as-is (the source refused, or is not configured).
     errors: tuple[type[Exception], ...] = ()
     prompt_section: str = ""
+    # The tools with shorter descriptions for PROMPT_STYLE=lean; same names and parameters. Empty means `tools`.
+    lean_tools: tuple[dict[str, Any], ...] = ()
     required: bool = False
     # (field, hook) pairs this source fills in for the client resolver, e.g. ("datto_site_uid", hook) where
     # hook(client, client_code, name) returns the source's id for that client or None. See app/sources/clients.py.
@@ -104,7 +106,9 @@ class Sources:
                 self._clients = resolver
             return self._clients
 
-    def openai_tools(self) -> list[dict[str, Any]]:
+    def openai_tools(self, style: str = "legacy") -> list[dict[str, Any]]:
+        if style == "lean":
+            return [tool for spec, _ in self._enabled for tool in (spec.lean_tools or spec.tools)]
         return [tool for spec, _ in self._enabled for tool in spec.tools]
 
     def tool_names(self) -> tuple[str, ...]:

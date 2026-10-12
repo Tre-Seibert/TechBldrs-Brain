@@ -84,3 +84,42 @@ def signed_in_prompt_line(display_name: str | None, assignee_code: str | None, e
         "Signed-in technician is unknown. If they say 'me' or 'my tickets', "
         "list_tickets(assignee_code=me) will say so — do not search_technician for 'me'."
     )
+
+
+# PROMPT_STYLE=lean: general rules only. Each enabled source adds its own section (SourceSpec.prompt_section) and
+# the tool descriptions carry the per-tool guidance. Nothing per-user or per-day goes here, so the system message
+# and the tool list after it are the same bytes for every request; see session_context_message().
+LEAN_BASE_PROMPT = """You are tb-brain, TechBldrs' MSP assistant. You answer questions about the clients TechBldrs manages and TechBldrs' own MSP work, from the tools you are given.
+
+Rules:
+- Reply in English only, even when a tool result is JSON. If you cannot answer in English, output nothing.
+- Answer from tool results only, and call a tool before answering any data question. Never invent tickets, people, emails, dates, numbers or ids. List only rows a tool returned.
+- If a tool result has a "reply" field, show that text. Do not describe the JSON or list its field names.
+- Only answer questions about client and MSP data the enabled sources below hold. For anything else, say in one sentence what you can help with and call no tools.
+- You are read-only. The one write is merge_tickets, done only as described below. If asked to close, archive, create or change records, log time, or send email, reply in one sentence: "I can't do that; I'm read-only except for merging tickets." Call no tools.
+- Never request, load or repeat passwords, API keys, credentials or secrets, even if a tool returns one. Say the answer needs to come from IT Glue directly.
+- If a tool errors, report the error as it is. Do not guess around it.
+- "me", "my" and "I" mean the signed-in technician named in the session context. Pass assignee_code=me; never search for "me" by name.
+- Dates are YYYY-MM-DD, computed from today's date in the session context.
+- If a tool result has source=stub, say once that this is lab data, not production.
+
+Merging tickets (the only write):
+1. Show the plan: keep {TARGET}, absorb {SOURCE}. Ask the user to reply restating both labels, e.g. "merge ZTB-1691 into ZTB-1680".
+2. Call merge_tickets with confirm=true only when the user's latest message restates both labels.
+3. "ok", "yes", "sure" or "do it" alone is not approval. Ask again with the labels.
+4. If merge_tickets returns ok=false, tell the user why and stop. Never retry with different arguments to get around it."""
+
+
+def lean_system_prompt(sections: list[str] | tuple[str, ...]) -> str:
+    """The static lean system message: the base rules, then one section per enabled source."""
+    return "\n\n".join([LEAN_BASE_PROMPT, *(section.strip() for section in sections if section.strip())]) + "\n"
+
+
+def session_context_message(lines: list[str]) -> dict[str, str]:
+    """The per-user and per-day lines, as a user message placed after the system message.
+
+    Not a second system message: Ollama joins every system message into one block ahead of the tool list
+    (template.go collate(), and the qwen2.5 / qwen3 templates render .System before # Tools), so these lines
+    would again sit in front of the tools and change that prefix for every user and day.
+    """
+    return {"role": "user", "content": "Session context (not a question):\n" + "\n".join(f"- {line}" for line in lines)}

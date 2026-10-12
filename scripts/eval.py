@@ -7,9 +7,9 @@ Run against a live tb-brain (FLOW_MODE=stub, so the expected answers hold):
     python scripts/eval.py run --label qwen3-routers-off --group longest_time
     python scripts/eval.py compare eval/results/A.json eval/results/B.json
 
-Each run records the model and DISABLED_ROUTERS the server reports on /health, so a result
-file says what it measured. Change those with LLM_MODEL / DISABLED_ROUTERS in .env, restart
-tb-brain, then run again.
+Each run records the model, DISABLED_ROUTERS and PROMPT_STYLE the server reports on /health, so a
+result file says what it measured. Change those with LLM_MODEL / DISABLED_ROUTERS / PROMPT_STYLE in
+.env, restart tb-brain, then run again.
 
 Besides reply text (must_contain / must_not_contain / must_match / must_not_match), a case may
 score the tool calls the server made (the server reports them in the response's x_tb_brain):
@@ -200,7 +200,8 @@ def run(args: argparse.Namespace) -> int:
             )
         print(
             f"model={health.get('llm_model') or '(ollama default)'} "
-            f"disabled_routers={health.get('disabled_routers')} cases={len(cases)}\n"
+            f"disabled_routers={health.get('disabled_routers')} prompt_style={health.get('prompt_style')} "
+            f"cases={len(cases)}\n"
         )
         for case in cases:
             started = time.perf_counter()
@@ -238,7 +239,8 @@ def run(args: argparse.Namespace) -> int:
     out.write_text(
         json.dumps(
             {"label": args.label, "when": stamp, "model": health.get("llm_model"),
-             "disabled_routers": health.get("disabled_routers"), "summary": summary, "results": results},
+             "disabled_routers": health.get("disabled_routers"), "prompt_style": health.get("prompt_style"),
+             "summary": summary, "results": results},
             indent=2,
         ),
         encoding="utf-8",
@@ -273,7 +275,8 @@ def compare(args: argparse.Namespace) -> int:
     for tag, data in (("A", first), ("B", second)):
         print(
             f"{tag}: {data['label']}  model={data.get('model')}  "
-            f"disabled_routers={data.get('disabled_routers')}\n   {format_summary(data['summary']).splitlines()[0]}"
+            f"disabled_routers={data.get('disabled_routers')}  prompt_style={data.get('prompt_style')}\n"
+            f"   {format_summary(data['summary']).splitlines()[0]}"
         )
     before = {item["id"]: item for item in first["results"]}
     after = {item["id"]: item for item in second["results"]}

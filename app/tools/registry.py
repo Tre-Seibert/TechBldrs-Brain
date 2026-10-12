@@ -25,6 +25,7 @@ from app.sources.flow.tools import (
     TICKET_STATS,
     WRITE_TOOL_NAMES,
 )
+from app.sources.flow.lean_tools import LEAN_OPENAI_TOOLS as FLOW_LEAN_OPENAI_TOOLS
 from app.sources.flow.tools import OPENAI_TOOLS as FLOW_OPENAI_TOOLS
 from app.sources.flow.tools import TOOL_NAMES as FLOW_TOOL_NAMES
 
@@ -42,6 +43,7 @@ __all__ = [
     "GET_MAIL_DETAIL",
     "GET_TICKET_DETAIL",
     "LATEST_TICKET",
+    "LEAN_SHARED_TOOLS",
     "LIST_MACHINES",
     "LIST_MAIL",
     "LIST_TICKETS",
@@ -86,11 +88,34 @@ SHARED_TOOLS: list[dict[str, Any]] = [
     ),
 ]
 
+# PROMPT_STYLE=lean: the same tool with a shorter description.
+LEAN_SHARED_TOOLS: list[dict[str, Any]] = [
+    function_tool(
+        SEARCH_KNOWLEDGE,
+        "Search IT Glue SOP/runbook documents and past time-entry fix notes (not live data; say so when you use "
+        "it). For 'how do we usually fix X', 'why did we do X', 'what's the process for X'. Not for finding a "
+        "ticket, contact or mail row. If nothing matches, say no SOP or runbook match was found. Notes may be old.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The topic, e.g. 'VPN dropouts on a FortiGate'."},
+                "client_code": {"type": "string", "description": "Optional: only this client's docs and notes."},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    ),
+]
+
 OPENAI_TOOLS: list[dict[str, Any]] = [*FLOW_OPENAI_TOOLS, *SHARED_TOOLS]
 
 
-def openai_tools(sources: Sources | Any | None = None) -> list[dict[str, Any]]:
-    """Every enabled source's tools, then the shared ones. No argument means Flow only."""
+def openai_tools(sources: Sources | Any | None = None, style: str = "legacy") -> list[dict[str, Any]]:
+    """Every enabled source's tools, then the shared ones, in PROMPT_STYLE `style`. No sources means Flow only."""
+    if style == "lean":
+        if sources is None:
+            return [*FLOW_LEAN_OPENAI_TOOLS, *LEAN_SHARED_TOOLS]
+        return [*as_sources(sources).openai_tools(style), *LEAN_SHARED_TOOLS]
     if sources is None:
         return list(OPENAI_TOOLS)
     return [*as_sources(sources).openai_tools(), *SHARED_TOOLS]
