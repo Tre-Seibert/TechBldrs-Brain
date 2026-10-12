@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 
-from app.flow.schemas import TechnicianRecord
-from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
+from app.sources.flow.protocol import FlowSource
+from app.sources.flow.schemas import TechnicianRecord
 from app.tools.turns import (
     _APOSTROPHE_RE,
     _ASSIGNEE_CODE_RE,

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.flow.source import FlowRequestError, FlowSource
+from app.sources.flow.handlers.payloads import _client_detail_payload, _machine_payload
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.tools import GET_CLIENT_DETAIL, LIST_MACHINES
 from app.tools.base import ToolResult, _refuse
-from app.tools.flow.payloads import _client_detail_payload, _machine_payload
-from app.tools.registry import GET_CLIENT_DETAIL, LIST_MACHINES
 
 
 class ListMachinesArgs(BaseModel):

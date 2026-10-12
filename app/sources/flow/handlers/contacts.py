@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from app.flow.source import FlowSource
+from app.sources.flow.handlers.mail import answer_person_mail_question
+from app.sources.flow.handlers.payloads import _contact_payload, _technician_payload
+from app.sources.flow.handlers.people import _pick_contact, _search_contacts_loose, _signed_in_technician
+from app.sources.flow.handlers.tickets import ListTicketsArgs, list_tickets
+from app.sources.flow.protocol import FlowSource
+from app.sources.flow.tools import SEARCH_CONTACT, SEARCH_TECHNICIAN
 from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.mail import answer_person_mail_question
-from app.tools.flow.payloads import _contact_payload, _technician_payload
-from app.tools.flow.people import _pick_contact, _search_contacts_loose, _signed_in_technician
-from app.tools.flow.tickets import ListTicketsArgs, list_tickets
-from app.tools.registry import SEARCH_CONTACT, SEARCH_TECHNICIAN
 from app.tools.turns import (
     _asked_latest_for_person,
     _asked_mail_for_person,

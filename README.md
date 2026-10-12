@@ -33,12 +33,14 @@ WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outboun
 
 ```text
 app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
-app/tools/           search_contact, search_technician, list_tickets, latest_ticket,
-                     find_similar_tickets, merge_tickets (gated write), list_mail,
-                     list_time_entries, ticket_stats (counts/hours grouped by Flow, never summed by the
-                     model), list_machines, get_ticket_detail,
-                     get_mail_detail, get_client_detail, search_knowledge
-app/flow/            Flow-shaped schemas + stub fixtures + HTTP client (FLOW_MODE=http)
+app/sources/         One folder per data source, enabled from env (registry.py); base.py has the shape
+app/sources/flow/    Flow (FLOW_MODE=stub|http): protocol, schemas, stub fixtures, HTTP client, tools,
+                     handlers (search_contact, search_technician, list_tickets, latest_ticket,
+                     find_similar_tickets, merge_tickets (gated write), list_mail, list_time_entries,
+                     ticket_stats (counts/hours grouped by Flow, never summed by the model),
+                     list_machines, get_ticket_detail, get_mail_detail, get_client_detail)
+app/tools/           Shared tool plumbing: run_tool (audit), dispatch, search_knowledge, turn parsing
+app/flow/            Old import path; aliases for app/sources/flow/
 app/knowledge/       Qdrant + local-embedding client for search_knowledge (QDRANT_URL)
 app/agent/           OpenAI-compatible tool loop (LLM_BASE_URL)
 scripts/sync_knowledge.py   Embeds IT Glue docs + time-entry notes into Qdrant

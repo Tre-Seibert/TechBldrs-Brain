@@ -8,20 +8,20 @@ from typing import Any
 
 from pydantic import BaseModel, model_validator
 
-from app.flow.schemas import MailRecord, TicketDetail, TicketRecord, TimeEntryRecord, ticket_label
-from app.flow.source import FlowRequestError, FlowSource
 from app.knowledge.source import KnowledgeSource
-from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.common import (
+from app.sources.flow.handlers.common import (
     _STAGE_TAGS,
     _SUBJECT_PREFIX_RE,
     _resolve_label,
     _worked_minutes,
     format_ticket_list,
 )
-from app.tools.flow.payloads import _ticket_detail_payload, _ticket_payload
+from app.sources.flow.handlers.payloads import _ticket_detail_payload, _ticket_payload
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.schemas import MailRecord, TicketDetail, TicketRecord, TimeEntryRecord, ticket_label
+from app.sources.flow.tools import GET_TICKET_DETAIL
+from app.tools.base import ChatTurn, ToolResult, _refuse
 from app.tools.formatting import _activity_text, _created_text, _due_text, _format_hours, _format_minutes
-from app.tools.registry import GET_TICKET_DETAIL
 from app.tools.turns import _LABEL_RE
 
 

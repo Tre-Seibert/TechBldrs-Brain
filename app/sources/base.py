@@ -1,0 +1,131 @@
+"""What every data source looks like to the rest of tb-brain, and the bundle of enabled sources.
+
+Each source lives in app/sources/<name>/ with the same parts: a read-only protocol, stub fixtures, an HTTP
+adapter, its tools (OpenAI schemas), the handlers that run them, and a short prompt section. Its spec.py
+ties those together as a SourceSpec; app/sources/registry.py turns the enabled ones into a Sources bundle.
+
+Nothing here imports a source or app.tools at module level: sources import app.tools for ToolResult, and
+app.tools imports this module, so an import here would loop.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.config import Settings
+    from app.knowledge.source import KnowledgeSource
+    from app.tools.base import ChatTurn, ToolResult
+
+# A mode that turns an optional source off (DATTO_MODE=off). Required sources (Flow) cannot be off.
+OFF_MODES = frozenset({"", "off", "none", "disabled", "false", "0"})
+
+
+def function_tool(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+
+
+@dataclass(frozen=True)
+class SourceSpec:
+    """One data source: how to build its read-only client, its tools, and the handler that runs them.
+
+    The client's `source_name` goes into every audit row and ToolResult, so name it after the source and
+    mode (e.g. 'datto-http'). Flow's 'stub' / 'http' predate this and stay as they are.
+    """
+
+    name: str
+    # The source's mode from settings, normalized: 'stub', 'http', or one of OFF_MODES.
+    mode: Callable[[Settings], str]
+    # A read-only client for that mode. Raises the source's own NotConfigured error when it can't.
+    build: Callable[[Settings], Any]
+    tools: tuple[dict[str, Any], ...]
+    # (client, tool name, raw args, turn, knowledge=) -> ToolResult, or None for a tool it does not have.
+    handle: Callable[..., ToolResult | None]
+    write_tool_names: tuple[str, ...] = ()
+    relay_tool_names: tuple[str, ...] = ()
+    # Errors whose message is safe to show as-is (the source refused, or is not configured).
+    errors: tuple[type[Exception], ...] = ()
+    prompt_section: str = ""
+    required: bool = False
+
+    @property
+    def tool_names(self) -> tuple[str, ...]:
+        return tuple(tool["function"]["name"] for tool in self.tools)
+
+
+class Sources:
+    """The enabled sources and their clients, in the order their tools are offered to the model."""
+
+    def __init__(self, enabled: list[tuple[SourceSpec, Any]] | tuple[tuple[SourceSpec, Any], ...]) -> None:
+        self._enabled = tuple(enabled)
+        self._by_tool: dict[str, tuple[SourceSpec, Any]] = {}
+        for spec, client in self._enabled:
+            for name in spec.tool_names:
+                if name in self._by_tool:
+                    raise ValueError(f"tool {name!r} is offered by both {self._by_tool[name][0].name} and {spec.name}")
+                self._by_tool[name] = (spec, client)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        return tuple(spec.name for spec, _ in self._enabled)
+
+    def client(self, name: str) -> Any | None:
+        return next((client for spec, client in self._enabled if spec.name == name), None)
+
+    @property
+    def flow(self) -> Any:
+        """Flow's client. Flow is required, so every bundle has one."""
+        client = self.client("flow")
+        if client is None:
+            raise LookupError("Flow is not enabled")
+        return client
+
+    def openai_tools(self) -> list[dict[str, Any]]:
+        return [tool for spec, _ in self._enabled for tool in spec.tools]
+
+    def tool_names(self) -> tuple[str, ...]:
+        return tuple(name for spec, _ in self._enabled for name in spec.tool_names)
+
+    def write_tool_names(self) -> tuple[str, ...]:
+        return tuple(name for spec, _ in self._enabled for name in spec.write_tool_names)
+
+    def relay_tool_names(self) -> tuple[str, ...]:
+        return tuple(name for spec, _ in self._enabled for name in spec.relay_tool_names)
+
+    @property
+    def errors(self) -> tuple[type[Exception], ...]:
+        return tuple(error for spec, _ in self._enabled for error in spec.errors)
+
+    def prompt_sections(self) -> list[str]:
+        return [spec.prompt_section for spec, _ in self._enabled if spec.prompt_section]
+
+    def source_name_for(self, tool: str) -> str:
+        """The client that serves `tool`; the first source's for a tool no source has (shared or unknown)."""
+        spec_client = self._by_tool.get(tool) or (self._enabled[0] if self._enabled else None)
+        return getattr(spec_client[1], "source_name", "unknown") if spec_client else "unknown"
+
+    def dispatch(
+        self,
+        name: str,
+        raw_args: dict[str, Any],
+        turn: ChatTurn | None = None,
+        *,
+        knowledge: KnowledgeSource | None = None,
+    ) -> ToolResult | None:
+        """Run `name` on the source that offers it. None when no enabled source has that tool."""
+        hit = self._by_tool.get(name)
+        if hit is None:
+            return None
+        spec, client = hit
+        return spec.handle(client, name, raw_args, turn, knowledge=knowledge)
+
+
+def as_sources(value: Any) -> Sources:
+    """A Sources bundle as-is; anything else is a bare Flow client from before A2, wrapped as Flow only."""
+    if isinstance(value, Sources):
+        return value
+    from app.sources.flow.spec import FLOW
+
+    return Sources([(FLOW, value)])

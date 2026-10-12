@@ -6,9 +6,10 @@ from pydantic import ValidationError
 
 from app.audit import log_tool_call
 from app.config import Settings
-from app.flow.source import FlowNotConfigured, FlowRequestError, FlowSource, FlowWriteRefused
 from app.knowledge.source import KnowledgeSource
-from app.tools.handlers import ChatTurn, ToolResult, dispatch
+from app.sources.base import Sources, as_sources
+from app.tools.base import ChatTurn, ToolResult
+from app.tools.dispatch import dispatch
 from app.tools.registry import openai_tools
 
 __all__ = ["ChatTurn", "openai_tools", "run_tool"]
@@ -16,7 +17,7 @@ __all__ = ["ChatTurn", "openai_tools", "run_tool"]
 
 def run_tool(
     *,
-    source: FlowSource,
+    sources: Sources | None = None,
     name: str,
     arguments: dict[str, Any],
     actor: str,
@@ -24,15 +25,19 @@ def run_tool(
     actor_verified: bool = False,
     turn: ChatTurn | None = None,
     knowledge: KnowledgeSource | None = None,
+    source: Any = None,
 ) -> ToolResult:
+    """Run one tool on the source that offers it and audit the call. `source` is the pre-A2 keyword for a
+    bare Flow client and means Flow only."""
+    sources = as_sources(sources if sources is not None else source)
     client_code = _client_code_from_args(arguments)
     try:
-        result = dispatch(source, name, arguments, turn, knowledge=knowledge)
-    except (FlowNotConfigured, FlowRequestError, FlowWriteRefused) as exc:
+        result = dispatch(sources, name, arguments, turn, knowledge=knowledge)
+    except sources.errors as exc:
         result = ToolResult(
             ok=False,
             tool=name,
-            source=getattr(source, "source_name", "unknown"),
+            source=sources.source_name_for(name),
             client_code=client_code,
             error=str(exc),
         )
@@ -40,7 +45,7 @@ def run_tool(
         result = ToolResult(
             ok=False,
             tool=name,
-            source=getattr(source, "source_name", "unknown"),
+            source=sources.source_name_for(name),
             client_code=client_code,
             error=f"Invalid arguments: {exc.errors()}",
         )
@@ -48,7 +53,7 @@ def run_tool(
         result = ToolResult(
             ok=False,
             tool=name,
-            source=getattr(source, "source_name", "unknown"),
+            source=sources.source_name_for(name),
             client_code=client_code,
             error=f"{type(exc).__name__}: {exc}",
         )

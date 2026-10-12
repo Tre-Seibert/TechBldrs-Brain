@@ -8,8 +8,8 @@ import re
 from datetime import datetime
 from typing import Any
 
-from app.flow.schemas import TicketRecord, TimeEntryRecord
-from app.flow.source import FlowSource
+from app.sources.flow.protocol import FlowSource
+from app.sources.flow.schemas import TicketRecord, TimeEntryRecord
 from app.tools.formatting import _activity_text, _created_text, _due_text, _format_hours
 from app.tools.turns import _LABEL_RE
 

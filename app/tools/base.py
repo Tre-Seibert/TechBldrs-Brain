@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.flow.source import FlowSource
+from app.sources.flow.protocol import FlowSource
 
 
 @dataclass(frozen=True)

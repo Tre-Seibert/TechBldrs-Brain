@@ -7,13 +7,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.flow.schemas import TicketRecord
-from app.flow.source import FlowSource
+from app.sources.flow.handlers.common import _resolve_label, _resolve_status
+from app.sources.flow.handlers.payloads import _similar_payload
+from app.sources.flow.handlers.people import _resolve_assignee
+from app.sources.flow.protocol import FlowSource
+from app.sources.flow.schemas import TicketRecord
+from app.sources.flow.tools import FIND_SIMILAR_TICKETS, MERGE_TICKETS
 from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.common import _resolve_label, _resolve_status
-from app.tools.flow.payloads import _similar_payload
-from app.tools.flow.people import _resolve_assignee
-from app.tools.registry import FIND_SIMILAR_TICKETS, MERGE_TICKETS
 from app.tools.turns import _OWN_TICKETS_RE
 
 

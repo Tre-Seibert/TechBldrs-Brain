@@ -15,9 +15,11 @@ import httpx
 
 from app.agent.system import SYSTEM_PROMPT, signed_in_prompt_line
 from app.config import ROUTER_NAMES, Settings
-from app.flow.source import FlowSource
 from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
+from app.sources.base import Sources, as_sources
+from app.sources.flow.protocol import FlowSource
+from app.sources.flow.tools import RELAY_TOOL_NAMES
 from app.tools import ChatTurn, ToolResult, openai_tools, run_tool
 from app.tools.handlers import (
     answer_longest_time_worked,
@@ -26,37 +28,10 @@ from app.tools.handlers import (
     answer_person_ticket_question,
     answer_tickets_about,
 )
-from app.tools.registry import WRITE_TOOL_NAMES
-from app.tools.registry import (
-    FIND_SIMILAR_TICKETS,
-    GET_CLIENT_DETAIL,
-    GET_MAIL_DETAIL,
-    GET_TICKET_DETAIL,
-    LATEST_TICKET,
-    LIST_MACHINES,
-    LIST_MAIL,
-    LIST_TICKETS,
-    LIST_TIME_ENTRIES,
-    SEARCH_CONTACT,
-    SEARCH_KNOWLEDGE,
-    TICKET_STATS,
-    TOOL_NAMES,
-)
+from app.tools.registry import SEARCH_KNOWLEDGE, TOOL_NAMES, WRITE_TOOL_NAMES
 
-_RELAY_TOOLS = {
-    LIST_TICKETS,
-    FIND_SIMILAR_TICKETS,
-    LATEST_TICKET,
-    LIST_MAIL,
-    SEARCH_CONTACT,
-    SEARCH_KNOWLEDGE,
-    LIST_TIME_ENTRIES,
-    TICKET_STATS,
-    LIST_MACHINES,
-    GET_TICKET_DETAIL,
-    GET_MAIL_DETAIL,
-    GET_CLIENT_DETAIL,
-}
+# Tools whose formatted reply is shown as-is. Each source lists its own; these are Flow's plus the shared ones.
+_RELAY_TOOLS = {*RELAY_TOOL_NAMES, SEARCH_KNOWLEDGE}
 _NO_TOOL_ENGLISH = (
     "I can only answer from Flow tools, and I did not get a usable result. "
     "Ask again with a person, technician, or client code."
@@ -126,11 +101,11 @@ _NO_INVENTED_TICKETS = (
 )
 
 
-def _tool_cheatsheet(tools: list[dict[str, Any]]) -> str:
+def _tool_cheatsheet(tools: list[dict[str, Any]], write_names: tuple[str, ...] = WRITE_TOOL_NAMES) -> str:
     lines = []
     for tool in tools:
         fn = tool.get("function") or {}
-        if fn.get("name") in WRITE_TOOL_NAMES:
+        if fn.get("name") in write_names:
             continue
         params = ", ".join((fn.get("parameters") or {}).get("properties", {}).keys())
         lines.append(f"- {fn.get('name')}({params}): {str(fn.get('description') or '')[:150]}")
@@ -165,7 +140,11 @@ async def _summarize_chunk(
 
 
 async def _force_tool_call(
-    client: httpx.AsyncClient, model: str, chat: list[dict[str, Any]], tools: list[dict[str, Any]]
+    client: httpx.AsyncClient,
+    model: str,
+    chat: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    write_names: tuple[str, ...] = WRITE_TOOL_NAMES,
 ) -> dict[str, Any] | None:
     """Last resort when the model twice answers a data question without calling a tool.
 
@@ -173,12 +152,12 @@ async def _force_tool_call(
     guaranteed. The write tool is never offered. Returns a synthetic assistant tool_calls message,
     or None if the server does not support structured output.
     """
-    names = [t["function"]["name"] for t in tools if t["function"]["name"] not in WRITE_TOOL_NAMES]
+    names = [t["function"]["name"] for t in tools if t["function"]["name"] not in write_names]
     ask = {
         "role": "user",
         "content": (
             "Reply with JSON only: the single tool call that best answers the user's last question. "
-            "Tools:\n" + _tool_cheatsheet(tools)
+            "Tools:\n" + _tool_cheatsheet(tools, write_names)
         ),
     }
     body = {
@@ -244,25 +223,28 @@ assert tuple(name for name, _ in _ROUTERS) == ROUTER_NAMES
 
 
 def _direct_answer_named(
-    source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()
+    source: Sources | FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()
 ) -> tuple[str, ToolResult] | None:
+    flow = as_sources(source).flow  # the routers are Flow question shapes
     for name, router in _ROUTERS:
         if name in disabled:
             continue
-        result = router(source, turn)
+        result = router(flow, turn)
         if result is not None:
             _log.info("router answered router=%s", name, extra={"event": "agent.router", "router": name})
             return name, result
     return None
 
 
-def direct_answer(source: FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()) -> ToolResult | None:
+def direct_answer(
+    source: Sources | FlowSource, turn: ChatTurn, disabled: frozenset[str] = frozenset()
+) -> ToolResult | None:
     """Pattern-matched answer that skips the LLM, or None to let the model handle the question."""
     hit = _direct_answer_named(source, turn, disabled)
     return hit[1] if hit else None
 
 
-def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
+def _ignored_client_tool_names(client_tools: list[Any] | None, known: tuple[str, ...] = TOOL_NAMES) -> list[str]:
     """Open WebUI injects builtin tools (update_task, notes, calendar). Never forward them."""
     names: list[str] = []
     for tool in client_tools or []:
@@ -272,7 +254,7 @@ def _ignored_client_tool_names(client_tools: list[Any] | None) -> list[str]:
         if not isinstance(fn, dict):
             continue
         name = fn.get("name")
-        if isinstance(name, str) and name and name not in TOOL_NAMES:
+        if isinstance(name, str) and name and name not in known:
             names.append(name)
     return names
 
@@ -336,7 +318,7 @@ def _today_line() -> str:
 
 
 def _ensure_system(
-    messages: list[dict[str, Any]], *, source: FlowSource, no_think: bool = False
+    messages: list[dict[str, Any]], *, source: Sources | FlowSource, no_think: bool = False
 ) -> list[dict[str, Any]]:
     out = _ensure_system_prompt(messages, source=source)
     if no_think:
@@ -346,7 +328,8 @@ def _ensure_system(
     return out
 
 
-def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: FlowSource) -> list[dict[str, Any]]:
+def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: Sources | FlowSource) -> list[dict[str, Any]]:
+    source = as_sources(source).flow  # who is signed in comes from Flow's technicians
     prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
@@ -500,7 +483,7 @@ def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[st
 async def run_tool_loop(
     *,
     settings: Settings,
-    source: FlowSource,
+    sources: Sources | None = None,
     messages: list[dict[str, Any]],
     model: str | None,
     actor: str,
@@ -508,13 +491,18 @@ async def run_tool_loop(
     client_tools: list[Any] | None = None,
     extra_body: dict[str, Any] | None = None,
     knowledge: KnowledgeSource | None = None,
+    source: FlowSource | None = None,
 ) -> dict[str, Any]:
-    ignored = _ignored_client_tool_names(client_tools)
+    """`sources` is the enabled Sources bundle. `source` is the pre-A2 keyword for a bare Flow client."""
+    sources = as_sources(sources if sources is not None else source)
+    tools = openai_tools(sources)
+    relay_tools = {*sources.relay_tool_names(), SEARCH_KNOWLEDGE}
+    write_names = sources.write_tool_names()
+    ignored = _ignored_client_tool_names(client_tools, tuple(tool["function"]["name"] for tool in tools))
     if ignored:
         _log.info("ignoring client tools: %s", ",".join(ignored))
-    tools = openai_tools()
     turn = chat_turn_from_messages(messages)
-    hit = _direct_answer_named(source, turn, settings.disabled_router_set)
+    hit = _direct_answer_named(sources, turn, settings.disabled_router_set)
     if hit is not None:
         router_name, direct = hit
         payload = _assistant_payload(
@@ -527,7 +515,7 @@ async def run_tool_loop(
     nudged = False
     forced_tried = False
     fallbacks: list[str] = []  # plain lists, used if a summary never comes out of the model
-    chat = _ensure_system(_compact_history(list(messages)), source=source, no_think=settings.llm_no_think)
+    chat = _ensure_system(_compact_history(list(messages)), source=sources, no_think=settings.llm_no_think)
     prompt_tokens = 0
     relayed: list[str] = []
     digests: list[str] = []  # what summary-mode tools gave the model to write prose from
@@ -597,7 +585,7 @@ async def run_tool_loop(
                     if (blocked or skipped) and not digests:
                         # Twice without a tool. A pattern router is a better safety net than a refusal,
                         # even for routers the operator turned off.
-                        fallback = _direct_answer_named(source, turn)
+                        fallback = _direct_answer_named(sources, turn)
                         if fallback is not None:
                             name, direct = fallback
                             payload = _assistant_payload(
@@ -610,7 +598,7 @@ async def run_tool_loop(
                             # No router fits either: make the tool call with constrained JSON, which
                             # cannot come back as prose, and carry on as if the model had called it.
                             forced_tried = True
-                            forced = await _force_tool_call(client, resolved_model, chat, tools)
+                            forced = await _force_tool_call(client, resolved_model, chat, tools, write_names)
                             if forced is not None:
                                 message = forced
                                 tool_calls = forced["tool_calls"]
@@ -647,7 +635,7 @@ async def run_tool_loop(
                 name = str(fn.get("name") or "")
                 arguments = _parse_arguments(fn.get("arguments"))
                 result = run_tool(
-                    source=source,
+                    sources=sources,
                     name=name,
                     arguments=arguments,
                     actor=actor,
@@ -657,7 +645,7 @@ async def run_tool_loop(
                     knowledge=knowledge,
                 )
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
-                if result.reply and name in _RELAY_TOOLS:
+                if result.reply and name in relay_tools:
                     relayed.append(result.reply)
                 if not result.ok and result.error:
                     tool_errors.append(result.error)

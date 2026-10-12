@@ -8,12 +8,12 @@ from typing import Any
 
 from pydantic import BaseModel, model_validator
 
-from app.flow.source import FlowRequestError, FlowSource
+from app.sources.flow.handlers.common import _AUTOMATED_REQUESTOR_RE, _is_placeholder_category
+from app.sources.flow.handlers.people import _resolve_assignee
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.tools import TICKET_STATS
 from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.common import _AUTOMATED_REQUESTOR_RE, _is_placeholder_category
-from app.tools.flow.people import _resolve_assignee
 from app.tools.formatting import _format_minutes
-from app.tools.registry import TICKET_STATS
 from app.tools.turns import _period_from_turn
 
 

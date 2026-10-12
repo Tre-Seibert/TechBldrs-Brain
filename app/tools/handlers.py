@@ -1,4 +1,5 @@
-"""Old import path for the tools. The code lives in app.tools.{base,dispatch,knowledge,...} and app.tools.flow.
+"""Old import path for the tools. The code lives in app.tools.{base,dispatch,knowledge,...} and in
+app.sources.flow.handlers.
 
 Kept so `from app.tools.handlers import ...` in the app and the tests still works, including the
 private helpers the tests check directly.
@@ -6,25 +7,23 @@ private helpers the tests check directly.
 
 from __future__ import annotations
 
-from app.tools.base import ChatTurn, ToolResult
-from app.tools.dispatch import dispatch
-from app.tools.flow.clients import GetClientDetailArgs, ListMachinesArgs, get_client_detail, list_machines
-from app.tools.flow.common import format_ticket_list
-from app.tools.flow.contacts import (
+from app.sources.flow.handlers.clients import GetClientDetailArgs, ListMachinesArgs, get_client_detail, list_machines
+from app.sources.flow.handlers.common import format_ticket_list
+from app.sources.flow.handlers.contacts import (
     SearchContactArgs,
     SearchTechnicianArgs,
     answer_person_ticket_question,
     search_contact,
     search_technician,
 )
-from app.tools.flow.mail import (
+from app.sources.flow.handlers.mail import (
     GetMailDetailArgs,
     ListMailArgs,
     answer_person_mail_question,
     get_mail_detail,
     list_mail,
 )
-from app.tools.flow.merge import (
+from app.sources.flow.handlers.merge import (
     FindSimilarTicketsArgs,
     MergeTicketsArgs,
     answer_merge_suggestion,
@@ -32,10 +31,10 @@ from app.tools.flow.merge import (
     format_similar_list,
     merge_tickets,
 )
-from app.tools.flow.people import _resolve_assignee
-from app.tools.flow.stats import TicketStatsArgs, format_stats, ticket_stats
-from app.tools.flow.ticket_detail import GetTicketDetailArgs, _issue_query, get_ticket_detail
-from app.tools.flow.tickets import (
+from app.sources.flow.handlers.people import _resolve_assignee
+from app.sources.flow.handlers.stats import TicketStatsArgs, format_stats, ticket_stats
+from app.sources.flow.handlers.ticket_detail import GetTicketDetailArgs, _issue_query, get_ticket_detail
+from app.sources.flow.handlers.tickets import (
     INTERNAL_CLIENT_CODES,
     LatestTicketArgs,
     ListTicketsArgs,
@@ -48,12 +47,14 @@ from app.tools.flow.tickets import (
     latest_ticket,
     list_tickets,
 )
-from app.tools.flow.time_entries import (
+from app.sources.flow.handlers.time_entries import (
     ListTimeEntriesArgs,
     _latest_entry_count,
     answer_longest_time_worked,
     list_time_entries,
 )
+from app.tools.base import ChatTurn, ToolResult
+from app.tools.dispatch import dispatch
 from app.tools.formatting import _format_minutes
 from app.tools.knowledge import SearchKnowledgeArgs, search_knowledge
 from app.tools.turns import (

@@ -11,11 +11,12 @@ from pydantic import BaseModel
 from app import __version__
 from app.agent.loop import AgentError, _english_only, enforce_english_payload, run_tool_loop, stream_final_message
 from app.config import Settings, get_settings
-from app.flow.factory import build_flow_source
-from app.flow.source import FlowNotConfigured, FlowSource
 from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
 from app.knowledge.factory import build_knowledge_source
 from app.knowledge.source import KnowledgeSource
+from app.sources.base import Sources
+from app.sources.flow.protocol import FlowNotConfigured
+from app.sources.registry import build_sources
 from app.tools import openai_tools, run_tool
 from app.tools.handlers import (
     FindSimilarTicketsArgs,
@@ -44,8 +45,6 @@ from app.tools.registry import (
     SEARCH_CONTACT,
     SEARCH_KNOWLEDGE,
     SEARCH_TECHNICIAN,
-    TOOL_NAMES,
-    WRITE_TOOL_NAMES,
 )
 
 _log = logging.getLogger("tb_brain")
@@ -70,19 +69,16 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     _configure_logging(settings)
     app.state.settings = settings
-    try:
-        app.state.flow = build_flow_source(settings)
-    except FlowNotConfigured as exc:
-        _log.warning("flow source not ready: %s", exc)
-        app.state.flow = build_flow_source(Settings(flow_mode="stub"))
+    app.state.sources = _build_sources(settings)
     app.state.knowledge = build_knowledge_source(settings)
     _log.info(
-        "tb-brain %s FLOW_MODE=%s LLM_BASE_URL=%s knowledge=%s tools=%s",
+        "tb-brain %s FLOW_MODE=%s LLM_BASE_URL=%s knowledge=%s sources=%s tools=%s",
         __version__,
         settings.flow_mode_normalized,
         settings.llm_base_url,
         app.state.knowledge.source_name,
-        ",".join(TOOL_NAMES),
+        ",".join(app.state.sources.names),
+        ",".join(_tool_names(app.state.sources)),
     )
     yield
 
@@ -111,16 +107,24 @@ def _settings(request: Request) -> Settings:
     return settings
 
 
-def _source(request: Request) -> FlowSource:
-    source = getattr(request.app.state, "flow", None)
-    if source is None:
-        settings = _settings(request)
-        try:
-            source = build_flow_source(settings)
-        except FlowNotConfigured:
-            source = build_flow_source(Settings(flow_mode="stub"))
-        request.app.state.flow = source
-    return source
+def _build_sources(settings: Settings) -> Sources:
+    try:
+        return build_sources(settings)
+    except FlowNotConfigured as exc:
+        _log.warning("flow source not ready: %s", exc)
+        return build_sources(settings.model_copy(update={"flow_mode": "stub"}))
+
+
+def _sources(request: Request) -> Sources:
+    sources = getattr(request.app.state, "sources", None)
+    if sources is None:
+        sources = _build_sources(_settings(request))
+        request.app.state.sources = sources
+    return sources
+
+
+def _tool_names(sources: Sources) -> list[str]:
+    return [tool["function"]["name"] for tool in openai_tools(sources)]
 
 
 def _knowledge(request: Request) -> KnowledgeSource:
@@ -171,19 +175,20 @@ class ChatCompletionRequest(BaseModel):
 @app.get("/health")
 def health(request: Request) -> dict[str, Any]:
     settings = _settings(request)
-    source = _source(request)
+    sources = _sources(request)
     return {
         "ok": True,
         "version": __version__,
         "read_only": True,
         "flow_mode": settings.flow_mode_normalized,
-        "flow_source": getattr(source, "source_name", "unknown"),
+        "flow_source": getattr(sources.flow, "source_name", "unknown"),
+        "sources": {name: getattr(sources.client(name), "source_name", "unknown") for name in sources.names},
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
         "disabled_routers": sorted(settings.disabled_router_set),
         "knowledge_source": _knowledge(request).source_name,
-        "tools": list(TOOL_NAMES),
-        "write_tools": list(WRITE_TOOL_NAMES),
+        "tools": _tool_names(sources),
+        "write_tools": list(sources.write_tool_names()),
     }
 
 
@@ -222,7 +227,7 @@ async def chat_completions(
         try:
             payload = await run_tool_loop(
                 settings=settings,
-                source=_source(request),
+                sources=_sources(request),
                 messages=body.messages,
                 model=body.model,
                 actor=resolved.label,
@@ -240,8 +245,8 @@ async def chat_completions(
 
 
 @app.get("/tools", operation_id="list_tools")
-def list_tools() -> dict[str, Any]:
-    return {"ok": True, "read_only": True, "tools": openai_tools()}
+def list_tools(request: Request) -> dict[str, Any]:
+    return {"ok": True, "read_only": True, "tools": openai_tools(_sources(request))}
 
 
 def _run_tool_endpoint(
@@ -261,7 +266,7 @@ def _run_tool_endpoint(
     )
     with _actor_scope(resolved):
         result = run_tool(
-            source=_source(request),
+            sources=_sources(request),
             name=name,
             arguments=arguments,
             actor=resolved.label,

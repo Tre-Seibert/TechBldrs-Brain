@@ -8,22 +8,22 @@ from typing import Any
 
 from pydantic import BaseModel, model_validator
 
-from app.flow.schemas import TicketRecord, ticket_label
-from app.flow.source import FlowRequestError, FlowSource
-from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.common import (
+from app.sources.flow.handlers.common import (
     _AUTOMATED_REQUESTOR_RE,
     _STAGE_TAGS,
     _is_placeholder_category,
     _resolve_status,
     format_ticket_list,
 )
-from app.tools.flow.mail import answer_person_mail_question
-from app.tools.flow.payloads import _ticket_payload
-from app.tools.flow.people import _pick_contact, _resolve_assignee, _search_contacts_loose
-from app.tools.flow.stats import TicketStatsArgs, ticket_stats
+from app.sources.flow.handlers.mail import answer_person_mail_question
+from app.sources.flow.handlers.payloads import _ticket_payload
+from app.sources.flow.handlers.people import _pick_contact, _resolve_assignee, _search_contacts_loose
+from app.sources.flow.handlers.stats import TicketStatsArgs, ticket_stats
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.schemas import TicketRecord, ticket_label
+from app.sources.flow.tools import LATEST_TICKET, LIST_TICKETS
+from app.tools.base import ChatTurn, ToolResult, _refuse
 from app.tools.formatting import _activity_text, _format_hours
-from app.tools.registry import LATEST_TICKET, LIST_TICKETS
 from app.tools.turns import (
     _CLIENT_SCOPE_RE,
     _asked_latest_for_person,

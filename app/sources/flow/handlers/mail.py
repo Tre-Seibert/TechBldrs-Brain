@@ -6,13 +6,13 @@ import re
 
 from pydantic import BaseModel, model_validator
 
-from app.flow.schemas import MailRecord, TicketRecord, ticket_label
-from app.flow.source import FlowRequestError, FlowSource
+from app.sources.flow.handlers.payloads import _mail_detail_payload, _mail_payload, _ticket_payload
+from app.sources.flow.handlers.people import _requestor_matches, _requestor_queries
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.schemas import MailRecord, TicketRecord, ticket_label
+from app.sources.flow.tools import GET_MAIL_DETAIL, LIST_MAIL
 from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.payloads import _mail_detail_payload, _mail_payload, _ticket_payload
-from app.tools.flow.people import _requestor_matches, _requestor_queries
 from app.tools.formatting import _format_reached_at
-from app.tools.registry import GET_MAIL_DETAIL, LIST_MAIL
 from app.tools.turns import _period_from_turn, _person_from_reach_out
 
 

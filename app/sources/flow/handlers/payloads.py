@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.flow.schemas import (
+from app.sources.flow.schemas import (
     ClientDetail,
     ContactRecord,
     MachineRecord,

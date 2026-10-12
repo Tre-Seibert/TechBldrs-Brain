@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     flow_api_token: str = Field(default="")
     flow_database_url: str = Field(default="")
 
+    # Reserved for the next sources (app/sources/registry.py). off until Datto RMM / Microsoft 365 exist.
+    datto_mode: str = Field(default="off")
+    m365_mode: str = Field(default="off")
+
     # --- Knowledge (SOP/runbook search). Empty QDRANT_URL disables search_knowledge
     # gracefully -- see app/knowledge/source.py NullKnowledgeSource.
     qdrant_url: str = Field(default="")

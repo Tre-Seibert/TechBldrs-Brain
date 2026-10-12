@@ -8,21 +8,21 @@ from typing import Any
 
 from pydantic import BaseModel, model_validator
 
-from app.flow.schemas import TimeEntryRecord
-from app.flow.source import FlowRequestError, FlowSource
-from app.tools.base import ChatTurn, ToolResult, _refuse
-from app.tools.flow.common import (
+from app.sources.flow.handlers.common import (
     _SUBJECT_PREFIX_RE,
     _is_placeholder_category,
     _worked_minutes,
     format_ticket_list,
 )
-from app.tools.flow.payloads import _ticket_payload, _time_entry_payload
-from app.tools.flow.people import _resolve_assignee
-from app.tools.flow.stats import _UNREVIEWED_RE, TicketStatsArgs, ticket_stats
-from app.tools.flow.ticket_detail import _ticket_id_for
+from app.sources.flow.handlers.payloads import _ticket_payload, _time_entry_payload
+from app.sources.flow.handlers.people import _resolve_assignee
+from app.sources.flow.handlers.stats import _UNREVIEWED_RE, TicketStatsArgs, ticket_stats
+from app.sources.flow.handlers.ticket_detail import _ticket_id_for
+from app.sources.flow.protocol import FlowRequestError, FlowSource
+from app.sources.flow.schemas import TimeEntryRecord
+from app.sources.flow.tools import LIST_TICKETS, LIST_TIME_ENTRIES
+from app.tools.base import ChatTurn, ToolResult, _refuse
 from app.tools.formatting import _ago, _format_hours, _format_minutes, _stamp, _when
-from app.tools.registry import LIST_TICKETS, LIST_TIME_ENTRIES
 from app.tools.turns import _CLIENT_SCOPE_RE, _period_from_turn
 
 
