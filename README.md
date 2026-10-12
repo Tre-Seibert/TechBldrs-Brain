@@ -34,6 +34,8 @@ WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outboun
 ```text
 app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
 app/sources/         One folder per data source, enabled from env (registry.py); base.py has the shape
+app/sources/clients.py  Client resolver (not a model tool): code or name -> client code, M365 tenant id,
+                     IT Glue org, Datto site; source tools call it so the model never handles those ids
 app/sources/flow/    Flow (FLOW_MODE=stub|http): protocol, schemas, stub fixtures, HTTP client, tools,
                      handlers (search_contact, search_technician, list_tickets, latest_ticket,
                      find_similar_tickets, merge_tickets (gated write), list_mail, list_time_entries,

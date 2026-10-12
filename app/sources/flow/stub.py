@@ -20,6 +20,7 @@ from app.sources.flow.fixtures import (
 from app.sources.flow.protocol import FlowRequestError
 from app.sources.flow.schemas import (
     ClientDetail,
+    ClientListItem,
     ContactRecord,
     MachineRecord,
     MailDetail,
@@ -29,6 +30,7 @@ from app.sources.flow.schemas import (
     TicketDetail,
     TicketRecord,
     TimeEntryRecord,
+    itglue_org_id,
     ticket_label,
 )
 
@@ -511,6 +513,18 @@ class StubFlowSource:
             raise FlowRequestError(f"Flow 404: client {client_code!r} not found")
         extra = CLIENT_DETAIL_EXTRAS.get(client.client_code, {})
         return ClientDetail(**client.model_dump(), **extra)
+
+    def list_clients(self, *, status: str | None = "Client") -> list[ClientListItem]:
+        wanted = _norm(status)
+        return [
+            ClientListItem(
+                client_code=c.client_code,
+                name=c.name,
+                has_itglue=itglue_org_id(CLIENT_DETAIL_EXTRAS.get(c.client_code, {}).get("itglue_url")) is not None,
+            )
+            for c in sorted(CLIENTS, key=lambda c: c.client_code)
+            if not wanted or _norm(c.status) == wanted
+        ]
 
     def list_time_entries(
         self,

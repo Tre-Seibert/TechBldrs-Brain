@@ -10,6 +10,7 @@ Flow tables used here:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
@@ -33,6 +34,16 @@ def ticket_label(client_code: str, ticket_num: str) -> str:
     return f"{(client_code or '').upper()}-{ticket_num}"
 
 
+# Flow's own rule (app/services/itglue.py parse_org_id_from_url): the first all-digit path segment.
+_ITGLUE_ORG_RE = re.compile(r"/(\d+)(?:/|$)")
+
+
+def itglue_org_id(itglue_url: str | None) -> int | None:
+    """IT Glue organization id from a client's itglue_url, e.g. https://x.itglue.com/12345/... -> 12345."""
+    match = _ITGLUE_ORG_RE.search(itglue_url or "")
+    return int(match.group(1)) if match else None
+
+
 class ClientRecord(BaseModel):
     id: int
     client_code: str
@@ -40,6 +51,14 @@ class ClientRecord(BaseModel):
     full_company_name: str | None = None
     status: str | None = None
     m365_default_domain: str | None = None
+
+
+class ClientListItem(BaseModel):
+    """One row of Flow's client roster (GET /brain/clients): enough to match a name to a code."""
+
+    client_code: str
+    name: str | None = None
+    has_itglue: bool = False
 
 
 class ClientDetail(ClientRecord):

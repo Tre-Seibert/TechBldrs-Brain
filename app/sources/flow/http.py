@@ -5,6 +5,7 @@
   GET  /api/private/brain/tickets?client_code=&assignee_code=&q=&ticket_num=&contact_id=&status=&sort=&order=&limit=
   GET  /api/private/brain/tickets/similar?ticket_id=&client_code=&assignee_code=&status=&limit=
   GET  /api/private/brain/mail?client_code=&direction=&email=&contact_id=&limit=
+  GET  /api/private/brain/clients?status=   (roster: client_code, name, has_itglue; status= empty means all)
   POST /api/private/brain/tickets/merge   {target_ticket_id, source_ticket_ids, confirm: true}
 
 The model must never issue SQL. Reads are SELECT-equivalent via HTTP.
@@ -26,6 +27,7 @@ from app.identity import current_actor_email
 from app.sources.flow.protocol import FlowNotConfigured, FlowRequestError, FlowWriteRefused
 from app.sources.flow.schemas import (
     ClientDetail,
+    ClientListItem,
     ContactRecord,
     MachineRecord,
     MailDetail,
@@ -285,6 +287,11 @@ class HttpFlowSource:
         code = (client_code or "").strip().upper()
         data = self._get(f"/api/private/brain/clients/{code}", {})
         return ClientDetail.model_validate(data)
+
+    def list_clients(self, *, status: str | None = "Client") -> list[ClientListItem]:
+        # Flow reads a missing status as "Client" and an empty one as every status.
+        data = self._get("/api/private/brain/clients", {"status": status or ""})
+        return [ClientListItem.model_validate(row) for row in data or []]
 
     def list_time_entries(
         self,

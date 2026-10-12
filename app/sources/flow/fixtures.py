@@ -38,6 +38,31 @@ CLIENTS: list[ClientRecord] = [
         status="Active",
         m365_default_domain="acme.example",
     ),
+    # Clients the resolver tests lean on (app/sources/clients.py). No tickets, so nothing else sees them.
+    # WDLB shares WDON's first word, so "Western" is ambiguous while "Western Dental" is exact.
+    ClientRecord(
+        id=58,
+        client_code="WDLB",
+        name="Western Dental Lab",
+        full_company_name="Western Dental Laboratory LLC (lab fixture)",
+        status="Active",
+        m365_default_domain="wdlab.example",
+    ),
+    ClientRecord(
+        id=63,
+        client_code="NRTH",
+        name="Northwind Traders",
+        full_company_name="Northwind Traders Inc. (lab fixture)",
+        status="Active",
+        m365_default_domain="northwind.example",
+    ),
+    ClientRecord(
+        id=71,
+        client_code="BRCK",
+        name="Brickell Law Group",
+        full_company_name="Brickell Law Group, P.A. (lab fixture)",
+        status="Former",
+    ),
 ]
 
 CONTACTS: list[ContactRecord] = [
@@ -622,4 +647,11 @@ MAIL_DETAIL_EXTRAS: dict[int, dict] = {
 
 CLIENT_DETAIL_EXTRAS: dict[str, dict] = {
     "WDON": {"contract_minutes": 600, "balance": 120, "account": "Managed Services"},
+    # Tenant id and IT Glue org: WDLB has both, NRTH only a tenant, BRCK only IT Glue, WDON/ACME neither.
+    "WDLB": {
+        "m365_tenant_id": "0f5d7c1e-58b0-4b1a-9c11-3a7e5d2f0b58",
+        "itglue_url": "https://techbldrs.itglue.com/4815162",
+    },
+    "NRTH": {"m365_tenant_id": "6a2e9b40-71c3-4d8e-8f20-5b1c0d9e7a63"},
+    "BRCK": {"itglue_url": "https://techbldrs.itglue.com/2342/organizations/2342"},
 }

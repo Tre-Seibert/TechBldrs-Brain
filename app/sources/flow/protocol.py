@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from app.sources.flow.schemas import (
     ClientDetail,
+    ClientListItem,
     ContactRecord,
     MachineRecord,
     MailDetail,
@@ -101,6 +102,9 @@ class FlowSource(Protocol):
     def get_mail(self, *, mail_id: int) -> MailDetail: ...
 
     def get_client(self, *, client_code: str) -> ClientDetail: ...
+
+    # Flow's roster defaults to status=Client; status=None asks for every client whatever its status.
+    def list_clients(self, *, status: str | None = "Client") -> list[ClientListItem]: ...
 
     def list_time_entries(
         self,

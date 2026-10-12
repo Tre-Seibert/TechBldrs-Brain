@@ -10,6 +10,8 @@ app.tools imports this module, so an import here would loop.
 
 from __future__ import annotations
 
+import functools
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -17,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.config import Settings
     from app.knowledge.source import KnowledgeSource
+    from app.sources.clients import ClientResolver
     from app.tools.base import ChatTurn, ToolResult
 
 # A mode that turns an optional source off (DATTO_MODE=off). Required sources (Flow) cannot be off.
@@ -49,6 +52,9 @@ class SourceSpec:
     errors: tuple[type[Exception], ...] = ()
     prompt_section: str = ""
     required: bool = False
+    # (field, hook) pairs this source fills in for the client resolver, e.g. ("datto_site_uid", hook) where
+    # hook(client, client_code, name) returns the source's id for that client or None. See app/sources/clients.py.
+    client_id_hooks: tuple[tuple[str, Callable[..., str | None]], ...] = ()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -66,6 +72,8 @@ class Sources:
                 if name in self._by_tool:
                     raise ValueError(f"tool {name!r} is offered by both {self._by_tool[name][0].name} and {spec.name}")
                 self._by_tool[name] = (spec, client)
+        self._clients: ClientResolver | None = None
+        self._clients_lock = threading.Lock()
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -81,6 +89,20 @@ class Sources:
         if client is None:
             raise LookupError("Flow is not enabled")
         return client
+
+    @property
+    def clients(self) -> ClientResolver:
+        """The client resolver source tools share: Flow plus each enabled source's id hooks, built once."""
+        with self._clients_lock:
+            if self._clients is None:
+                from app.sources.clients import ClientResolver
+
+                resolver = ClientResolver(self.flow)
+                for spec, client in self._enabled:
+                    for field, hook in spec.client_id_hooks:
+                        resolver.register_id_hook(field, functools.partial(hook, client), source=spec.name)
+                self._clients = resolver
+            return self._clients
 
     def openai_tools(self) -> list[dict[str, Any]]:
         return [tool for spec, _ in self._enabled for tool in spec.tools]
