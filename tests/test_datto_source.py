@@ -179,6 +179,28 @@ class RoutingTests(unittest.TestCase):
         self.assertIn(DATTO_SECTION, bodies[2]["messages"][0]["content"])
         self.assertIn("Status: OFFLINE", payload["choices"][0]["message"]["content"])
 
+    def test_datto_is_offered_after_use_source_even_in_the_digest_reply(self) -> None:
+        # Eval G2 stopped after get_ticket_detail and use_source(datto) without a Datto call. The next call does
+        # offer Datto's tools (Flow's stay withdrawn after the digest), whether use_source came in its own reply or
+        # in the same one as get_ticket_detail: the model chose to stop.
+        import asyncio
+
+        both = {"role": "assistant", "content": None, "tool_calls": [
+            *_call("get_ticket_detail", ticket_label="WDON-1842")["tool_calls"], *_call("use_source", name="datto")["tool_calls"],
+        ]}
+        for style in ("legacy", "lean"):
+            for script in (
+                [_call("get_ticket_detail", ticket_label="WDON-1842"), _call("use_source", name="datto")],
+                [both],
+            ):
+                with self.subTest(style=style, replies=len(script)):
+                    _, bodies = asyncio.run(_run(
+                        "Show me WDON-1842 and the state of the machine on it",
+                        [*script, {"role": "assistant", "content": "WDON-1842 is about the imaging workstation."}],
+                        settings=_settings(prompt_style=style),
+                    ))
+                    self.assertEqual(_names(bodies[-1]["tools"]), list(DATTO.tool_names))
+
     def test_sticky_follow_up_keeps_datto(self) -> None:
         import asyncio
 
