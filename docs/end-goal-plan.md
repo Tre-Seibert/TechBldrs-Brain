@@ -34,34 +34,55 @@ Strong:
   from the partner contracts list) and `itglue_url` (holds the IT Glue org id). Datto site names start
   with the client code.
 
-Gaps:
+Gaps (status after Phase A, 2026-10-13, in the last column):
 
-| # | Gap | Evidence |
-|---|---|---|
-| 1 | Single-source architecture | `FlowSource` is threaded through `dispatch()`, `run_tool()`, `run_tool_loop()`. No connector concept. |
-| 2 | Prompt already ~8K tokens | System prompt ~3.3K tokens + 14 tool schemas ~4.7K (chars/4 estimate) against an 8K context on the runtime box. |
-| 3 | Prompt is Flow-only and written for 14B | ~40 "question → tool call" recipes; refuses anything "not about Flow data". |
-| 4 | 14B workarounds in code | 72 places in `handlers.py` re-read the user's sentence with regexes; 5 routers; Flow-only word lists in `loop.py` (`_DATA_WORD_RE`, nudges, fallbacks). |
-| 5 | `handlers.py` is 3,578 lines | Every Flow tool, formatter and heuristic in one file. |
-| 6 | Streaming isn't real | `stream_final_message` runs the whole loop, then sends the text. No progress lines. |
-| 7 | Prompt layout defeats caching | Signed-in user and date sit inside the system message, before the tool list in Qwen's template, so each user/day probably re-reads the tool tokens. |
-| 8 | Eval can't measure the Mac decision | Flow-only, stub-only, no per-step timing, no concurrency test. |
-| 9 | Knowledge sync is manual | `scripts/sync_knowledge.py` run by hand. |
+| # | Gap | Evidence | Status |
+|---|---|---|---|
+| 1 | Single-source architecture | `FlowSource` is threaded through `dispatch()`, `run_tool()`, `run_tool_loop()`. No connector concept. | Closed: A2 sources layout, A5 routing. |
+| 2 | Prompt already ~8K tokens | System prompt ~3.3K tokens + 14 tool schemas ~4.7K (chars/4 estimate) against an 8K context on the runtime box. | Lean is 4.3K (A4); legacy, still the default, is 8.1K. Runtime box moved to 16K context. |
+| 3 | Prompt is Flow-only and written for 14B | ~40 "question → tool call" recipes; refuses anything "not about Flow data". | Closed for lean (A4). Legacy keeps them until the Mac eval. |
+| 4 | 14B workarounds in code | 72 places in `handlers.py` re-read the user's sentence with regexes; 5 routers; Flow-only word lists in `loop.py` (`_DATA_WORD_RE`, nudges, fallbacks). | Loop wording is source-aware (A7). Handler regexes and routers stay until the Mac eval. |
+| 5 | `handlers.py` is 3,578 lines | Every Flow tool, formatter and heuristic in one file. | Closed (A1). |
+| 6 | Streaming isn't real | `stream_final_message` runs the whole loop, then sends the text. No progress lines. | Open (D1). |
+| 7 | Prompt layout defeats caching | Signed-in user and date sit inside the system message, before the tool list in Qwen's template, so each user/day probably re-reads the tool tokens. | Closed for lean (A6), measured below. Legacy unchanged. |
+| 8 | Eval can't measure the Mac decision | Flow-only, stub-only, no per-step timing, no concurrency test. | Open (Phase E). Eval now records prompt style and routing. |
+| 9 | Knowledge sync is manual | `scripts/sync_knowledge.py` run by hand. | Open. |
 
 ## Phase A: Foundations
 
-Do these before adding any source.
+Do these before adding any source. **Done 2026-10-13.**
 
-| Step | Work | Size |
+| Step | Work | Size | Done |
+|---|---|---|---|
+| A1 | Split `app/tools/handlers.py` by domain (tickets, time, mail, contacts, clients, knowledge). No behavior change; all tests green. | M | `56da25a` |
+| A2 | Connector layout: `app/sources/<name>/` per source with its read-only protocol, stub fixtures, HTTP adapter, tools, a short prompt section and eval cases. Each enabled by env (`DATTO_MODE=stub|http`, `M365_MODE=stub|http`) like `FLOW_MODE`. Flow moves into the same layout. | L | `ced854f` |
+| A3 | Client resolver: client code or name → `{client_code, name, m365_tenant_id, itglue_org_id, datto_site_uid}`. Tenant and IT Glue ids come from Flow's client detail; the Datto site comes from matching Datto site names to the code. Cached. Source tools call it; the model never handles tenant ids. Clear message when a client has no tenant id or no Datto site. | M | `35f8dbb` |
+| A4 | Slim the system prompt to general rules (safety, read-only, English, answer from tools only) plus a short section per enabled source. Tool-specific guidance moves into tool descriptions. Remove the "Flow only" refusal. Target ≤ 1.5K tokens base. | M | `5d391dd` (`PROMPT_STYLE=lean`; base 669 tokens) |
+| A5 | Source routing: pick which sources' tools to offer per call. Keywords first, the model choosing a source as fallback, Flow core always on. Target ≤ ~25 tools or ~8K tokens of tool schemas per call (was ≤ ~15 tools; Flow alone is 14). Whether to offer only part of Flow's tools gets decided on the Mac. Tool names carry the source prefix (`datto_`, `m365_`). | M | `e7eef01` |
+| A6 | Cache-friendly prompt order: static rules and tools first; signed-in user and date in a later message. Check cache hits with `prompt_tokens`. | S | `5d391dd` (lean only) |
+| A7 | Make the loop's Flow-only workarounds source-aware (`_DATA_WORD_RE`, the must-use-a-tool nudge, fallback messages). Leave routers alone until the Mac eval. Also: look up the signed-in technician once, not on every call. | S | `2831b89` |
+| A8 | Update README: goal, sources, hard rules for new sources, settings, run/test/eval, runtime box notes. | S | the commit after `2831b89` |
+
+Also in Phase A: `scripts/hw_eval.ps1` for the validation runs (`274d709`, `b87e13c`) and hermetic tests
+(`b409a34`).
+
+### Phase A results (5060 Ti box, qwen2.5:14b-instruct, 2026-10-13)
+
+`scripts/hw_eval.ps1`, 60 Flow eval cases on stub Flow, routers off:
+
+| Prompt style | 8K context | 16K context |
 |---|---|---|
-| A1 | Split `app/tools/handlers.py` by domain (tickets, time, mail, contacts, clients, knowledge). No behavior change; all tests green. | M |
-| A2 | Connector layout: `app/sources/<name>/` per source with its read-only protocol, stub fixtures, HTTP adapter, tools, a short prompt section and eval cases. Each enabled by env (`DATTO_MODE=stub|http`, `M365_MODE=stub|http`) like `FLOW_MODE`. Flow moves into the same layout. | L |
-| A3 | Client resolver: client code or name → `{client_code, name, m365_tenant_id, itglue_org_id, datto_site_uid}`. Tenant and IT Glue ids come from Flow's client detail; the Datto site comes from matching Datto site names to the code. Cached. Source tools call it; the model never handles tenant ids. Clear message when a client has no tenant id or no Datto site. | M |
-| A4 | Slim the system prompt to general rules (safety, read-only, English, answer from tools only) plus a short section per enabled source. Tool-specific guidance moves into tool descriptions. Remove the "Flow only" refusal. Target ≤ 1.5K tokens base. | M |
-| A5 | Source routing: pick which sources' tools to offer per call. Keywords first, the model choosing a source as fallback, Flow core always on. Target ≤ ~15 tools per call. Tool names carry the source prefix (`datto_`, `m365_`). | M |
-| A6 | Cache-friendly prompt order: static rules and tools first; signed-in user and date in a later message. Check cache hits with `prompt_tokens`. | S |
-| A7 | Make the loop's Flow-only workarounds source-aware (`_DATA_WORD_RE`, the must-use-a-tool nudge, fallback messages). Leave routers alone until the Mac eval. | S |
-| A8 | Update README: goal, sources, hard rules for new sources, out-of-scope list. | S |
+| legacy | 53/60 | 54/60 |
+| lean | 50/60 | 52/60 |
+
+- **Decision:** `PROMPT_STYLE=legacy` stays the default on the 14B. Lean scored 2–3 cases lower, close to
+  run-to-run noise (±1–2 cases), so it is not better on this model. Retest lean on the Mac with the larger
+  models, where its smaller prompt and cache reuse matter most.
+- **Cache (A6):** a second signed-in user's prompt took 75.7 s to read in legacy (the whole ~7.5K-token prompt
+  again) vs 1.1 s in lean (only the session context and question).
+- Average time per question in that run is not comparable: the model was 76–91% on CPU in three of the four
+  runs, most likely Ollama runners left over from earlier restarts holding VRAM (`b87e13c` stops them).
+- Run the runtime box at `OLLAMA_CONTEXT_LENGTH=16384`. A real call reached 14,246 tokens.
 
 ## Phase B: Datto RMM
 
@@ -142,6 +163,7 @@ Notes to verify before consenting:
 | D3 | Concurrency: N requests at once without blocking (async throughout, shared HTTP clients, per-source rate limits). | S |
 | D4 | Tool result caps: every tool limits and summarizes output. Protects the Mac's slow prompt reading. | S |
 | D5 | Audit rows for Datto and Microsoft 365 calls carry client code and tenant id. | S |
+| D6 | Remember routed sources per conversation, keyed by Open WebUI's chat id header (`X-OpenWebUI-Chat-Id`, sent with the forwarded user headers), so a source added with `use_source` stays offered on the next turn. Sticky routing today only sees the history the client sends back: earlier user messages and tool calls. tb-brain runs tools itself, so Open WebUI's history never has the `use_source` call, and a source the model asked for (no keyword in the question) drops off next turn. Check the header name on the deployed Open WebUI version. | S |
 
 ## Phase E: Benchmark kit for the 14 days
 
@@ -162,7 +184,7 @@ Notes to verify before consenting:
 
 ## Ready to buy when
 
-- [ ] Phase A done, tests green
+- [x] Phase A done, tests green (2026-10-13)
 - [ ] Datto working against the live API, read-only
 - [ ] Microsoft 365 working on 2–3 real tenants (or stubs if consent is still pending)
 - [ ] 40+ multi-source eval cases with a 5060 Ti baseline run

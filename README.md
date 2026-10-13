@@ -1,204 +1,251 @@
 # tb-brain
 
-TechBldrs’ local MSP **superbrain**: a **tool-calling agent over MSP systems**, not a vector dump of Flow.
+TechBldrs' local MSP assistant. A tech asks any question about a client we manage; tb-brain works out which
+system holds the answer, calls read-only tools on that system, and answers only from what came back. A local
+model does all of it, because client data includes PHI.
 
-Flow (`flow.techbldrs.com`, Flask/MariaDB) stays the system of record. Tickets, contacts, and mail are queried through **named tools**. RAG/Qdrant is for SOPs/runbooks/notes only — **phase 3, not now**.
+Today that system is **Flow** (tickets, time, ticket-attached mail, contacts, technicians, clients) plus a
+knowledge search over IT Glue SOPs and past fix notes. Next come **Datto RMM** (Phase B) and each client's
+**Microsoft 365 tenant via GDAP** (Phase C), then more sources. The plan, the decisions behind it and the
+"ready to buy the Mac Studio" checklist are in [docs/end-goal-plan.md](docs/end-goal-plan.md).
 
-This repo is a lab on a daily-driver Windows box. Architecture must survive a GPU/hostname swap: **stable tool names** + **`LLM_BASE_URL` from env**. Do not hardcode this PC or a model size.
-
-## What works in phase 0
-
-Example questions answered via tools (stub Flow data until a read-only API/DB user is wired):
-
-| Question | Tools |
-|---|---|
-| When did Debe last reach out? | `search_contact` → `list_mail` (inbound, that contact) |
-| What was the last WDON ticket? | `latest_ticket(client_code=WDON)` |
-| Show all emails from WDON to our tenant | `list_mail(WDON, inbound)` |
-| Give me all tickets assigned to Tre | `search_technician(Tre)` → `list_tickets(assignee_code=ts, limit=100)` |
-| What tickets need merged for ZINT? | `find_similar_tickets(client_code=ZINT)` (suggests only) |
-| Merge ZTB-1691 into ZTB-1680 | `merge_tickets(confirm=true, labels…)`, only after the plan was shown and the user restated both labels |
-
-WDON = Western Dental. Mail in Flow is **ticket-attached** (`inbound` / `outbound` / `imported`). Microsoft Graph is only for mail that was **never filed on a ticket** — not this phase.
+It is not a vector dump of Flow. Structured data is reached through named tools, and counts, hours and dates
+are worked out in code, not by the model.
 
 ## Hard rules
 
-- **Local only.** No cloud LLM for client data (dental/PHI).
-- **Read-only by default.** No send-mail, no close-ticket. The one write is `merge_tickets`: chat-only (no `/tools` route), needs `confirm=true`, the plan shown first, the user's latest message restating both labels, and a verified Open WebUI identity forwarded to Flow as `X-Brain-Actor-Email`. Otherwise it fails closed.
-- **Do not auto-inject IT Glue passwords** into prompts.
-- **Log every tool call** (actor, client, tool, row ids) off OneDrive.
-- **No OneDrive for runtime data.** This folder syncs; venv/models/Qdrant/Docker volumes must not live here.
+- **Local LLM only.** No cloud model ever sees client data. `LLM_BASE_URL` points at a local
+  OpenAI-compatible server (Ollama today).
+- **Read-only by default.** The one write is `merge_tickets`. It is chat-only (no `/tools` route), needs
+  `confirm=true`, needs the plan shown first and the user's latest message restating both labels, and needs a
+  verified Open WebUI identity, which goes to Flow as `X-Brain-Actor-Email`. If any of that is missing, it refuses.
+- **Every tool call is audited:** actor, source, tool, client and row ids, in `tool_calls.jsonl` under
+  `BRAIN_DATA_DIR`.
+- **No passwords or secrets**: never fetched, never put in a prompt, never shown.
+- **No runtime data or secrets on OneDrive or in git.** No venv, models, Qdrant data, Docker bind mounts,
+  logs or `.env` in this repo.
 
-## Layout
+### Rules for every new source
 
-```text
-app/                 FastAPI: health, OpenAI-compat /v1, OpenAPI tools
-app/sources/         One folder per data source, enabled from env (registry.py); base.py has the shape
-app/sources/clients.py  Client resolver (not a model tool): code or name -> client code, M365 tenant id,
-                     IT Glue org, Datto site; source tools call it so the model never handles those ids
-app/sources/flow/    Flow (FLOW_MODE=stub|http): protocol, schemas, stub fixtures, HTTP client, tools,
-                     handlers (search_contact, search_technician, list_tickets, latest_ticket,
-                     find_similar_tickets, merge_tickets (gated write), list_mail, list_time_entries,
-                     ticket_stats (counts/hours grouped by Flow, never summed by the model),
-                     list_machines, get_ticket_detail, get_mail_detail, get_client_detail)
-app/tools/           Shared tool plumbing: run_tool (audit), dispatch, search_knowledge, turn parsing
-app/flow/            Old import path; aliases for app/sources/flow/
-app/knowledge/       Qdrant + local-embedding client for search_knowledge (QDRANT_URL)
-app/agent/           OpenAI-compatible tool loop (LLM_BASE_URL)
-scripts/sync_knowledge.py   Embeds IT Glue docs + time-entry notes into Qdrant
-docs/open-webui.md   Lab UI notes
-docs/openclaw.md     Later gateway lock-down; do not install by default
-docker-compose.yml   Open WebUI + Qdrant → host Ollama
-```
+A new source (Datto RMM, Microsoft 365, ...) follows all of the above, plus:
 
-## Paths (this machine is on OneDrive)
+- **Read-only.** Its protocol has no write methods, and it uses read-only API scopes and roles.
+- **Its own credentials.** tb-brain has its own read-only key or app registration. It never borrows Flow's.
+  Secrets go only in the runtime box's `.env`.
+- **Summaries, not raw data.** Each tool returns a short, capped summary, never a raw API response.
+- **Audited.** Its tools go through `run_tool` like Flow's. The source name goes into every audit row
+  (`source_name`, e.g. `datto-http`).
+- **No secrets in or out.** It never reads passwords, keys, mail bodies, files or chats, and redacts anything
+  that looks like a secret.
+- **Clients by code or name only.** The model names a client; the tool resolves tenant, site and org ids with
+  the client resolver (`app/sources/clients.py`). The model never handles those ids.
+- **Off unless enabled** with its `<NAME>_MODE` setting. It has stub fixtures for tests and eval, and its tool
+  names carry its prefix (`datto_`, `m365_`).
 
-| What | Where |
-|---|---|
-| This repo | `C:\Users\Tre\OneDrive - TB\Documents - DEV\tb-brain` |
-| Flow (system of record) | `C:\Users\Tre\OneDrive - TB\Documents - DEV\Flow` |
-| Python venv | `%LOCALAPPDATA%\venvs\tb-brain` (not `.venv` in the repo) |
-| tb-brain logs / audit | `%LOCALAPPDATA%\tb-brain\logs` |
-| Ollama models | **G:** (or any non-OneDrive disk). C: only has ~52 GB free. Set `OLLAMA_MODELS`. |
-| Open WebUI data | Docker named volume `tb-brain-open-webui` (not bind-mounted into this repo) |
-
-Same rule as Flow: never create `.venv`, Ollama models, Qdrant data, or Docker bind mounts inside the repo.
-
-## Hardware (lab, 2026-09-21)
-
-TB-BRAIN1: Lenovo, i7-10750H, RTX 2070 Super Max-Q (8 GB), 32 GB RAM. Fine for a lab; **not production**.
-
-Model that fits: `qwen2.5:14b-instruct-q3_K_M` (Q4 14B OOMs this card). 7B is the fallback. 24B+ needs a GPU upgrade. Set `LLM_MODEL` in `.env`.
-
-## Architecture
+## How it works
 
 ```mermaid
 flowchart LR
   tech[Tech] --> webui[Open WebUI]
-  webui -->|"lab default"| ollama[Ollama on host]
-  webui -->|"tool loop optional"| brain[tb-brain FastAPI]
-  brain --> ollama
-  brain --> tools["Flow tools: search / list / similar / gated merge"]
-  tools -->|"FLOW_MODE=stub"| fixtures[In-process fixtures]
-  tools -->|"FLOW_MODE=http"| flowAPI["Flow read-only brain API"]
-  flowAPI --> flowDB[(Flow MariaDB)]
-  brain --> knowledge["search_knowledge"]
+  webui -->|"/v1/chat/completions, signed user JWT"| brain[tb-brain]
+  brain --> routers["Routers: fixed question shapes, no LLM"]
+  brain --> loop["Tool loop"]
+  loop <--> llm["Local LLM (Ollama)"]
+  loop --> routing["Source routing"]
+  routing --> flow["Flow tools"]
+  routing -.->|"Phase B"| datto["Datto RMM tools"]
+  routing -.->|"Phase C"| m365["Microsoft 365 tools (GDAP)"]
+  loop --> knowledge["search_knowledge"]
+  flow -->|"FLOW_MODE=http"| flowapi["Flow /api/private/brain/*"]
+  flow -->|"FLOW_MODE=stub"| fixtures["In-process fixtures"]
   knowledge --> qdrant[(Qdrant)]
-  knowledge --> ollama
-  sync["scripts/sync_knowledge.py"] --> flowAPI
-  sync --> itglue[IT Glue API]
-  sync --> qdrant
+  loop --> audit[("tool_calls.jsonl")]
 ```
 
-- **Lab UI:** Open WebUI. See [docs/open-webui.md](docs/open-webui.md).
-- **Production UI later:** inside Flow (Entra, tickets, techs).
-- **OpenClaw:** later locked-down agent/gateway only. Not installed here. See [docs/openclaw.md](docs/openclaw.md).
+1. Open WebUI sends the chat to tb-brain's OpenAI-compatible endpoint with a signed JWT naming the signed-in
+   tech. tb-brain advertises one model, `tb-brain`.
+2. A few fixed question shapes are answered by routers without the LLM (`DISABLED_ROUTERS` turns them off).
+3. Otherwise the tool loop asks the local model, offering only the tools of the sources the question needs
+   (source routing, below). The model calls tools; tb-brain runs and audits each call. Tool results that are
+   already formatted lists are shown as they are. Summaries are written by the model, but only from the tool's
+   digest, and figures the digest didn't have are removed.
+4. Guards: a data question answered with no tool call gets one nudge, then a router, then a forced tool call,
+   then a safe "I didn't run a search" message. Ticket labels no tool returned are blocked. Only English
+   replies are allowed.
 
-LLM traffic is OpenAI-compatible (`LLM_BASE_URL`, default `http://127.0.0.1:11434/v1`). Ollama today; any local OpenAI-compat endpoint after a hardware upgrade.
+**Source routing** (`SOURCE_ROUTING=on`): Flow and `search_knowledge` are offered on every call. Any other
+source is offered when its keywords or patterns match the question, when the conversation already used it, or
+when the model asks for it with `use_source`. While only Flow is enabled, routing changes nothing.
 
-Flow reuse: `PRIVATE_API_TOKEN` (`/api/private/brain/*`, `api_key_required`) is how tb-brain reaches Flow at all — no direct DB access, the model never sees SQL. IT Glue (`app/services/itglue.py`) is now reused read-only for SOP documents (`/brain/itglue/documents`), never passwords. Still later, when asked: Microsoft Graph, Datto RMM (`app/services/datto_rmm.py`).
+**Prompt styles** (`PROMPT_STYLE`): `legacy` sends the full Flow system prompt (the default; it scores best on
+the 14B). `lean` sends short general rules plus a section per offered source, with per-tool guidance in the
+tool descriptions. It also puts the signed-in tech and the date after the static prefix, so the model server's
+prompt cache can reuse that prefix across users.
 
-Flow routes (1.3.14+, see `app/routes/private_api.py` for the full current list):
+## Layout
 
 ```text
-GET /api/private/brain/contacts?q=&client_code=&limit=
-GET /api/private/brain/tickets?client_code=&sort=last_activity_at&order=desc&limit=1
-GET /api/private/brain/mail?client_code=&direction=inbound
+app/main.py            FastAPI: /health, /v1/models, /v1/chat/completions, /tools (+ one route per read tool)
+app/agent/loop.py      The tool loop, nudges and fallbacks, English-only gate
+app/agent/routing.py   Source routing and the use_source tool
+app/agent/system.py    System prompts (legacy, lean base) and the signed-in / date lines
+app/agent/wording.py   Loop messages and the must-use-a-tool test, worded from the enabled sources
+app/sources/base.py    SourceSpec (what a source is) and Sources (the enabled bundle)
+app/sources/registry.py  Which sources are enabled, from <NAME>_MODE settings
+app/sources/clients.py   Client resolver: code or name -> client code, M365 tenant id, IT Glue org, Datto site
+app/sources/cache.py   Short in-memory TTL cache (client resolver, signed-in technician)
+app/sources/<name>/    One folder per source, e.g. app/sources/flow/:
+    protocol.py          read-only client interface (no write methods except Flow's gated merge)
+    schemas.py           records the tools work with
+    stub.py, fixtures.py stub client and fake data for tests and eval (<NAME>_MODE=stub)
+    http.py              the real API client (<NAME>_MODE=http)
+    factory.py           builds the client for the configured mode
+    tools.py             OpenAI tool schemas (lean_tools.py: shorter descriptions for PROMPT_STYLE=lean)
+    handlers/            one module per area; dispatch.py maps a tool name to its handler
+    prompt.py            the source's section of the lean system prompt
+    wording.py           how loop messages name the source, and its data words
+    spec.py              the SourceSpec tying the above together, plus routing keywords
+app/tools/             Shared tool plumbing: run_tool (validation + audit), ToolResult, formatting, turn
+                       parsing, search_knowledge. handlers.py and registry.py re-export for old imports.
+app/flow/              Old import path; aliases for app/sources/flow/
+app/knowledge/         Qdrant + local embeddings for search_knowledge
+app/identity.py        Open WebUI's signed user JWT -> who is asking
+app/audit.py           Audit rows
+eval/                  Eval cases and question drafts (results/ is gitignored)
+scripts/               Run, eval and probe scripts (below)
+docs/                  End-goal plan, Open WebUI setup, OpenClaw notes
+docker-compose.yml     Open WebUI and Qdrant (named volumes, not bind mounts)
 ```
 
-## Run (lab)
+Adding a source: create `app/sources/<name>/` with the parts above. Add its `SourceSpec` to `KNOWN_SOURCES`
+in `app/sources/registry.py` and a `<NAME>_MODE` setting (default `off`) in `app/config.py`. Give the spec a
+`description` and `keywords` / `patterns` so routing can offer it, and a `wording` so loop messages name it.
+Add eval cases with `"sources"` expectations.
 
-### 1) Venv (off OneDrive)
+## Settings
+
+All settings come from env or `.env` (see [.env.example](.env.example)). The ones that shape behavior:
+
+| Setting | Values | What it does |
+|---|---|---|
+| `FLOW_MODE` | `stub` (default), `http` | Flow is always on. `stub` uses in-process fixtures; `http` calls Flow's read-only brain API with `FLOW_BASE_URL` and `FLOW_API_TOKEN`. |
+| `DATTO_MODE` | `off` (default); `stub`, `http` from Phase B | Datto RMM. Reserved: until the source exists, any other value logs a warning and stays off. |
+| `M365_MODE` | `off` (default); `stub`, `http` from Phase C | Microsoft 365 via GDAP. Reserved, same as above. |
+| `PROMPT_STYLE` | `legacy` (default), `lean` | Full Flow prompt, or short rules plus per-source sections with a cache-friendly order. |
+| `SOURCE_ROUTING` | `on` (default), `off` | `on` offers each call only the sources it needs; `off` offers every enabled source every time. |
+| `DISABLED_ROUTERS` | comma list | Turns routers off so those questions go to the model: `merge_suggestion`, `person_mail`, `person_ticket`, `tickets_about`, `longest_time`. |
+
+Also: `LLM_BASE_URL`, `LLM_MODEL`, `LLM_NO_THINK`, `LLM_EXTRA_BODY` (model and endpoint),
+`AGENT_MAX_TOOL_ITERS`, `BRAIN_HOST` / `BRAIN_PORT`, `BRAIN_DATA_DIR` (logs and audit, default
+`%LOCALAPPDATA%\tb-brain`), `BRAIN_USER_JWT_SECRET` (verifies Open WebUI's signed user), `QDRANT_URL`
+(empty turns `search_knowledge` off). `/health` reports the active mode, model, prompt style, routing and routers.
+
+## Run
+
+On Windows, from the repo root. The venv lives at `%LOCALAPPDATA%\venvs\tb-brain`, never in the repo.
 
 ```powershell
-cd "C:\Users\Tre\OneDrive - TB\Documents - DEV\tb-brain"
-. .\scripts\dev_venv.ps1 -Install
-copy .env.example .env
+. .\scripts\dev_venv.ps1 -Install   # create/activate the venv and install requirements
+copy .env.example .env              # then edit; never commit .env
+.\scripts\run.ps1                   # tb-brain on http://127.0.0.1:8765
 ```
 
-### 2) Agent + stub tools
+- `GET /health`: modes, model, prompt style, routing.
+- `GET /tools`: the tool schemas for the configured style.
+- `POST /tools/<name>`: run one read tool directly, no LLM, e.g.
+  `curl http://127.0.0.1:8765/tools/latest_ticket -Method POST -ContentType "application/json" -Body '{"client_code":"WDON"}'`
+- `python scripts/ask.py "What are my open tickets?"`: ask from the terminal without Open WebUI.
+
+Open WebUI: start Ollama and tb-brain, then `docker compose up -d` and open **http://localhost:3000**. Setup,
+Entra sign-in and the signed identity hop are in [docs/open-webui.md](docs/open-webui.md).
+
+Knowledge search (optional): `ollama pull nomic-embed-text`, set `QDRANT_URL=http://127.0.0.1:6333`, restart
+tb-brain, then run `python scripts\sync_knowledge.py` with `FLOW_MODE=http` to index IT Glue SOP documents and
+time-entry fix notes. The sync isn't automatic yet; rerun it after changes. Passwords are never fetched, and
+lines that look like a password are redacted.
+
+## Test
 
 ```powershell
-.\scripts\run.ps1
+python -m unittest discover -s tests
 ```
 
-- Health: `http://127.0.0.1:8765/health`
-- OpenAPI (Open WebUI tool server): `http://127.0.0.1:8765/openapi.json`
-- OpenAI-compat chat (tool loop): `POST http://127.0.0.1:8765/v1/chat/completions`
+Tests are hermetic: `tests/_isolation.py` ignores `.env` and the environment, pins stub Flow, and refuses any
+network connection, so they never reach Flow, Ollama or Qdrant and write nothing outside a temp dir.
 
-Direct tool checks (no LLM required):
+## Eval
 
-```powershell
-curl http://127.0.0.1:8765/tools/search_contact -Method POST -ContentType "application/json" -Body '{"query":"Debe"}'
-curl http://127.0.0.1:8765/tools/latest_ticket -Method POST -ContentType "application/json" -Body '{"client_code":"WDON"}'
-curl http://127.0.0.1:8765/tools/list_mail -Method POST -ContentType "application/json" -Body '{"client_code":"WDON","direction":"inbound"}'
-```
-
-Audit lines: `%LOCALAPPDATA%\tb-brain\logs\tool_calls.jsonl`
-
-### 3) Open WebUI
-
-Ollama must already be listening on the host. Then:
+Run these against a running tb-brain with **`FLOW_MODE=stub`**. The cases include write requests, so never
+point them at real Flow.
 
 ```powershell
-docker compose up -d
-```
-
-Open `http://127.0.0.1:3000`. Details in [docs/open-webui.md](docs/open-webui.md).
-
-### Eval
-
-```powershell
-python scripts/eval.py run --label q4-routers-on                       # router regression set (28)
-python scripts/eval.py run --questions eval/flow_cases.json --label flow  # real tech questions (48)
+python scripts/eval.py run --questions eval/flow_cases.json --label flow-legacy   # 60 Flow cases, scored on tool calls
+python scripts/eval.py run --label routers                                         # router regression set
 python scripts/eval.py compare eval/results/A.json eval/results/B.json
 ```
 
-`eval/flow_cases.json` scores the tool calls the model made (the server reports them in the
-response's `x_tb_brain` block), not just the reply text. Format is in the `scripts/eval.py` docstring.
-Run it with `FLOW_MODE=stub`; `--as-email` picks who "me" is (default Tre, `ts`).
-`eval/flow_questions_draft.md` is the human-readable source for those cases.
+Each result file records the model, prompt style, routing and disabled routers `/health` reported. The case
+format is in the `scripts/eval.py` docstring.
 
-### 4) Knowledge search (optional)
+- `scripts/live_run.py` asks every question in `eval/live_questions.txt` against **real** Flow
+  (`FLOW_MODE=http`). It only reads; the list asks for merge suggestions, never merges. It saves the answers,
+  tool calls and timings to check against the database.
+- `scripts/probe_cache.py --style legacy|lean` checks whether Ollama reuses its prompt cache across users.
+- `scripts/hw_eval.ps1` runs the whole hardware validation on the runtime box (below).
 
-```powershell
-ollama pull nomic-embed-text
-docker compose up -d   # also starts Qdrant on 127.0.0.1:6333
-```
+## Runtime box notes
 
-Set `QDRANT_URL=http://127.0.0.1:6333` in `.env`, restart tb-brain, then populate the index (needs `FLOW_MODE=http`):
+What we learned running tb-brain on the 5060 Ti box (the repo there is a git clone, not this OneDrive copy):
 
-```powershell
-python scripts\sync_knowledge.py
-```
+- **Set `OLLAMA_CONTEXT_LENGTH=16384`** for the user Ollama runs as, then restart Ollama. A real call reached
+  14,246 tokens. Past the context length, Ollama cuts the prompt and the only sign is a "truncating input
+  prompt" line in its server log.
+- **Restarting Ollama must also stop its `llama-server` runners.** Stopping only the `ollama` processes leaves
+  each runner alive and holding its model in VRAM, so every restart stacks another copy until the model spills
+  to CPU. After a restart, `ollama ps` should show `100% GPU`.
 
-No live sync yet — rerun after IT Glue docs or time entries change. `QDRANT_URL` empty disables `search_knowledge` gracefully.
+  ```powershell
+  Get-Process "ollama*", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force
+  ```
 
-### Tests (stub fixtures)
+- **In Open WebUI, set the Task Model to the plain Ollama model, not `tb-brain`.** The setting is under Admin
+  Panel → Settings → Interface. Otherwise every title, tag and follow-up suggestion runs the full tool loop
+  against Flow.
+- **Open Open WebUI at `http://localhost:3000`**, not `127.0.0.1` or the box's IP. Entra matches the redirect
+  URI exactly, and it is registered for `localhost`.
+- **`scripts/hw_eval.ps1`** runs the A4 validation in one go: the Flow eval in both prompt styles at 8K and 16K
+  context, the cache probe, and the comparisons. Stop tb-brain first; the script starts it itself and refuses
+  to run if it's already up. It sets `FLOW_MODE=stub` for the run and stops if `/health` reports anything else.
+  It restarts Ollama per context size (runners included) and puts `.env` and `OLLAMA_CONTEXT_LENGTH` back
+  afterwards, even on failure. Output goes to
+  `%LOCALAPPDATA%\tb-brain\hw-eval\<timestamp>\`; `summary.txt` is the part to paste back. Start tb-brain
+  again afterwards.
 
-```powershell
-python -m unittest discover -s tests -v
-```
+  ```powershell
+  .\scripts\hw_eval.ps1
+  ```
 
-## Flow model alignment (do not guess)
+- **Optional: run production from a separate worktree pinned to a tag**, so a `git pull` for testing doesn't
+  change what the techs are using:
 
-Read from Flow `app/models/`:
+  ```powershell
+  git tag prod-2026-10-13 <commit>; git push origin prod-2026-10-13
+  git worktree add C:\src\TechBldrs-Brain-prod prod-2026-10-13   # detached at the tag
+  # give it its own .env (FLOW_MODE=http); test checkouts use another BRAIN_PORT
+  # to upgrade: git -C C:\src\TechBldrs-Brain-prod checkout <newer tag>, then restart it
+  ```
 
-- **clients** — `client_code` unique (e.g. `WDON`), `name`
-- **contacts** — `full_name`, `email_1/2/3`, `contact_type`, optional `client_id`
-- **tickets** — `ticket_num` is 4 chars; display label `{client_code}-{ticket_num}`; envelope subject `|{CODE}|{NUM}| {requestor} {topic}`; activity via `last_activity_at`
-- **mail** — always has `ticket_id`; `direction` is `inbound` | `outbound` | `imported`; `from_address` / `received_at` / `subject` / `body`
+## Flow data model (do not guess)
 
-`FLOW_MODE=stub` uses in-process fixtures with those shapes (fake people, real client_code WDON so the example questions work) — good for local dev/tests. `FLOW_MODE=http` calls Flow's live `/api/private/brain/*` (production, `flow.techbldrs.com`). Do not put production Flow tokens in git.
+From Flow's `app/models/`:
 
-## Knowledge search (search_knowledge)
+- **clients**: `client_code` is unique (e.g. `WDON`). The client detail carries `m365_tenant_id` and `itglue_url`.
+- **contacts**: `full_name`, `email_1/2/3`, `contact_type`, optional `client_id`.
+- **tickets**: `ticket_num` is 4 characters; the label is `{client_code}-{ticket_num}`; activity comes from
+  `last_activity_at`.
+- **mail**: always filed on a ticket (`ticket_id`). `direction` is `inbound`, `outbound` or `imported`. Flow
+  mail is not a live mailbox.
 
-Free-text search over IT Glue SOP/runbook documents and past Flow time-entry fix notes, embedded into Qdrant (local, via `docker-compose.yml`) with a local Ollama embedding model (default `nomic-embed-text`). For "how do we usually fix X" / "why did we do X" questions that the structured ticket/mail/contact tools can't answer. Separate from Flow's structured data — never a RAG dump of tickets themselves. IT Glue passwords are never fetched; document content is redacted for inline "password:"-style lines as a best-effort safety net, not a guarantee. `QDRANT_URL` empty disables the tool gracefully. Run `scripts\sync_knowledge.py` to populate/refresh the index (no live sync yet).
-
-## Out of scope (this phase)
-
-- Installing OpenClaw
-- Qdrant / SOP RAG beyond IT Glue documents + time-entry notes (see above) — no ticket/mail/contact RAG
-- Graph fallback for unfiled mail
-- Datto tools; IT Glue beyond read-only SOP documents (no passwords, no writes)
-- Any write action beyond merge_tickets
+tb-brain reaches Flow only through `/api/private/brain/*` with `PRIVATE_API_TOKEN` (see Flow's
+`app/routes/private_api.py`). It has no database access, and the model never sees SQL. Stub fixtures follow the
+same shapes, with fake people and a few real client codes so the example questions work.
