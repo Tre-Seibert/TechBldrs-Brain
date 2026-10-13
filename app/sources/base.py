@@ -32,6 +32,23 @@ def function_tool(name: str, description: str, parameters: dict[str, Any]) -> di
 
 
 @dataclass(frozen=True)
+class SourceWording:
+    """How the agent loop's nudge and fallback messages name a source (app/agent/wording.py).
+
+    With several sources enabled, each part is listed across them in enabled order: "Flow or RMM",
+    "tickets, time, ..., or devices". Write each item so it reads in such a list.
+    """
+
+    title: str  # "Flow"
+    topics: tuple[str, ...]  # what its data questions are about: "tickets", "time", ...
+    tool_examples: tuple[str, ...]  # "list_tickets for lists"
+    ask_with: tuple[str, ...]  # what to name when asking again: "a person", "technician", "client code"
+    retry_with: tuple[str, ...]  # what to name after the loop got stuck: "a client code", "ticket label"
+    examples: tuple[str, ...]  # questions it answers: "my urgent tickets"
+    lookup_examples: tuple[str, ...]  # direct lookups: "show me ZTB-1680"
+
+
+@dataclass(frozen=True)
 class SourceSpec:
     """One data source: how to build its read-only client, its tools, and the handler that runs them.
 
@@ -66,6 +83,11 @@ class SourceSpec:
     description: str = ""
     keywords: tuple[str, ...] = ()
     patterns: tuple[re.Pattern[str], ...] = ()
+    # The agent loop (app/agent/wording.py). `wording` names the source in its nudge and fallback messages; None
+    # leaves it out of them. `data_words` marks a question as one for this source's data, so an answer with no
+    # tool call is unverified; None uses the routing keywords and patterns above.
+    wording: SourceWording | None = None
+    data_words: re.Pattern[str] | None = None
 
     @property
     def tool_names(self) -> tuple[str, ...]:

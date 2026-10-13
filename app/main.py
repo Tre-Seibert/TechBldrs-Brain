@@ -9,7 +9,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import __version__
-from app.agent.loop import AgentError, _english_only, enforce_english_payload, run_tool_loop, stream_final_message
+from app.agent.loop import (
+    AgentError,
+    _english_only,
+    enforce_english_payload,
+    no_tool_message,
+    run_tool_loop,
+    stream_final_message,
+)
 from app.config import Settings, get_settings
 from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
 from app.knowledge.factory import build_knowledge_source
@@ -225,11 +232,13 @@ async def chat_completions(
         x_openwebui_user_email=x_openwebui_user_email,
     )
     extra = body.model_dump(exclude={"messages", "tools", "stream", "model"}, exclude_none=True)
+    sources = _sources(request)
+    no_tool = no_tool_message(sources)  # names the enabled sources
     with _actor_scope(resolved):
         try:
             payload = await run_tool_loop(
                 settings=settings,
-                sources=_sources(request),
+                sources=sources,
                 messages=body.messages,
                 model=body.model,
                 actor=resolved.label,
@@ -239,10 +248,10 @@ async def chat_completions(
                 knowledge=_knowledge(request),
             )
         except AgentError as exc:
-            raise HTTPException(status_code=502, detail=_english_only(str(exc))) from exc
-    payload = enforce_english_payload(payload)
+            raise HTTPException(status_code=502, detail=_english_only(str(exc), no_tool=no_tool)) from exc
+    payload = enforce_english_payload(payload, no_tool=no_tool)
     if body.stream:
-        return StreamingResponse(stream_final_message(payload), media_type="text/event-stream")
+        return StreamingResponse(stream_final_message(payload, no_tool=no_tool), media_type="text/event-stream")
     return JSONResponse(payload)
 
 

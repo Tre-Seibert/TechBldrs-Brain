@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+import threading
+import weakref
 
 from app.identity import current_signed_in_email
+from app.sources.cache import TtlCache
 from app.sources.flow.protocol import FlowSource
 from app.sources.flow.schemas import TechnicianRecord
 from app.tools.turns import (
@@ -21,6 +24,21 @@ from app.tools.turns import (
 _UNKNOWN_SELF = (
     "I don't know who you are signed in as. Sign in with your Flow email, or name a technician."
 )
+
+# Who is signed in is looked up for the prompt, for every "me" tool call, and again for each of Open WebUI's
+# title / tag / follow-up requests, all with the same Flow GET. Cached per Flow client for a minute.
+SIGNED_IN_TTL_SECONDS = 60.0
+_signed_in_caches: weakref.WeakKeyDictionary[FlowSource, TtlCache] = weakref.WeakKeyDictionary()
+_signed_in_caches_lock = threading.Lock()
+
+
+def signed_in_matches(source: FlowSource, email: str) -> list[TechnicianRecord]:
+    """search_technician(query=email, limit=5) for the signed-in email, cached briefly per Flow client."""
+    with _signed_in_caches_lock:
+        cache = _signed_in_caches.get(source)
+        if cache is None:
+            cache = _signed_in_caches[source] = TtlCache(SIGNED_IN_TTL_SECONDS)
+    return list(cache.get(email, lambda: source.search_technician(query=email, limit=5)))
 
 
 def _requestor_matches(query: str, stored: str | None) -> bool:
@@ -99,7 +117,7 @@ def _signed_in_technician(source: FlowSource) -> tuple[TechnicianRecord | None, 
     email = (current_signed_in_email.get() or "").strip().lower()
     if not email:
         return None, _UNKNOWN_SELF
-    matches = source.search_technician(query=email, limit=5)
+    matches = signed_in_matches(source, email)
     exact = [row for row in matches if (row.email or "").strip().lower() == email]
     pick = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
     if pick and pick.assignee_code:

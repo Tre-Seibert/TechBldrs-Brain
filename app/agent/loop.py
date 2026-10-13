@@ -15,12 +15,15 @@ import httpx
 
 from app.agent.routing import USE_SOURCE, Routing, route
 from app.agent.system import SYSTEM_PROMPT, lean_system_prompt, session_context_message, signed_in_prompt_line
+from app.agent.wording import expects_tool, wording_for
 from app.audit import log_tool_call
 from app.config import ROUTER_NAMES, Settings
 from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
 from app.sources.base import Sources, as_sources
+from app.sources.flow.handlers.people import signed_in_matches
 from app.sources.flow.protocol import FlowSource
+from app.sources.flow.spec import FLOW
 from app.sources.flow.tools import RELAY_TOOL_NAMES
 from app.tools import ChatTurn, ToolResult, openai_tools, run_tool
 from app.tools.handlers import (
@@ -34,49 +37,26 @@ from app.tools.registry import SEARCH_KNOWLEDGE, TOOL_NAMES, WRITE_TOOL_NAMES
 
 # Tools whose formatted reply is shown as-is. Each source lists its own; these are Flow's plus the shared ones.
 _RELAY_TOOLS = {*RELAY_TOOL_NAMES, SEARCH_KNOWLEDGE}
-_NO_TOOL_ENGLISH = (
-    "I can only answer from Flow tools, and I did not get a usable result. "
-    "Ask again with a person, technician, or client code."
-)
+# The Flow-only messages, for callers with no sources at hand. run_tool_loop words its messages from the enabled
+# sources instead (app/agent/wording.py); with only Flow enabled they are these.
+_FLOW_ONLY = Sources([(FLOW, None)])
+_FLOW_WORDING = wording_for(_FLOW_ONLY)
+_NO_TOOL_ENGLISH = _FLOW_WORDING.no_tool
 _THINK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 _TICKET_LABEL_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b")
-_NUDGE_TO_USE_A_TOOL = (
-    "You answered without calling a tool, so that answer is unverified. For any question about tickets, "
-    "time, mail, contacts, or clients you must call the right tool first (for example list_tickets for "
-    "lists, ticket_stats for hours or counts) and answer only from its result. Call the tool now."
-)
+_NUDGE_TO_USE_A_TOOL = _FLOW_WORDING.nudge_to_use_a_tool
 _NUDGE_TO_WRITE = (
     "Write the answer now, in English, in plain sentences, from the digest above. Name tickets only "
     "if they appear in the digest. Do not call tools."
 )
-_STUCK = (
-    "I kept searching without getting to an answer. Try asking again with a client code or ticket label, "
-    "for example 'show me ZTB-1680'."
-)
-_NO_SEARCH_RUN = (
-    "I didn't run a Flow search for that, so I won't guess. Try rephrasing, for example "
-    "'my urgent tickets' or 'open tickets for BUCK'."
-)
-# Questions that must be answered from a tool. A first-word write verb ("Close ticket ...",
-# "Email Debe ...", "Merge ...") is a request the model should decline or gate, not search for.
-_DATA_WORD_RE = re.compile(
-    r"\b(?:tickets?|urgent|overdue|assigned|hours?|time|logged|worked|e-?mails?|mail|reach(?:ed)? out|"
-    r"contacts?|clients?|machines?|respond|queue|open|review|archived|billable|cause|problem|unassigned|work(?:ed|ing)?|spent)\b"
-    r"|\b[A-Z][A-Z0-9]{1,8}-[A-Z0-9]{3,6}\b",
-    re.IGNORECASE,
-)
-_WRITE_INTENT_RE = re.compile(
-    r"^\s*(?:please\s+|can you\s+)?(?:close|archive|delete|create|log|send|e-?mail|change|set|update|reassign|add|merge)\b",
-    re.IGNORECASE,
-)
+_STUCK = _FLOW_WORDING.stuck
+_NO_SEARCH_RUN = _FLOW_WORDING.no_search_run
 
 
-def _expects_tool(turn: ChatTurn) -> bool:
-    """True when this turn is a Flow data question, so an answer with no tool call is unverified."""
-    text = turn.user_text or ""
-    if _WRITE_INTENT_RE.search(text):
-        return False
-    return bool(_DATA_WORD_RE.search(text) or _DATA_WORD_RE.search(turn.previous_assistant_text or ""))
+def _expects_tool(turn: ChatTurn, sources: Sources | None = None) -> bool:
+    """True when this turn is a data question for an enabled source (Flow when none are given), so an answer
+    with no tool call is unverified."""
+    return expects_tool(turn, sources if sources is not None else _FLOW_ONLY)
 
 
 def _compact_history(messages: list[dict[str, Any]], *, limit: int = 240) -> list[dict[str, Any]]:
@@ -353,7 +333,7 @@ def _signed_in_line(source: FlowSource) -> str:
     name = None
     code = None
     if email:
-        matches = source.search_technician(query=email, limit=5)
+        matches = signed_in_matches(source, email)
         exact = [row for row in matches if (row.email or "").strip().lower() == email]
         pick = exact[0] if exact else (matches[0] if len(matches) == 1 else None)
         if pick:
@@ -522,11 +502,11 @@ def _has_non_english_script(text: str) -> bool:
     return False
 
 
-def _english_only(text: str, fallback: str | None = None) -> str:
+def _english_only(text: str, fallback: str | None = None, *, no_tool: str = _NO_TOOL_ENGLISH) -> str:
     cleaned = _THINK_RE.sub("", text or "").strip()
     if cleaned and not _has_non_english_script(cleaned):
         return cleaned
-    return (fallback or "").strip() or _NO_TOOL_ENGLISH
+    return (fallback or "").strip() or no_tool
 
 
 def _set_assistant_content(payload: dict[str, Any], text: str) -> dict[str, Any]:
@@ -543,7 +523,7 @@ def _set_assistant_content(payload: dict[str, Any], text: str) -> dict[str, Any]
     return payload
 
 
-def _assistant_payload(text: str, model: str) -> dict[str, Any]:
+def _assistant_payload(text: str, model: str, *, no_tool: str = _NO_TOOL_ENGLISH) -> dict[str, Any]:
     return _apply_english_reply(
         {
             "id": "tb-brain",
@@ -552,24 +532,32 @@ def _assistant_payload(text: str, model: str) -> dict[str, Any]:
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
         },
         [text] if text else [],
+        no_tool=no_tool,
     )
 
 
-def enforce_english_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def no_tool_message(sources: Sources | FlowSource | None = None) -> str:
+    """What the user sees when there is no usable answer, naming the enabled sources (Flow when none are given)."""
+    return wording_for(as_sources(sources)).no_tool if sources is not None else _NO_TOOL_ENGLISH
+
+
+def enforce_english_payload(payload: dict[str, Any], *, no_tool: str = _NO_TOOL_ENGLISH) -> dict[str, Any]:
     """Public last-mile gate for /v1/chat/completions."""
-    return _apply_english_reply(payload, [])
+    return _apply_english_reply(payload, [], no_tool=no_tool)
 
 
-def _apply_english_reply(payload: dict[str, Any], replies: list[str]) -> dict[str, Any]:
+def _apply_english_reply(
+    payload: dict[str, Any], replies: list[str], *, no_tool: str = _NO_TOOL_ENGLISH
+) -> dict[str, Any]:
     """Last gate: the user only ever sees English. Tool lists win; model text is discarded if not English."""
     if replies:
-        text = _THINK_RE.sub("", replies[-1]).strip() or _NO_TOOL_ENGLISH
+        text = _THINK_RE.sub("", replies[-1]).strip() or no_tool
     else:
         content = ""
         choices = payload.get("choices")
         if choices:
             content = str((choices[0].get("message") or {}).get("content") or "")
-        text = _english_only(content)
+        text = _english_only(content, no_tool=no_tool)
     return _set_assistant_content(payload, text)
 
 
@@ -589,6 +577,7 @@ async def run_tool_loop(
     """`sources` is the enabled Sources bundle. `source` is the pre-A2 keyword for a bare Flow client."""
     sources = as_sources(sources if sources is not None else source)
     routing = _route(sources, messages, settings)
+    words = wording_for(sources)  # what the user sees names every enabled source
     tools = routing.openai_tools(settings.prompt_style)
     relay_tools = {*sources.relay_tool_names(), SEARCH_KNOWLEDGE}
     write_names = sources.write_tool_names()
@@ -601,8 +590,9 @@ async def run_tool_loop(
     if hit is not None:
         router_name, direct = hit
         payload = _assistant_payload(
-            direct.reply or direct.error or _NO_TOOL_ENGLISH,
+            direct.reply or direct.error or words.no_tool,
             settings.llm_model.strip() or "tb-brain",
+            no_tool=words.no_tool,
         )
         payload["x_tb_brain"] = {"router": router_name, "tool_calls": []}
         return payload
@@ -676,13 +666,15 @@ async def run_tool_loop(
                         unusable = not content.strip() or _has_non_english_script(content)
                     else:
                         blocked = reply_without_invented_tickets(content, relayed)
-                    skipped = not trace and _expects_tool(turn)
+                    skipped = not trace and _expects_tool(turn, sources)
                     if (blocked or skipped or unusable) and not nudged:
                         # Made-up labels, no tool call for a data question, or an empty / non-English
                         # summary. One retry before anything else.
                         nudged = True
                         chat.append({"role": "assistant", "content": content})
-                        chat.append({"role": "user", "content": _NUDGE_TO_WRITE if digests else _NUDGE_TO_USE_A_TOOL})
+                        # The nudge names only the sources this call offered: their tools are the ones it can call.
+                        nudge = _NUDGE_TO_WRITE if digests else wording_for(sources, routing.offered).nudge_to_use_a_tool
+                        chat.append({"role": "user", "content": nudge})
                         _log.info("nudging model (digest=%s)", bool(digests), extra={"event": "agent.nudge"})
                         continue
                     if (blocked or skipped) and not digests:
@@ -692,8 +684,9 @@ async def run_tool_loop(
                         if fallback is not None:
                             name, direct = fallback
                             payload = _assistant_payload(
-                                direct.reply or direct.error or _NO_TOOL_ENGLISH,
+                                direct.reply or direct.error or words.no_tool,
                                 settings.llm_model.strip() or "tb-brain",
+                                no_tool=words.no_tool,
                             )
                             payload["x_tb_brain"] = _x_tb_brain(
                                 {"router": f"fallback:{name}", "tool_calls": trace}, routing
@@ -714,17 +707,17 @@ async def run_tool_loop(
                         if blocked:
                             payload = _set_assistant_content(payload, blocked)
                         elif skipped:
-                            payload = _set_assistant_content(payload, _NO_SEARCH_RUN)
-                    payload = _apply_english_reply(payload, relayed)
+                            payload = _set_assistant_content(payload, words.no_search_run)
+                    payload = _apply_english_reply(payload, relayed, no_tool=words.no_tool)
                     if not relayed and not (footers or field_headers):
                         blank = not str(payload["choices"][0]["message"].get("content") or "").strip()
                         if blank:  # the model said nothing: show the tool's own error, never an empty reply
-                            payload = _set_assistant_content(payload, tool_errors[-1] if tool_errors else _NO_SEARCH_RUN)
+                            payload = _set_assistant_content(payload, tool_errors[-1] if tool_errors else words.no_search_run)
                     if (footers or field_headers) and not relayed:
                         prose = str(payload["choices"][0]["message"].get("content") or "").strip()
-                        if scrub_figures and prose not in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) and not unusable:
+                        if scrub_figures and prose not in (_NO_INVENTED_TICKETS, words.no_tool) and not unusable:
                             prose = strip_unbacked_figures(prose, " ".join(digests)) or (fallbacks[-1] if fallbacks else "")
-                        if prose in (_NO_INVENTED_TICKETS, _NO_TOOL_ENGLISH) or unusable:
+                        if prose in (_NO_INVENTED_TICKETS, words.no_tool) or unusable:
                             prose = fallbacks[-1] if fallbacks else ""  # no usable summary: show the plain list
                         parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
                         payload = _set_assistant_content(payload, "\n\n".join(part for part in parts if part))
@@ -808,13 +801,14 @@ async def run_tool_loop(
                 part
                 for part in (
                     field_headers[-1] if field_headers else "",
-                    _STUCK if not (field_headers or footers) else "",
+                    words.stuck if not (field_headers or footers) else "",
                     relayed[-1] if relayed else "",
                     footers[-1] if footers else "",
                 )
                 if part
             ),
             settings.llm_model.strip() or "tb-brain",
+            no_tool=words.no_tool,
         )
         stuck["x_tb_brain"] = _x_tb_brain(
             {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens, "stuck": True}, routing
@@ -822,12 +816,12 @@ async def run_tool_loop(
         return stuck
 
 
-async def stream_final_message(payload: dict[str, Any]) -> AsyncIterator[bytes]:
+async def stream_final_message(payload: dict[str, Any], *, no_tool: str = _NO_TOOL_ENGLISH) -> AsyncIterator[bytes]:
     """Run the full tool loop first, then SSE-stream the final assistant text."""
     raw = ""
     if payload.get("choices"):
         raw = str((payload["choices"][0].get("message") or {}).get("content") or "")
-    payload = _set_assistant_content(payload, _THINK_RE.sub("", raw).strip() or _NO_TOOL_ENGLISH)
+    payload = _set_assistant_content(payload, _THINK_RE.sub("", raw).strip() or no_tool)
     choice = (payload.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content = message.get("content") or ""

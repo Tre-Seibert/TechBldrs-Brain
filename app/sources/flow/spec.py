@@ -9,6 +9,7 @@ from app.sources.flow.lean_tools import LEAN_OPENAI_TOOLS
 from app.sources.flow.prompt import PROMPT_SECTION
 from app.sources.flow.protocol import FlowNotConfigured, FlowRequestError, FlowWriteRefused
 from app.sources.flow.tools import OPENAI_TOOLS, RELAY_TOOL_NAMES, WRITE_TOOL_NAMES
+from app.sources.flow.wording import DATA_WORDS, WORDING
 
 FLOW = SourceSpec(
     name="flow",
@@ -24,4 +25,6 @@ FLOW = SourceSpec(
     required=True,
     # Required, so offered on every call whatever the question says; the description is for listings.
     description="Flow: tickets, time entries, ticket-attached mail, client contacts, technicians, client accounts.",
+    wording=WORDING,
+    data_words=DATA_WORDS,
 )

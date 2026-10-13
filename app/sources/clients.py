@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from app.sources.cache import TtlCache
 from app.sources.flow.protocol import FlowRequestError, FlowSource
 from app.sources.flow.schemas import ClientDetail, ClientListItem, itglue_org_id
 
@@ -114,13 +115,9 @@ class ClientResolver:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._flow = flow
-        self._ttl = ttl
-        self._clock = clock
         self._hooks: dict[str, tuple[str, IdHook]] = {}
         self._lock = threading.Lock()
-        self._cache: dict[tuple[str, ...], tuple[float, Any]] = {}
-        # One lock per cache key, so concurrent callers for the same client wait for one fetch.
-        self._key_locks: dict[tuple[str, ...], threading.Lock] = {}
+        self._cache = TtlCache(ttl, clock=clock)
 
     def register_id_hook(self, field: str, hook: IdHook, *, source: str) -> None:
         """Let `source` fill `field` (e.g. Datto's datto_site_uid) for every client resolved from now on."""
@@ -130,12 +127,10 @@ class ClientResolver:
             if field in self._hooks:
                 raise ValueError(f"{field!r} is already filled by {self._hooks[field][0]}")
             self._hooks[field] = (source, hook)
-            for key in [key for key in self._cache if key[:2] == ("hook", field)]:
-                del self._cache[key]
+            self._cache.discard(lambda key: key[:2] == ("hook", field))
 
     def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
+        self._cache.clear()
 
     def resolve(self, text: str | None, *, require: Iterable[str] = ()) -> ClientResolution:
         """Client code or name -> ClientResolution. `require` names ids the caller cannot work without
@@ -249,32 +244,8 @@ class ClientResolver:
         return self._cached(("roster",), lambda: self._flow.list_clients(status=None))
 
     def _cached(self, key: tuple[str, ...], fetch: Callable[[], Any]) -> Any:
-        """The cached value for `key`, fetching it once (per TTL) however many callers ask at the same time.
-
-        Failures are not cached. The locks are never held across an await, so this is safe from both
-        threads and coroutines.
-        """
-        with self._lock:
-            hit = self._fresh(key)
-            if hit is not None:
-                return hit[1]
-            key_lock = self._key_locks.setdefault(key, threading.Lock())
-        with key_lock:
-            with self._lock:
-                hit = self._fresh(key)
-                if hit is not None:
-                    return hit[1]
-            value = fetch()
-            with self._lock:
-                now = self._clock()
-                for stale in [k for k, (expires, _) in self._cache.items() if expires <= now]:
-                    del self._cache[stale]
-                self._cache[key] = (now + self._ttl, value)
-            return value
-
-    def _fresh(self, key: tuple[str, ...]) -> tuple[float, Any] | None:
-        hit = self._cache.get(key)
-        return hit if hit is not None and hit[0] > self._clock() else None
+        """The cached value for `key`, fetched once per TTL; failures are not cached (see TtlCache)."""
+        return self._cache.get(key, fetch)
 
     def _missing_message(self, field: str, client: ResolvedClient) -> str:
         if field == "m365_tenant_id":
