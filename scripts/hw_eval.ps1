@@ -67,7 +67,7 @@ function Restart-Ollama([string]$context) {
     # The app inherits this process's environment, so set it here as well as for the user.
     [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", $context, "User")
     $env:OLLAMA_CONTEXT_LENGTH = $context
-    Get-Process "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process "ollama*", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force  # runners outlive the app
     Start-Sleep -Seconds 2
     Start-Process -FilePath $OllamaApp | Out-Null
     Wait-Url "$ollamaUrl/api/version" 60 | Out-Null
@@ -192,7 +192,7 @@ finally {
         $restore = if ([string]::IsNullOrEmpty($userContext)) { $null } else { $userContext }
         [Environment]::SetEnvironmentVariable("OLLAMA_CONTEXT_LENGTH", $restore, "User")
         $env:OLLAMA_CONTEXT_LENGTH = $restore
-        Get-Process "ollama*" -ErrorAction SilentlyContinue | Stop-Process -Force
+        Get-Process "ollama*", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force  # runners outlive the app
         Start-Sleep -Seconds 2
         Start-Process -FilePath $OllamaApp | Out-Null
     }
