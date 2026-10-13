@@ -26,13 +26,20 @@ def run_tool(
     turn: ChatTurn | None = None,
     knowledge: KnowledgeSource | None = None,
     source: Any = None,
+    refusal: str | None = None,
 ) -> ToolResult:
     """Run one tool on the source that offers it and audit the call. `source` is the pre-A2 keyword for a
-    bare Flow client and means Flow only."""
+    bare Flow client and means Flow only. A `refusal` (source routing: the tool's source was not offered) is
+    returned as the error without dispatching, and audited like any failed call."""
     sources = as_sources(sources if sources is not None else source)
     client_code = _client_code_from_args(arguments)
     try:
-        result = dispatch(sources, name, arguments, turn, knowledge=knowledge)
+        if refusal:
+            result = ToolResult(
+                ok=False, tool=name, source=sources.source_name_for(name), client_code=client_code, error=refusal
+            )
+        else:
+            result = dispatch(sources, name, arguments, turn, knowledge=knowledge)
     except sources.errors as exc:
         result = ToolResult(
             ok=False,

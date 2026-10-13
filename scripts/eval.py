@@ -25,6 +25,11 @@ score the tool calls the server made (the server reports them in the response's 
 
 An arg value matches when it equals the expected one (strings case-insensitive), is one of a
 list, is non-empty for "*", or matches {"re": ...}. Run as a signed-in technician with --as-email.
+
+Source routing (SOURCE_ROUTING, x_tb_brain.routing) is scored on its own line, not in pass/fail:
+
+    "sources":        ["datto"]                    each must be offered (by keyword, sticky or use_source)
+    "forbid_sources": ["m365"]                     none may be offered
 """
 
 from __future__ import annotations
@@ -165,6 +170,19 @@ def check_calls(case: dict, trace: dict | None) -> list[str]:
     return failures
 
 
+def check_routing(case: dict, trace: dict | None) -> list[str] | None:
+    """Failed routing checks for one case, or None when the case has none. Flow-only servers record no routing,
+    so only Flow counts as offered there."""
+    wants, forbids = case.get("sources") or [], case.get("forbid_sources") or []
+    if not (wants or forbids):
+        return None
+    routing = (trace or {}).get("routing") or {}
+    offered = [item.get("source") for item in routing.get("offered") or []] or ["flow"]
+    failures = [f"source {name} not offered" for name in wants if name not in offered]
+    failures += [f"source {name} offered" for name in forbids if name in offered]
+    return failures
+
+
 def _calls_summary(trace: dict | None) -> str:
     trace = trace or {}
     if trace.get("router"):
@@ -217,19 +235,24 @@ def run(args: argparse.Namespace) -> int:
                 reply = _reply_text(payload)
                 trace = payload.get("x_tb_brain")
                 failures = check_reply(case, reply) + check_calls(case, trace)
+                routing_failures = check_routing(case, trace)
             except httpx.HTTPError as exc:
-                reply, failures = "", [f"request failed: {exc}"]
+                reply, failures, routing_failures = "", [f"request failed: {exc}"], None
             seconds = round(time.perf_counter() - started, 2)
             status = "PASS" if not failures else "FAIL"
             print(f"{status}  {case['group']:<17} {case['id']:<22} {seconds:>6.1f}s")
             for failure in failures:
                 print(f"        - {failure}")
+            for failure in routing_failures or []:
+                print(f"        - routing: {failure}")
             if failures or args.verbose:
                 print(f"        calls: {_calls_summary(trace)}")
             results.append(
                 {"id": case["id"], "group": case["group"], "pass": not failures,
                  "failures": failures, "seconds": seconds, "reply": reply,
-                 "calls": (trace or {}).get("tool_calls", []), "router": (trace or {}).get("router")}
+                 "calls": (trace or {}).get("tool_calls", []), "router": (trace or {}).get("router"),
+                 "routing": (trace or {}).get("routing"),
+                 "routing_pass": None if routing_failures is None else not routing_failures}
             )
     summary = summarize(results)
     print("\n" + format_summary(summary))
@@ -240,7 +263,7 @@ def run(args: argparse.Namespace) -> int:
         json.dumps(
             {"label": args.label, "when": stamp, "model": health.get("llm_model"),
              "disabled_routers": health.get("disabled_routers"), "prompt_style": health.get("prompt_style"),
-             "summary": summary, "results": results},
+             "source_routing": health.get("source_routing"), "summary": summary, "results": results},
             indent=2,
         ),
         encoding="utf-8",
@@ -254,18 +277,24 @@ def summarize(results: list[dict]) -> dict:
     for item in results:
         passed, total = groups.setdefault(item["group"], [0, 0])
         groups[item["group"]] = [passed + int(item["pass"]), total + 1]
-    return {
+    routed = [item["routing_pass"] for item in results if item.get("routing_pass") is not None]
+    summary = {
         "passed": sum(1 for item in results if item["pass"]),
         "total": len(results),
         "groups": groups,
         "avg_seconds": round(sum(item["seconds"] for item in results) / max(len(results), 1), 2),
     }
+    if routed:
+        summary["routing"] = [sum(routed), len(routed)]
+    return summary
 
 
 def format_summary(summary: dict) -> str:
     lines = [f"{summary['passed']}/{summary['total']} passed, avg {summary['avg_seconds']}s per question"]
     for name, (passed, total) in sorted(summary["groups"].items()):
         lines.append(f"  {name:<17} {passed}/{total}")
+    if summary.get("routing"):
+        lines.append(f"  routing           {summary['routing'][0]}/{summary['routing'][1]} (scored separately)")
     return "\n".join(lines)
 
 

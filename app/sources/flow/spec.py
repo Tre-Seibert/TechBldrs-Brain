@@ -22,4 +22,6 @@ FLOW = SourceSpec(
     prompt_section=PROMPT_SECTION,
     lean_tools=tuple(LEAN_OPENAI_TOOLS),
     required=True,
+    # Required, so offered on every call whatever the question says; the description is for listings.
+    description="Flow: tickets, time entries, ticket-attached mail, client contacts, technicians, client accounts.",
 )

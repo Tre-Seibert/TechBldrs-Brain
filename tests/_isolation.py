@@ -45,6 +45,8 @@ def _isolate_settings() -> str:
         if name.upper() in _env_names():
             del os.environ[name]
     data_dir = tempfile.mkdtemp(prefix="tb-brain-tests-")
+    # Settings() built directly (not get_settings()) doesn't create the audit dir; run_tool appends there.
+    os.makedirs(os.path.join(data_dir, "logs"))
     os.environ.update(
         {
             "FLOW_MODE": "stub",

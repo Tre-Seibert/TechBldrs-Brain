@@ -11,8 +11,9 @@ app.tools imports this module, so an import here would loop.
 from __future__ import annotations
 
 import functools
+import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -57,10 +58,23 @@ class SourceSpec:
     # (field, hook) pairs this source fills in for the client resolver, e.g. ("datto_site_uid", hook) where
     # hook(client, client_code, name) returns the source's id for that client or None. See app/sources/clients.py.
     client_id_hooks: tuple[tuple[str, Callable[..., str | None]], ...] = ()
+    # Source routing (app/agent/routing.py). One line on what the source holds; the model reads it in the
+    # use_source tool. A source with a description is offered only when the question needs it: its keywords
+    # (words or phrases, any case, plural too) or patterns (e.g. hostname-like tokens) match the user's latest
+    # message, it was used earlier in the conversation, or the model asks for it. A required source (Flow) and
+    # one with no description are offered on every call.
+    description: str = ""
+    keywords: tuple[str, ...] = ()
+    patterns: tuple[re.Pattern[str], ...] = ()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
         return tuple(tool["function"]["name"] for tool in self.tools)
+
+    @property
+    def routed(self) -> bool:
+        """True when this source is offered per question rather than on every call."""
+        return bool(self.description) and not self.required
 
 
 class Sources:
@@ -80,6 +94,15 @@ class Sources:
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec, _ in self._enabled)
+
+    @property
+    def specs(self) -> tuple[SourceSpec, ...]:
+        return tuple(spec for spec, _ in self._enabled)
+
+    def spec_for_tool(self, tool: str) -> SourceSpec | None:
+        """The enabled source that offers `tool`; None for a shared or unknown tool."""
+        hit = self._by_tool.get(tool)
+        return hit[0] if hit else None
 
     def client(self, name: str) -> Any | None:
         return next((client for spec, client in self._enabled if spec.name == name), None)
@@ -106,10 +129,14 @@ class Sources:
                 self._clients = resolver
             return self._clients
 
-    def openai_tools(self, style: str = "legacy") -> list[dict[str, Any]]:
+    def _offered(self, only: Collection[str] | None) -> tuple[SourceSpec, ...]:
+        return tuple(spec for spec, _ in self._enabled if only is None or spec.name in only)
+
+    def openai_tools(self, style: str = "legacy", only: Collection[str] | None = None) -> list[dict[str, Any]]:
+        """The tools of every enabled source, or of the sources named in `only`, in enabled order."""
         if style == "lean":
-            return [tool for spec, _ in self._enabled for tool in (spec.lean_tools or spec.tools)]
-        return [tool for spec, _ in self._enabled for tool in spec.tools]
+            return [tool for spec in self._offered(only) for tool in (spec.lean_tools or spec.tools)]
+        return [tool for spec in self._offered(only) for tool in spec.tools]
 
     def tool_names(self) -> tuple[str, ...]:
         return tuple(name for spec, _ in self._enabled for name in spec.tool_names)
@@ -124,8 +151,8 @@ class Sources:
     def errors(self) -> tuple[type[Exception], ...]:
         return tuple(error for spec, _ in self._enabled for error in spec.errors)
 
-    def prompt_sections(self) -> list[str]:
-        return [spec.prompt_section for spec, _ in self._enabled if spec.prompt_section]
+    def prompt_sections(self, only: Collection[str] | None = None) -> list[str]:
+        return [spec.prompt_section for spec in self._offered(only) if spec.prompt_section]
 
     def source_name_for(self, tool: str) -> str:
         """The client that serves `tool`; the first source's for a tool no source has (shared or unknown)."""

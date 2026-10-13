@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     llm_extra_body: str = Field(default="")
     # One of PROMPT_STYLES. legacy until lean is proven on the eval.
     prompt_style: str = Field(default="legacy")
+    # SOURCE_ROUTING=on|off. on offers each model call only the sources the question needs (app/agent/routing.py);
+    # off offers every enabled source on every call. With only Flow enabled the two are the same.
+    source_routing: bool = Field(default=True)
 
     @field_validator("prompt_style")
     @classmethod

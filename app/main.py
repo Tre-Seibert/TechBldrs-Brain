@@ -187,6 +187,7 @@ def health(request: Request) -> dict[str, Any]:
         "llm_model": settings.llm_model,
         "disabled_routers": sorted(settings.disabled_router_set),
         "prompt_style": settings.prompt_style,
+        "source_routing": settings.source_routing,
         "knowledge_source": _knowledge(request).source_name,
         "tools": _tool_names(sources),
         "write_tools": list(sources.write_tool_names()),

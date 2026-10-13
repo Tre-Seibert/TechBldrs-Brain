@@ -13,7 +13,9 @@ from typing import Any
 
 import httpx
 
+from app.agent.routing import USE_SOURCE, Routing, route
 from app.agent.system import SYSTEM_PROMPT, lean_system_prompt, session_context_message, signed_in_prompt_line
+from app.audit import log_tool_call
 from app.config import ROUTER_NAMES, Settings
 from app.identity import current_signed_in_email
 from app.knowledge.source import KnowledgeSource
@@ -298,6 +300,54 @@ def chat_turn_from_messages(messages: list[dict[str, Any]]) -> ChatTurn:
     )
 
 
+def _route(sources: Sources, messages: list[dict[str, Any]], settings: Settings) -> Routing:
+    """Source routing from the incoming history: the latest user message, the earlier ones, and any tool
+    calls the client sent back."""
+    user_texts = [_message_text(message) for message in messages if message.get("role") == "user"]
+    called: set[str] = set()
+    for message in messages:
+        if message.get("role") == "tool" and message.get("name"):
+            called.add(str(message["name"]))
+        for call in message.get("tool_calls") or []:
+            name = (call.get("function") or {}).get("name") if isinstance(call, dict) else None
+            if name:
+                called.add(str(name))
+    return route(
+        sources,
+        latest=user_texts[-1] if user_texts else "",
+        earlier=user_texts[:-1],
+        earlier_tools=called,
+        enabled=settings.source_routing,
+    )
+
+
+def _use_source(
+    routing: Routing, arguments: dict[str, Any], *, actor: str, actor_verified: bool, settings: Settings
+) -> ToolResult:
+    """The use_source meta tool. It reads no data, but it is a tool call, so it is audited like one."""
+    result = routing.use_source(arguments)
+    log_tool_call(
+        actor=actor,
+        actor_verified=actor_verified,
+        tool=USE_SOURCE,
+        client_code=None,
+        row_ids=[],
+        args=arguments,
+        source=result.source,
+        ok=result.ok,
+        error=result.error,
+        log_dir=settings.audit_log_dir,
+    )
+    return result
+
+
+def _x_tb_brain(record: dict[str, Any], routing: Routing) -> dict[str, Any]:
+    """The x_tb_brain block, plus the routing decision whenever routing had a choice to make."""
+    if routing.active:
+        record["routing"] = routing.record()
+    return record
+
+
 def _signed_in_line(source: FlowSource) -> str:
     email = (current_signed_in_email.get() or "").strip().lower() or None
     name = None
@@ -318,17 +368,28 @@ def _today_line() -> str:
 
 
 def _ensure_system(
-    messages: list[dict[str, Any]], *, source: Sources | FlowSource, no_think: bool = False, style: str = "legacy"
+    messages: list[dict[str, Any]],
+    *,
+    source: Sources | FlowSource,
+    no_think: bool = False,
+    style: str = "legacy",
+    sections: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    """`sections` (lean only) are the prompt sections of the sources offered to this call; None means every
+    enabled source's."""
     if style == "lean":
-        out = _ensure_lean_prompt(messages, source=source)
+        out = _ensure_lean_prompt(messages, source=source, sections=sections)
     else:
         out = _ensure_system_prompt(messages, source=source)
     if no_think:
-        first = dict(out[0])
-        first["content"] = str(first.get("content") or "").rstrip() + "\n/no_think"
-        out = [first, *out[1:]]
+        out = [_with_no_think(out[0]), *out[1:]]
     return out
+
+
+def _with_no_think(message: dict[str, Any]) -> dict[str, Any]:
+    first = dict(message)
+    first["content"] = str(first.get("content") or "").rstrip() + "\n/no_think"
+    return first
 
 
 def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: Sources | FlowSource) -> list[dict[str, Any]]:
@@ -345,7 +406,9 @@ def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: Sources | F
     return [{"role": "system", "content": prompt}, *messages]
 
 
-def _ensure_lean_prompt(messages: list[dict[str, Any]], *, source: Sources | FlowSource) -> list[dict[str, Any]]:
+def _ensure_lean_prompt(
+    messages: list[dict[str, Any]], *, source: Sources | FlowSource, sections: list[str] | None = None
+) -> list[dict[str, Any]]:
     """PROMPT_STYLE=lean: [static system message][session context][conversation].
 
     The system message is the same bytes for every user and day, and the model server puts the tool list right
@@ -353,15 +416,23 @@ def _ensure_lean_prompt(messages: list[dict[str, Any]], *, source: Sources | Flo
     their own message (see session_context_message for why that is not a system message).
     """
     sources = as_sources(source)
-    prompt = lean_system_prompt(sources.prompt_sections())
+    first = _lean_system_message(messages, sources.prompt_sections() if sections is None else sections)
     context = session_context_message([_signed_in_line(sources.flow), _today_line()])
+    if messages and messages[0].get("role") == "system":
+        return [first, context, *messages[1:]]
+    return [first, context, *messages]
+
+
+def _lean_system_message(messages: list[dict[str, Any]], sections: list[str]) -> dict[str, Any]:
+    """The lean system message for these sections, merged ahead of a client's own system message."""
+    prompt = lean_system_prompt(sections)
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
         content = str(first.get("content") or "")
         if "tb-brain" not in content:
             first["content"] = prompt + "\n\n" + content
-        return [first, context, *messages[1:]]
-    return [{"role": "system", "content": prompt}, context, *messages]
+        return first
+    return {"role": "system", "content": prompt}
 
 
 def _parse_arguments(raw: Any) -> dict[str, Any]:
@@ -517,10 +588,12 @@ async def run_tool_loop(
 ) -> dict[str, Any]:
     """`sources` is the enabled Sources bundle. `source` is the pre-A2 keyword for a bare Flow client."""
     sources = as_sources(sources if sources is not None else source)
-    tools = openai_tools(sources, style=settings.prompt_style)
+    routing = _route(sources, messages, settings)
+    tools = routing.openai_tools(settings.prompt_style)
     relay_tools = {*sources.relay_tool_names(), SEARCH_KNOWLEDGE}
     write_names = sources.write_tool_names()
-    ignored = _ignored_client_tool_names(client_tools, tuple(tool["function"]["name"] for tool in tools))
+    known = tuple(tool["function"]["name"] for tool in openai_tools(sources, style=settings.prompt_style))
+    ignored = _ignored_client_tool_names(client_tools, known)
     if ignored:
         _log.info("ignoring client tools: %s", ",".join(ignored))
     turn = chat_turn_from_messages(messages)
@@ -537,8 +610,13 @@ async def run_tool_loop(
     nudged = False
     forced_tried = False
     fallbacks: list[str] = []  # plain lists, used if a summary never comes out of the model
+    history = _compact_history(list(messages))
     chat = _ensure_system(
-        _compact_history(list(messages)), source=sources, no_think=settings.llm_no_think, style=settings.prompt_style
+        history,
+        source=sources,
+        no_think=settings.llm_no_think,
+        style=settings.prompt_style,
+        sections=routing.prompt_sections(),
     )
     prompt_tokens = 0
     relayed: list[str] = []
@@ -560,6 +638,7 @@ async def run_tool_loop(
             }
             if not digests:  # a digest means "write the answer now": offering tools invites repeat calls
                 body["tools"] = tools
+            routing.tool_counts.append(len(body.get("tools") or ()))
             body.update(settings.llm_extra_body_dict)
             if extra_body:
                 for key, value in extra_body.items():
@@ -616,13 +695,17 @@ async def run_tool_loop(
                                 direct.reply or direct.error or _NO_TOOL_ENGLISH,
                                 settings.llm_model.strip() or "tb-brain",
                             )
-                            payload["x_tb_brain"] = {"router": f"fallback:{name}", "tool_calls": trace}
+                            payload["x_tb_brain"] = _x_tb_brain(
+                                {"router": f"fallback:{name}", "tool_calls": trace}, routing
+                            )
                             return payload
                         if not forced_tried:
                             # No router fits either: make the tool call with constrained JSON, which
                             # cannot come back as prose, and carry on as if the model had called it.
                             forced_tried = True
-                            forced = await _force_tool_call(client, resolved_model, chat, tools, write_names)
+                            forced = await _force_tool_call(
+                                client, resolved_model, chat, tools, (*write_names, USE_SOURCE)
+                            )
                             if forced is not None:
                                 message = forced
                                 tool_calls = forced["tool_calls"]
@@ -645,7 +728,9 @@ async def run_tool_loop(
                             prose = fallbacks[-1] if fallbacks else ""  # no usable summary: show the plain list
                         parts = [field_headers[-1] if field_headers else "", prose, footers[-1] if footers else ""]
                         payload = _set_assistant_content(payload, "\n\n".join(part for part in parts if part))
-                    payload["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}
+                    payload["x_tb_brain"] = _x_tb_brain(
+                        {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens}, routing
+                    )
                     return payload
             chat.append(message)
             _log.info(
@@ -654,20 +739,29 @@ async def run_tool_loop(
                 len(tool_calls),
                 extra={"event": "agent.tool_calls", "iteration": iteration},
             )
+            offered_tools = {tool["function"]["name"] for tool in tools}  # what this call was given
             for call in tool_calls:
                 fn = call.get("function") or {}
                 name = str(fn.get("name") or "")
                 arguments = _parse_arguments(fn.get("arguments"))
-                result = run_tool(
-                    sources=sources,
-                    name=name,
-                    arguments=arguments,
-                    actor=actor,
-                    actor_verified=actor_verified,
-                    settings=settings,
-                    turn=turn,
-                    knowledge=knowledge,
-                )
+                if name == USE_SOURCE and name in offered_tools:
+                    result = _use_source(routing, arguments, actor=actor, actor_verified=actor_verified, settings=settings)
+                    tools = routing.openai_tools(settings.prompt_style)
+                    if settings.prompt_style == "lean":  # the added source's section joins the next call
+                        first = _lean_system_message(history, routing.prompt_sections())
+                        chat[0] = _with_no_think(first) if settings.llm_no_think else first
+                else:
+                    result = run_tool(
+                        sources=sources,
+                        name=name,
+                        arguments=arguments,
+                        actor=actor,
+                        actor_verified=actor_verified,
+                        settings=settings,
+                        turn=turn,
+                        knowledge=knowledge,
+                        refusal=routing.refusal(name, offered_tools),
+                    )
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in relay_tools:
                     relayed.append(result.reply)
@@ -722,7 +816,9 @@ async def run_tool_loop(
             ),
             settings.llm_model.strip() or "tb-brain",
         )
-        stuck["x_tb_brain"] = {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens, "stuck": True}
+        stuck["x_tb_brain"] = _x_tb_brain(
+            {"router": None, "tool_calls": trace, "prompt_tokens": prompt_tokens, "stuck": True}, routing
+        )
         return stuck
 
 

@@ -6,6 +6,7 @@ Each source's own tools live in app/sources/<name>/tools.py. This module holds t
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 from app.sources.base import Sources, as_sources, function_tool
@@ -110,12 +111,15 @@ LEAN_SHARED_TOOLS: list[dict[str, Any]] = [
 OPENAI_TOOLS: list[dict[str, Any]] = [*FLOW_OPENAI_TOOLS, *SHARED_TOOLS]
 
 
-def openai_tools(sources: Sources | Any | None = None, style: str = "legacy") -> list[dict[str, Any]]:
-    """Every enabled source's tools, then the shared ones, in PROMPT_STYLE `style`. No sources means Flow only."""
+def openai_tools(
+    sources: Sources | Any | None = None, style: str = "legacy", only: Collection[str] | None = None
+) -> list[dict[str, Any]]:
+    """Every enabled source's tools (or only those of the sources named in `only`), then the shared ones, in
+    PROMPT_STYLE `style`. No sources means Flow only."""
     if style == "lean":
         if sources is None:
             return [*FLOW_LEAN_OPENAI_TOOLS, *LEAN_SHARED_TOOLS]
-        return [*as_sources(sources).openai_tools(style), *LEAN_SHARED_TOOLS]
+        return [*as_sources(sources).openai_tools(style, only), *LEAN_SHARED_TOOLS]
     if sources is None:
         return list(OPENAI_TOOLS)
-    return [*as_sources(sources).openai_tools(), *SHARED_TOOLS]
+    return [*as_sources(sources).openai_tools(only=only), *SHARED_TOOLS]
