@@ -1,4 +1,4 @@
-"""Which sources are enabled, from env: FLOW_MODE=stub|http (always on), DATTO_MODE / M365_MODE (reserved).
+"""Which sources are enabled, from env: FLOW_MODE=stub|http (always on), DATTO_MODE=off|stub|http, M365_MODE (reserved).
 
 A new source adds its SourceSpec to KNOWN_SOURCES and a <NAME>_MODE setting defaulting to off.
 """
@@ -10,15 +10,16 @@ from collections.abc import Iterable
 
 from app.config import Settings
 from app.sources.base import OFF_MODES, Sources, SourceSpec
+from app.sources.datto.spec import DATTO
 from app.sources.flow.spec import FLOW
 
 _log = logging.getLogger("tb_brain.sources")
 
 # In tool-list order. Flow first, so the default tool list is what it was before sources existed.
-KNOWN_SOURCES: tuple[SourceSpec, ...] = (FLOW,)
+KNOWN_SOURCES: tuple[SourceSpec, ...] = (FLOW, DATTO)
 
-# Settings for sources not built yet (Phase B: Datto RMM, Phase C: Microsoft 365). Off unless set.
-RESERVED_MODES = {"DATTO_MODE": "datto_mode", "M365_MODE": "m365_mode"}
+# Settings for sources not built yet (Phase C: Microsoft 365). Off unless set.
+RESERVED_MODES = {"M365_MODE": "m365_mode"}
 
 
 def build_sources(settings: Settings, specs: Iterable[SourceSpec] | None = None) -> Sources:

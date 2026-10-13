@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 
 from app.agent.routing import USE_SOURCE, Routing, route
-from app.agent.system import SYSTEM_PROMPT, lean_system_prompt, session_context_message, signed_in_prompt_line
+from app.agent.system import lean_system_prompt, legacy_system_prompt, session_context_message, signed_in_prompt_line
 from app.agent.wording import expects_tool, wording_for
 from app.audit import log_tool_call
 from app.config import ROUTER_NAMES, Settings
@@ -321,6 +321,17 @@ def _use_source(
     return result
 
 
+def _relay_parts(relayed: list[str], relayed_from: list[str]) -> list[str]:
+    """The relayed replies to show. One source: as before, its last reply wins. Several (a cross-source question,
+    e.g. Flow tickets and Datto devices): each source's last reply, in the order the sources first answered."""
+    if len(set(relayed_from)) <= 1:
+        return relayed
+    last: dict[str, str] = {}
+    for source, reply in zip(relayed_from, relayed):
+        last[source] = reply
+    return ["\n\n".join(last.values())]
+
+
 def _x_tb_brain(record: dict[str, Any], routing: Routing) -> dict[str, Any]:
     """The x_tb_brain block, plus the routing decision whenever routing had a choice to make."""
     if routing.active:
@@ -360,7 +371,7 @@ def _ensure_system(
     if style == "lean":
         out = _ensure_lean_prompt(messages, source=source, sections=sections)
     else:
-        out = _ensure_system_prompt(messages, source=source)
+        out = _ensure_system_prompt(messages, source=source, sections=sections)
     if no_think:
         out = [_with_no_think(out[0]), *out[1:]]
     return out
@@ -372,9 +383,23 @@ def _with_no_think(message: dict[str, Any]) -> dict[str, Any]:
     return first
 
 
-def _ensure_system_prompt(messages: list[dict[str, Any]], *, source: Sources | FlowSource) -> list[dict[str, Any]]:
-    source = as_sources(source).flow  # who is signed in comes from Flow's technicians
-    prompt = SYSTEM_PROMPT.rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
+def _legacy_prompt(sources: Sources, sections: list[str] | None) -> str:
+    """The legacy system prompt for the enabled sources: SYSTEM_PROMPT itself with only Flow. `sections` are the
+    offered sources' sections (None: every enabled source's); legacy carries Flow's guidance itself, so only the
+    other sources' sections are added."""
+    others = [spec for spec in sources.specs if not spec.required]
+    titles = [spec.wording.title if spec.wording else spec.name for spec in others]
+    own = {spec.prompt_section for spec in others}
+    extra = [section for section in (sources.prompt_sections() if sections is None else sections) if section in own]
+    return legacy_system_prompt(titles, extra)
+
+
+def _ensure_system_prompt(
+    messages: list[dict[str, Any]], *, source: Sources | FlowSource, sections: list[str] | None = None
+) -> list[dict[str, Any]]:
+    sources = as_sources(source)
+    source = sources.flow  # who is signed in comes from Flow's technicians
+    prompt = _legacy_prompt(sources, sections).rstrip() + "\n- " + _signed_in_line(source) + "\n- " + _today_line()
     if messages and messages[0].get("role") == "system":
         first = dict(messages[0])
         content = str(first.get("content") or "")
@@ -586,7 +611,9 @@ async def run_tool_loop(
     if ignored:
         _log.info("ignoring client tools: %s", ",".join(ignored))
     turn = chat_turn_from_messages(messages)
-    hit = _direct_answer_named(sources, turn, settings.disabled_router_set)
+    # The routers are Flow question shapes: a question that names another source's data goes to the model.
+    flow_routers = not routing.names_another_source
+    hit = _direct_answer_named(sources, turn, settings.disabled_router_set) if flow_routers else None
     if hit is not None:
         router_name, direct = hit
         payload = _assistant_payload(
@@ -610,6 +637,7 @@ async def run_tool_loop(
     )
     prompt_tokens = 0
     relayed: list[str] = []
+    relayed_from: list[str] = []  # the source of each relayed reply
     digests: list[str] = []  # what summary-mode tools gave the model to write prose from
     footers: list[str] = []  # exact numbers appended after the model's prose
     field_headers: list[str] = []  # exact fields printed before the model's prose
@@ -628,6 +656,10 @@ async def run_tool_loop(
             }
             if not digests:  # a digest means "write the answer now": offering tools invites repeat calls
                 body["tools"] = tools
+            else:  # ...except another source's, so a cross-source question can still reach it (none with only Flow)
+                after_digest = routing.tools_after_digest(settings.prompt_style)
+                if after_digest:
+                    body["tools"] = after_digest
             routing.tool_counts.append(len(body.get("tools") or ()))
             body.update(settings.llm_extra_body_dict)
             if extra_body:
@@ -680,7 +712,7 @@ async def run_tool_loop(
                     if (blocked or skipped) and not digests:
                         # Twice without a tool. A pattern router is a better safety net than a refusal,
                         # even for routers the operator turned off.
-                        fallback = _direct_answer_named(sources, turn)
+                        fallback = _direct_answer_named(sources, turn) if flow_routers else None
                         if fallback is not None:
                             name, direct = fallback
                             payload = _assistant_payload(
@@ -708,7 +740,7 @@ async def run_tool_loop(
                             payload = _set_assistant_content(payload, blocked)
                         elif skipped:
                             payload = _set_assistant_content(payload, words.no_search_run)
-                    payload = _apply_english_reply(payload, relayed, no_tool=words.no_tool)
+                    payload = _apply_english_reply(payload, _relay_parts(relayed, relayed_from), no_tool=words.no_tool)
                     if not relayed and not (footers or field_headers):
                         blank = not str(payload["choices"][0]["message"].get("content") or "").strip()
                         if blank:  # the model said nothing: show the tool's own error, never an empty reply
@@ -740,9 +772,12 @@ async def run_tool_loop(
                 if name == USE_SOURCE and name in offered_tools:
                     result = _use_source(routing, arguments, actor=actor, actor_verified=actor_verified, settings=settings)
                     tools = routing.openai_tools(settings.prompt_style)
-                    if settings.prompt_style == "lean":  # the added source's section joins the next call
+                    # The added source's section joins the next call.
+                    if settings.prompt_style == "lean":
                         first = _lean_system_message(history, routing.prompt_sections())
-                        chat[0] = _with_no_think(first) if settings.llm_no_think else first
+                    else:
+                        first = _ensure_system_prompt(history, source=sources, sections=routing.prompt_sections())[0]
+                    chat[0] = _with_no_think(first) if settings.llm_no_think else first
                 else:
                     result = run_tool(
                         sources=sources,
@@ -758,6 +793,8 @@ async def run_tool_loop(
                 trace.append({"name": name, "arguments": arguments, "ok": result.ok, "error": result.error})
                 if result.reply and name in relay_tools:
                     relayed.append(result.reply)
+                    spec = sources.spec_for_tool(name)
+                    relayed_from.append(spec.name if spec else "")
                 if not result.ok and result.error:
                     tool_errors.append(result.error)
                 if result.chunks:
@@ -802,7 +839,7 @@ async def run_tool_loop(
                 for part in (
                     field_headers[-1] if field_headers else "",
                     words.stuck if not (field_headers or footers) else "",
-                    relayed[-1] if relayed else "",
+                    _relay_parts(relayed, relayed_from)[-1] if relayed else "",
                     footers[-1] if footers else "",
                 )
                 if part

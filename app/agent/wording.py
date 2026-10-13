@@ -99,5 +99,7 @@ def expects_tool(turn: ChatTurn, sources: Sources) -> bool:
     text = turn.user_text or ""
     if _WRITE_INTENT_RE.search(text):
         return False
+    if any(spec.write_words is not None and spec.write_words.search(text) for spec in sources.specs):
+        return False  # a source's own write request ("Reboot WDON-FD01"): declined, not looked up
     previous = turn.previous_assistant_text or ""
     return any(asks_for_data(spec, part) for part in (text, previous) for spec in sources.specs)

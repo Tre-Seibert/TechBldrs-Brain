@@ -402,7 +402,7 @@ class FlowClientListTests(unittest.TestCase):
     def test_stub_roster_filters_by_status(self) -> None:
         stub = StubFlowSource()
         everyone = stub.list_clients(status=None)
-        self.assertEqual([row.client_code for row in everyone], ["ACME", "BRCK", "NRTH", "WDLB", "WDON"])
+        self.assertEqual([row.client_code for row in everyone], ["ACME", "BRCK", "BUCK", "NGMC", "NRTH", "WDLB", "WDON"])
         self.assertEqual({row.client_code for row in everyone if row.has_itglue}, {"BRCK", "WDLB"})
         self.assertEqual([row.client_code for row in stub.list_clients(status="Former")], ["BRCK"])
 

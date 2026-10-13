@@ -88,13 +88,28 @@ Also in Phase A: `scripts/hw_eval.ps1` for the validation runs (`274d709`, `b87e
 
 Questions: [eval/datto_questions_draft.md](../eval/datto_questions_draft.md).
 
-| Step | Work | Size |
-|---|---|---|
-| B0 | A read-only Datto RMM API user for tb-brain (its own key, not Flow's). Key and secret in the runtime box `.env`. | S (admin) |
-| B1 | Tools: `datto_list_devices`, `datto_get_device`, `datto_alerts`, `datto_site_summary`, `datto_patch_report`, `datto_device_software`. Each returns a summary capped in size, never raw API output. | L |
-| B2 | Stub fixtures shaped like Datto API v2 responses for 3 fake sites. | M |
-| B3 | Decide `list_machines` (Flow's machine records) vs `datto_list_devices` (live). Likely: Datto answers live status; Flow answers "what machines are on our records/tickets". | S |
-| B4 | Eval cases from the questions draft, including cross-source with Flow. | M |
+| Step | Work | Size | Done |
+|---|---|---|---|
+| B0 | A read-only Datto RMM API user for tb-brain (its own key, not Flow's). Key and secret in the runtime box `.env` (`DATTO_API_URL`, `DATTO_API_KEY`, `DATTO_API_SECRET`). | S (admin) | Open |
+| B1 | Tools: `datto_list_devices`, `datto_get_device`, `datto_alerts`, `datto_site_summary`, `datto_patch_report`, `datto_device_software`. Each returns a summary capped in size, never raw API output. | L | Stub-tested; HTTP adapter tested on mocked responses only |
+| B2 | Stub fixtures shaped like Datto API v2 responses for 3 fake sites. | M | WDON, BUCK, NGMC |
+| B3 | Decide `list_machines` (Flow's machine records) vs `datto_list_devices` (live). | S | Datto answers live state; `list_machines` is Flow's records and says so while Datto is enabled |
+| B4 | Eval cases from the questions draft, including cross-source with Flow. | M | `eval/datto_cases.json`, 40 cases |
+
+Built in the commit after `8497467` (the Open WebUI task passthrough). Next: B0, then a read-only live check of
+each tool against the real API, then the Datto eval on the runtime box in both prompt styles.
+
+Notes from building it:
+
+- Endpoints, paging (250 a page, `pageDetails.nextPageUrl`), the 100-hour token, and the rate limit (600 reads a
+  minute per account; 429, then 403 and a temporary IP block) come from Datto's API docs and the v2 OpenAPI spec
+  (API 2.0.0, build 277). Dates are ISO strings in the spec; the adapter also takes epoch milliseconds. `udf` is not
+  in the v2 `Device` schema (V3 has `udfs`); it is read when present. Check both on the first live call.
+- A Flow router (`person_ticket`) answered "Which open WDON tickets are for machines that are offline?" from Flow
+  alone. Routers now stand aside when the question matched another source's keywords.
+- After a digest tool (e.g. `get_ticket_detail`) the loop offered no tools at all, so a cross-source follow-up could
+  not reach Datto. Other sources' tools (and `use_source`) now stay offered; Flow's are still withdrawn.
+- G5 ("does Flow's machine list match Datto?") shows both lists; there is no compare tool yet.
 
 ## Phase C: Microsoft 365 via GDAP
 
@@ -185,7 +200,7 @@ Notes to verify before consenting:
 ## Ready to buy when
 
 - [x] Phase A done, tests green (2026-10-13)
-- [ ] Datto working against the live API, read-only
+- [ ] Datto working against the live API, read-only (built and stub-tested; needs B0 and a live check)
 - [ ] Microsoft 365 working on 2–3 real tenants (or stubs if consent is still pending)
 - [ ] 40+ multi-source eval cases with a 5060 Ti baseline run
 - [ ] Run-matrix, timing and concurrency scripts working

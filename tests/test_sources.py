@@ -136,12 +136,16 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(FlowNotConfigured):
             build_sources(Settings(flow_mode="off", _env_file=None))
 
-    def test_reserved_datto_and_m365_modes_add_nothing_and_say_so(self) -> None:
+    def test_reserved_m365_mode_adds_nothing_and_says_so(self) -> None:
         with self.assertLogs("tb_brain.sources", level=logging.WARNING) as logs:
-            sources = build_sources(Settings(datto_mode="stub", m365_mode="http", _env_file=None))
+            sources = build_sources(Settings(m365_mode="http", _env_file=None))
         self.assertEqual(sources.names, ("flow",))
-        self.assertTrue(any("DATTO_MODE" in line for line in logs.output))
         self.assertTrue(any("M365_MODE" in line for line in logs.output))
+
+    def test_datto_mode_stub_adds_datto_after_flow(self) -> None:
+        sources = build_sources(Settings(datto_mode="stub", _env_file=None))
+        self.assertEqual(sources.names, ("flow", "datto"))
+        self.assertEqual(sources.client("datto").source_name, "datto-stub")
 
     def test_two_sources_cannot_offer_the_same_tool_name(self) -> None:
         clash = SourceSpec(name="clash", mode=lambda s: "stub", build=lambda s: object(), tools=FLOW.tools[:1], handle=_handle)

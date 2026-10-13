@@ -63,6 +63,24 @@ CLIENTS: list[ClientRecord] = [
         full_company_name="Brickell Law Group, P.A. (lab fixture)",
         status="Former",
     ),
+    # The other two Datto RMM stub sites (app/sources/datto/fixtures.py), so the resolver finds them. No tickets,
+    # machines or mail here either: Flow-only answers stay what they were.
+    ClientRecord(
+        id=82,
+        client_code="BUCK",
+        name="Buckhead Pediatrics",
+        full_company_name="Buckhead Pediatrics, P.C. (lab fixture)",
+        status="Active",
+        m365_default_domain="buckheadpeds.example",
+    ),
+    ClientRecord(
+        id=94,
+        client_code="NGMC",
+        name="North Georgia Medical Clinic",
+        full_company_name="North Georgia Medical Clinic LLC (lab fixture)",
+        status="Active",
+        m365_default_domain="ngmc.example",
+    ),
 ]
 
 CONTACTS: list[ContactRecord] = [

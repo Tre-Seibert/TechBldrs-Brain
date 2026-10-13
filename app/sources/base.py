@@ -88,6 +88,14 @@ class SourceSpec:
     # tool call is unverified; None uses the routing keywords and patterns above.
     wording: SourceWording | None = None
     data_words: re.Pattern[str] | None = None
+    # Requests to change something in this source ("Reboot WDON-FD01"). They have no tool, so an answer without
+    # one is the expected decline, not an unverified answer (app/agent/wording.py).
+    write_words: re.Pattern[str] | None = None
+    # True when the handler needs the client resolver: Sources.dispatch passes it as clients=.
+    wants_clients: bool = False
+    # (tool, description, lean description) for another source's tool, used while this source is enabled, so
+    # the two read as distinct to the model (Datto rewords Flow's list_machines). The parameters stay the same.
+    describes: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def tool_names(self) -> tuple[str, ...]:
@@ -157,8 +165,26 @@ class Sources:
     def openai_tools(self, style: str = "legacy", only: Collection[str] | None = None) -> list[dict[str, Any]]:
         """The tools of every enabled source, or of the sources named in `only`, in enabled order."""
         if style == "lean":
-            return [tool for spec in self._offered(only) for tool in (spec.lean_tools or spec.tools)]
-        return [tool for spec in self._offered(only) for tool in spec.tools]
+            tools = [tool for spec in self._offered(only) for tool in (spec.lean_tools or spec.tools)]
+        else:
+            tools = [tool for spec in self._offered(only) for tool in spec.tools]
+        return self._redescribed(tools, style)
+
+    def _redescribed(self, tools: list[dict[str, Any]], style: str) -> list[dict[str, Any]]:
+        """`tools` with the descriptions enabled sources give other sources' tools (SourceSpec.describes)."""
+        wording = {
+            tool: lean if style == "lean" else legacy
+            for spec, _ in self._enabled
+            for tool, legacy, lean in spec.describes
+        }
+        if not wording:
+            return tools
+        return [
+            function_tool(tool["function"]["name"], wording[tool["function"]["name"]], tool["function"]["parameters"])
+            if tool["function"]["name"] in wording
+            else tool
+            for tool in tools
+        ]
 
     def tool_names(self) -> tuple[str, ...]:
         return tuple(name for spec, _ in self._enabled for name in spec.tool_names)
@@ -194,6 +220,8 @@ class Sources:
         if hit is None:
             return None
         spec, client = hit
+        if spec.wants_clients:
+            return spec.handle(client, name, raw_args, turn, knowledge=knowledge, clients=self.clients)
         return spec.handle(client, name, raw_args, turn, knowledge=knowledge)
 
 

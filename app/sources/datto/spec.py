@@ -1,0 +1,54 @@
+"""Datto RMM as a SourceSpec. Off unless DATTO_MODE=stub|http; offered per question by source routing."""
+
+from __future__ import annotations
+
+import re
+
+from app.sources.base import SourceSpec
+from app.sources.datto.clients import datto_site_uid
+from app.sources.datto.factory import build_datto_source
+from app.sources.datto.handlers.dispatch import handle
+from app.sources.datto.prompt import PROMPT_SECTION
+from app.sources.datto.protocol import DattoNotConfigured, DattoRequestError, DattoUnavailable
+from app.sources.datto.tools import (
+    LEAN_LIST_MACHINES_DESCRIPTION,
+    LEAN_OPENAI_TOOLS,
+    LIST_MACHINES_DESCRIPTION,
+    OPENAI_TOOLS,
+    RELAY_TOOL_NAMES,
+)
+from app.sources.datto.wording import WORDING, WRITE_WORDS
+from app.sources.flow.tools import LIST_MACHINES
+
+# Hostnames the way TechBldrs names them: client code, a dash, letters, then a number (WDON-FD01, BUCK-SRV01,
+# WDON-IMG-01). Letters after the dash, so ticket labels (WDON-1842) don't match.
+HOSTNAME_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]{2,5}-[A-Za-z]{1,6}-?\d{1,4}\b")
+
+DATTO = SourceSpec(
+    name="datto",
+    mode=lambda settings: settings.datto_mode_normalized,
+    build=build_datto_source,
+    tools=tuple(OPENAI_TOOLS),
+    handle=handle,
+    relay_tool_names=RELAY_TOOL_NAMES,
+    errors=(DattoNotConfigured, DattoUnavailable, DattoRequestError),
+    prompt_section=PROMPT_SECTION,
+    lean_tools=tuple(LEAN_OPENAI_TOOLS),
+    client_id_hooks=(("datto_site_uid", datto_site_uid),),
+    description=(
+        "Datto RMM: live device state per client site (online/offline, last seen, last user, OS, patches, "
+        "antivirus, alerts, installed software, hardware, disk space)."
+    ),
+    keywords=(
+        "Datto", "RMM", "device", "computer", "PC", "server", "workstation", "laptop", "desktop", "offline",
+        "online", "patch", "patched", "patching", "unpatched", "antivirus", "anti-virus", "AV", "alert", "reboot",
+        "rebooted", "restart", "installed", "installed software", "software", "disk space", "free space",
+        "serial number", "warranty", "last logged", "logged in", "checked in", "check in", "operating system",
+        "Windows 10", "Windows 11", "Windows Server",
+    ),
+    patterns=(HOSTNAME_RE,),
+    wording=WORDING,
+    write_words=WRITE_WORDS,
+    wants_clients=True,
+    describes=((LIST_MACHINES, LIST_MACHINES_DESCRIPTION, LEAN_LIST_MACHINES_DESCRIPTION),),
+)

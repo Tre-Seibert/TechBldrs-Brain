@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Pattern-matched answers that run before the LLM sees a question (app/agent/loop.py).
@@ -89,9 +89,24 @@ class Settings(BaseSettings):
     flow_api_token: str = Field(default="")
     flow_database_url: str = Field(default="")
 
-    # Reserved for the next sources (app/sources/registry.py). off until Datto RMM / Microsoft 365 exist.
+    # Datto RMM (app/sources/datto/): off, stub (fixtures) or http (the live API, read-only).
     datto_mode: str = Field(default="off")
+    # tb-brain's own read-only Datto API user, from the runtime box's .env only. Never logged.
+    datto_api_url: str = Field(default="")
+    datto_api_key: SecretStr = Field(default=SecretStr(""))
+    datto_api_secret: SecretStr = Field(default=SecretStr(""))
+    # Reserved for Microsoft 365 (app/sources/registry.py). off until that source exists.
     m365_mode: str = Field(default="off")
+
+    @field_validator("datto_mode")
+    @classmethod
+    def _known_datto_mode(cls, value: str) -> str:
+        from app.sources.base import OFF_MODES
+
+        mode = (value or "off").strip().lower()
+        if mode not in (*OFF_MODES, "stub", "http"):
+            raise ValueError(f"unknown DATTO_MODE {value!r}; valid: off, stub, http")
+        return mode
 
     # --- Knowledge (SOP/runbook search). Empty QDRANT_URL disables search_knowledge
     # gracefully -- see app/knowledge/source.py NullKnowledgeSource.
@@ -119,6 +134,10 @@ class Settings(BaseSettings):
     @property
     def flow_mode_normalized(self) -> str:
         return (self.flow_mode or "stub").strip().lower()
+
+    @property
+    def datto_mode_normalized(self) -> str:
+        return self.datto_mode or "off"
 
 
 @lru_cache

@@ -4,8 +4,9 @@ TechBldrs' local MSP assistant. A tech asks any question about a client we manag
 system holds the answer, calls read-only tools on that system, and answers only from what came back. A local
 model does all of it, because client data includes PHI.
 
-Today that system is **Flow** (tickets, time, ticket-attached mail, contacts, technicians, clients) plus a
-knowledge search over IT Glue SOPs and past fix notes. Next come **Datto RMM** (Phase B) and each client's
+Today those systems are **Flow** (tickets, time, ticket-attached mail, contacts, technicians, clients),
+**Datto RMM** (live device state per client site; `DATTO_MODE`, off by default, stub-tested, not yet run against
+the live API) and a knowledge search over IT Glue SOPs and past fix notes. Next comes each client's
 **Microsoft 365 tenant via GDAP** (Phase C), then more sources. The plan, the decisions behind it and the
 "ready to buy the Mac Studio" checklist are in [docs/end-goal-plan.md](docs/end-goal-plan.md).
 
@@ -53,7 +54,7 @@ flowchart LR
   loop <--> llm["Local LLM (Ollama)"]
   loop --> routing["Source routing"]
   routing --> flow["Flow tools"]
-  routing -.->|"Phase B"| datto["Datto RMM tools"]
+  routing -->|"DATTO_MODE"| datto["Datto RMM tools"]
   routing -.->|"Phase C"| m365["Microsoft 365 tools (GDAP)"]
   loop --> knowledge["search_knowledge"]
   flow -->|"FLOW_MODE=http"| flowapi["Flow /api/private/brain/*"]
@@ -65,6 +66,8 @@ flowchart LR
 1. Open WebUI sends the chat to tb-brain's OpenAI-compatible endpoint with a signed JWT naming the signed-in
    tech. tb-brain advertises one model, `tb-brain`.
 2. A few fixed question shapes are answered by routers without the LLM (`DISABLED_ROUTERS` turns them off).
+   Routers are Flow question shapes, so they are skipped when the question matched another source's keywords.
+   Open WebUI's background tasks (titles, tags, follow-ups) skip all of this and go straight to the model.
 3. Otherwise the tool loop asks the local model, offering only the tools of the sources the question needs
    (source routing, below). The model calls tools; tb-brain runs and audits each call. Tool results that are
    already formatted lists are shown as they are. Summaries are written by the model, but only from the tool's
@@ -75,10 +78,14 @@ flowchart LR
 
 **Source routing** (`SOURCE_ROUTING=on`): Flow and `search_knowledge` are offered on every call. Any other
 source is offered when its keywords or patterns match the question, when the conversation already used it, or
-when the model asks for it with `use_source`. While only Flow is enabled, routing changes nothing.
+when the model asks for it with `use_source`. While only Flow is enabled, routing changes nothing. After a
+tool returns a digest to summarize, Flow's tools are withdrawn (write the answer) but other sources' tools stay,
+so "show me WDON-1842 and the state of the machine on it" can still reach Datto. When two sources answered,
+each one's last formatted reply is shown.
 
 **Prompt styles** (`PROMPT_STYLE`): `legacy` sends the full Flow system prompt (the default; it scores best on
-the 14B). `lean` sends short general rules plus a section per offered source, with per-tool guidance in the
+the 14B). With another source enabled, legacy drops its "only Flow questions" refusal and adds the offered
+sources' sections; with only Flow it is unchanged. `lean` sends short general rules plus a section per offered source, with per-tool guidance in the
 tool descriptions. It also puts the signed-in tech and the date after the static prefix, so the model server's
 prompt cache can reuse that prefix across users.
 
@@ -129,8 +136,8 @@ All settings come from env or `.env` (see [.env.example](.env.example)). The one
 | Setting | Values | What it does |
 |---|---|---|
 | `FLOW_MODE` | `stub` (default), `http` | Flow is always on. `stub` uses in-process fixtures; `http` calls Flow's read-only brain API with `FLOW_BASE_URL` and `FLOW_API_TOKEN`. |
-| `DATTO_MODE` | `off` (default); `stub`, `http` from Phase B | Datto RMM. Reserved: until the source exists, any other value logs a warning and stays off. |
-| `M365_MODE` | `off` (default); `stub`, `http` from Phase C | Microsoft 365 via GDAP. Reserved, same as above. |
+| `DATTO_MODE` | `off` (default), `stub`, `http` | Datto RMM. `stub` uses fixtures for sites WDON, BUCK and NGMC; `http` calls the Datto RMM API v2 at `DATTO_API_URL` with tb-brain's own read-only API user (`DATTO_API_KEY`, `DATTO_API_SECRET`, runtime box `.env` only, never logged). |
+| `M365_MODE` | `off` (default); `stub`, `http` from Phase C | Microsoft 365 via GDAP. Reserved: until the source exists, any other value logs a warning and stays off. |
 | `PROMPT_STYLE` | `legacy` (default), `lean` | Full Flow prompt, or short rules plus per-source sections with a cache-friendly order. |
 | `SOURCE_ROUTING` | `on` (default), `off` | `on` offers each call only the sources it needs; `off` offers every enabled source every time. |
 | `DISABLED_ROUTERS` | comma list | Turns routers off so those questions go to the model: `merge_suggestion`, `person_mail`, `person_ticket`, `tickets_about`, `longest_time`. |
@@ -171,15 +178,17 @@ python -m unittest discover -s tests
 ```
 
 Tests are hermetic: `tests/_isolation.py` ignores `.env` and the environment, pins stub Flow, and refuses any
-network connection, so they never reach Flow, Ollama or Qdrant and write nothing outside a temp dir.
+network connection, so they never reach Flow, Datto, Ollama or Qdrant and write nothing outside a temp dir. The
+Datto HTTP adapter is tested only against mocked responses.
 
 ## Eval
 
-Run these against a running tb-brain with **`FLOW_MODE=stub`**. The cases include write requests, so never
-point them at real Flow.
+Run these against a running tb-brain with **`FLOW_MODE=stub`** (and **`DATTO_MODE=stub`** for the Datto
+cases). The cases include write requests, so never point them at real Flow or Datto.
 
 ```powershell
 python scripts/eval.py run --questions eval/flow_cases.json --label flow-legacy   # 60 Flow cases, scored on tool calls
+python scripts/eval.py run --questions eval/datto_cases.json --label datto-legacy # 40 Datto + cross-source cases
 python scripts/eval.py run --label routers                                         # router regression set
 python scripts/eval.py compare eval/results/A.json eval/results/B.json
 ```

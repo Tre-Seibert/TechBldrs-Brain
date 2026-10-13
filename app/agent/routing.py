@@ -91,6 +91,11 @@ class Routing:
         return any(spec.routed for spec in self.sources.specs)
 
     @property
+    def names_another_source(self) -> bool:
+        """True when the user's latest message matched a routed source's keywords (a Datto device question)."""
+        return any(offer.why == KEYWORD for offer in self._offers.values())
+
+    @property
     def offered(self) -> tuple[str, ...]:
         return tuple(name for name in self.sources.names if name in self._offers)
 
@@ -101,6 +106,18 @@ class Routing:
     def openai_tools(self, style: str) -> list[dict[str, Any]]:
         """The offered sources' tools, the shared ones, then use_source while any source is hidden."""
         tools = openai_tools(self.sources, style=style, only=self.offered)
+        hidden = self.hidden
+        if hidden:
+            tools.append(use_source_tool(hidden))
+        return tools
+
+    def tools_after_digest(self, style: str) -> list[dict[str, Any]]:
+        """The tools still offered once a tool returned a digest to write the answer from: the offered routed
+        sources' tools, then use_source while any source is hidden. Not Flow's (or another required source's), so
+        a summary is written rather than searched again, but a cross-source question ("show me WDON-1842 and the
+        state of the machine on it") can still look the machine up. Empty with only Flow enabled."""
+        routed = [spec.name for spec in self.sources.specs if spec.routed and spec.name in self._offers]
+        tools = self.sources.openai_tools(style, only=routed) if routed else []
         hidden = self.hidden
         if hidden:
             tools.append(use_source_tool(hidden))

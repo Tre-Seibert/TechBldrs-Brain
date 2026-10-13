@@ -72,6 +72,37 @@ Rules:
 """
 
 
+# The legacy prompt's Flow-only parts, swapped out while another source is enabled (legacy_system_prompt).
+_LEGACY_INTRO = "You are tb-brain, TechBldrs' MSP assistant over Flow."
+_LEGACY_FLOW_ONLY = (
+    "- If the question is not about Flow tickets, time, mail, contacts, machines, or clients, say you only answer "
+    "questions about Flow data. Call no tools."
+)
+_LEGACY_RULES = "\nRules:\n"
+
+
+def legacy_system_prompt(titles: list[str] | tuple[str, ...] = (), sections: list[str] | tuple[str, ...] = ()) -> str:
+    """PROMPT_STYLE=legacy. With only Flow enabled (no `titles`), SYSTEM_PROMPT exactly.
+
+    `titles` names the other enabled sources ("Datto RMM"): the Flow-only refusal becomes "answer about the enabled
+    sources", so a question for a source that is enabled but not offered yet is not refused. `sections` are the
+    prompt sections of the other sources offered to this call; they go before Flow's rules.
+    """
+    if not titles:
+        return SYSTEM_PROMPT
+    names = " and ".join(["Flow", *titles]) if len(titles) == 1 else "Flow, " + ", ".join(titles[:-1]) + ", and " + titles[-1]
+    prompt = SYSTEM_PROMPT.replace(_LEGACY_INTRO, f"You are tb-brain, TechBldrs' MSP assistant over {names}.")
+    prompt = prompt.replace(
+        _LEGACY_FLOW_ONLY,
+        f"- Only answer questions about the data {names} hold (Flow: tickets, time, mail, contacts, machines, clients). "
+        "For anything else, say in one sentence what you can help with. Call no tools.",
+    )
+    blocks = [section.strip() for section in sections if section.strip()]
+    if blocks:
+        prompt = prompt.replace(_LEGACY_RULES, "\n" + "\n\n".join(blocks) + "\n" + _LEGACY_RULES, 1)
+    return prompt
+
+
 def signed_in_prompt_line(display_name: str | None, assignee_code: str | None, email: str | None) -> str:
     if email and display_name and assignee_code:
         return (
