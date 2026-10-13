@@ -11,7 +11,7 @@ from typing import Any
 from app.knowledge.source import KnowledgeSource
 from app.sources.clients import ClientResolver
 from app.sources.datto.handlers.alerts import AlertsArgs, alerts
-from app.sources.datto.handlers.common import HOSTNAME_RE, refuse
+from app.sources.datto.handlers.common import HOSTNAME_RE, NO_DEVICE, person_named, refuse
 from app.sources.datto.handlers.devices import (
     GetDeviceArgs,
     ListDevicesArgs,
@@ -45,13 +45,29 @@ def handle(
 ) -> ToolResult | None:
     """Run one Datto tool. None when `name` is not a Datto tool."""
     try:
-        return _run(datto, clients, name, raw_args)
+        result = _run(datto, clients, name, raw_args)
     except DattoUnavailable as exc:
         return refuse(name, datto, f"Datto RMM could not be reached, so I can't check that right now. {exc}")
     except DattoNotConfigured as exc:
         return refuse(name, datto, f"Datto RMM is not set up in tb-brain: {exc}")
     except DattoRequestError as exc:
         return refuse(name, datto, str(exc))
+    return _with_last_user_hint(result, turn, clients)
+
+
+def _with_last_user_hint(result: ToolResult | None, turn: ChatTurn | None, clients: ClientResolver) -> ToolResult | None:
+    """An unknown hostname when the user's message names a person ("Debe's computer is slow. Anything in Datto?"):
+    the model guessed the hostname, so say how to find that person's devices, after the close matches."""
+    if result is None or result.ok or turn is None or not (result.error or "").startswith(NO_DEVICE):
+        return result
+    person = person_named(turn.user_text, clients)
+    if person is None:
+        return result
+    message = (
+        f"{result.error} {person} sounds like a person, not a device: devices can be looked up by last logged-in "
+        f'user with datto_list_devices(last_user="{person}").'
+    )
+    return result.model_copy(update={"error": message, "reply": message})
 
 
 def _hostname_as_client(raw_args: dict[str, Any]) -> dict[str, Any]:

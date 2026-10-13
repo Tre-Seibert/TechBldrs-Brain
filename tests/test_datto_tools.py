@@ -23,7 +23,7 @@ from app.sources.datto.stub import StubDattoSource
 from app.sources.datto.tools import LEAN_OPENAI_TOOLS, OPENAI_TOOLS, TOOL_NAMES
 from app.sources.flow.spec import FLOW
 from app.sources.flow.stub import StubFlowSource
-from app.tools import run_tool
+from app.tools import ChatTurn, run_tool
 
 NOW = datetime(2026, 10, 13, 15, 0, tzinfo=timezone.utc)
 
@@ -330,6 +330,54 @@ class ArgumentToleranceTests(DattoToolTestCase):
         by_host = self.run_tool("datto_site_summary", hostname="BUCK-SRV01")
         self.assertEqual(by_host.reply, self.run_tool("datto_site_summary", client_code="BUCK").reply)
         self.assertIn("Which client's site?", self.run_tool("datto_site_summary").reply)
+
+
+class LastUserHintTests(DattoToolTestCase):
+    """An unknown hostname when the user named a person (eval G3): the reply says how to look devices up by user."""
+
+    def asked(self, question: str, name: str = "datto_get_device", **arguments: Any):
+        return run_tool(
+            sources=self.sources, name=name, arguments=arguments, actor="test", settings=self.settings,
+            turn=ChatTurn(user_text=question),
+        )
+
+    def test_a_guessed_hostname_for_a_person_points_to_last_user(self) -> None:
+        result = self.asked("Debe's computer is slow. Anything in Datto?", hostname="WDON-PC02")
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.reply,
+            "Datto RMM has no device named WDON-PC02. Close matches: WDON-OP02, WDON-OP03. Debe sounds like a person, "
+            'not a device: devices can be looked up by last logged-in user with datto_list_devices(last_user="Debe").',
+        )
+        self.assertEqual(result.error, result.reply)
+        # The lookup it points to finds Debe's machine.
+        self.assertIn("WDON-FD01", self.run_tool("datto_list_devices", last_user="Debe").reply)
+
+    def test_other_ways_of_naming_a_person_and_other_tools(self) -> None:
+        for question, name, person in (
+            ("What computer does Debe use?", "datto_get_device", "Debe"),
+            ("Is the laptop used by Chris patched?", "datto_patch_report", "Chris"),
+            ("Any alerts on Debe's PC?", "datto_alerts", "Debe"),
+        ):
+            with self.subTest(question):
+                result = self.asked(question, name, hostname="WDON-PC02")
+                self.assertIn(f'datto_list_devices(last_user="{person}")', result.reply)
+
+    def test_no_hint_without_a_person(self) -> None:
+        for question in (
+            "Tell me about WDON-XX99",  # eval H6
+            "What's on WDON-PC02?",
+            "Is Buckhead's server WDON-PC02 online?",  # a client's name, not a person
+            "Is BUCK's server online?",
+        ):
+            with self.subTest(question):
+                result = self.asked(question, hostname="WDON-PC02")
+                self.assertFalse(result.ok)
+                self.assertNotIn("last_user", result.reply)
+
+    def test_no_hint_when_the_device_exists_or_without_a_turn(self) -> None:
+        self.assertTrue(self.asked("Debe's computer is slow", hostname="WDON-FD01").ok)
+        self.assertNotIn("last_user", self.run_tool("datto_get_device", hostname="WDON-PC02").reply)
 
 
 class FailureTests(DattoToolTestCase):

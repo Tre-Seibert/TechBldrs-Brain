@@ -201,6 +201,18 @@ class RoutingTests(unittest.TestCase):
                     ))
                     self.assertEqual(_names(bodies[-1]["tools"]), list(DATTO.tool_names))
 
+    def test_a_guessed_hostname_for_a_person_leads_to_last_user(self) -> None:
+        # Eval G3: the model guessed WDON-PC02 for Debe; the not-found reply names the last_user lookup.
+        import asyncio
+
+        payload, bodies = asyncio.run(_run(
+            "Debe's computer is slow. Anything in Datto?",
+            [_call("datto_get_device", hostname="WDON-PC02"), _call("datto_list_devices", last_user="Debe")],
+        ))
+        tool_reply = json.loads(bodies[1]["messages"][-1]["content"])
+        self.assertIn('datto_list_devices(last_user="Debe")', tool_reply["reply"])
+        self.assertIn("WDON-FD01", payload["choices"][0]["message"]["content"])
+
     def test_sticky_follow_up_keeps_datto(self) -> None:
         import asyncio
 

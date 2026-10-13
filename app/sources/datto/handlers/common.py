@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app.sources.clients import ClientResolver
+from app.sources.clients import ClientResolver, Outcome
 from app.sources.datto.protocol import DattoSource
 from app.sources.datto.schemas import DattoDevice, DattoSite
 from app.tools.base import ToolResult
@@ -94,6 +94,35 @@ def devices_in(datto: DattoSource, scope: Scope) -> list[DattoDevice]:
     return sorted((row for row in rows if not row.deleted), key=lambda row: row.hostname.upper())
 
 
+NO_DEVICE = "Datto RMM has no device named"
+
+# A person the user's message names, as a device's owner or user: "Debe's computer", "what does Debe use", "the PC
+# used by Debe". Capitalized but not all caps, so client codes don't count; nor do these words.
+_PERSON_RE = re.compile(
+    r"\b([A-Z][a-z]+)['’]s\b|\b(?:does|did)\s+([A-Z][a-z]+)\s+use\b|\bused\s+by\s+([A-Z][a-z]+)\b"
+)
+_NOT_PEOPLE = frozenset({
+    "What", "That", "It", "Who", "Where", "Here", "There", "Let", "He", "She", "How", "When", "Why", "Today",
+    "Yesterday", "Everyone", "Someone", "Datto", "Flow", "Microsoft", "Windows",
+})
+
+
+def person_named(text: str | None, clients: ClientResolver) -> str | None:
+    """The first person `text` names as a device's user ("Debe" in "Debe's computer is slow"), or None. A client's
+    name in the possessive ("Buckhead's server") is not a person."""
+    for hit in _PERSON_RE.finditer(text or ""):
+        name = next(group for group in hit.groups() if group)
+        if name in _NOT_PEOPLE:
+            continue
+        try:
+            if clients.resolve(name).outcome is not Outcome.UNKNOWN:
+                continue
+        except Exception:  # noqa: BLE001 - Flow unreachable: offering the last_user lookup is still right
+            pass
+        return name
+    return None
+
+
 @dataclass(frozen=True)
 class HostLookup:
     device: DattoDevice | None
@@ -122,7 +151,7 @@ def find_device(datto: DattoSource, hostname: str) -> HostLookup:
         by_upper[item]
         for item in difflib.get_close_matches(name.upper(), list(by_upper), n=MAX_CLOSE_MATCHES, cutoff=CLOSE_MATCH_CUTOFF)
     ]
-    message = f"Datto RMM has no device named {name}."
+    message = f"{NO_DEVICE} {name}."
     if close:
         message += f" Close matches: {', '.join(close)}."
     elif site_uids and names:
