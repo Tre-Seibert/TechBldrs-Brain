@@ -48,11 +48,13 @@ class ListDevicesArgs(BaseModel):
     av_issue: bool | None = None
     reboot_required: bool | None = None
     last_user: str | None = None
+    # A hostname sent here too means that one device (datto_get_device is the tool for it).
+    hostname: str | None = None
     limit: int = 40
 
 
 class GetDeviceArgs(BaseModel):
-    hostname: str
+    hostname: str = ""  # missing: find_device asks which device
     include: list[str] = []
 
     @field_validator("include", mode="before")
@@ -65,7 +67,9 @@ class GetDeviceArgs(BaseModel):
 
 
 class SiteSummaryArgs(BaseModel):
-    client_code: str
+    client_code: str | None = None
+    # With no client code, the site of the client this device belongs to.
+    hostname: str | None = None
 
 
 def _type_matches(device: DattoDevice, wanted: str) -> bool:
@@ -110,6 +114,8 @@ def _filtered(rows: list[DattoDevice], args: ListDevicesArgs, now) -> tuple[list
 
 
 def list_devices(datto: DattoSource, clients: ClientResolver, args: ListDevicesArgs) -> ToolResult:
+    if (args.hostname or "").strip():
+        return _one_listed(datto, args.hostname)
     if not (args.client_code or "").strip() and not (args.last_user or "").strip():
         return refuse(DATTO_LIST_DEVICES, datto, "Which client's devices? Give the client code or name, or 'all'.")
     scope = resolve_scope(DATTO_LIST_DEVICES, datto, clients, args.client_code or "all")
@@ -135,6 +141,27 @@ def list_devices(datto: DattoSource, clients: ClientResolver, args: ListDevicesA
         row_ids=[row.id for row in rows[:limit] if row.id is not None],
         client_code=scope.client_code,
         reply="\n".join(lines).rstrip(),
+    )
+
+
+def _one_listed(datto: DattoSource, hostname: str) -> ToolResult:
+    """A hostname sent to datto_list_devices: that device's line, as a list shows it."""
+    lookup = find_device(datto, hostname)
+    if lookup.device is None:
+        return refuse(DATTO_LIST_DEVICES, datto, lookup.message)
+    device = lookup.device
+    lines = [
+        f"{device.hostname} in Datto RMM (site {device.site_name or device.client_code or '?'}).",
+        "",
+        device_line(device, now_for(datto)),
+    ]
+    return ToolResult(
+        tool=DATTO_LIST_DEVICES,
+        source=datto.source_name,
+        data={"count": 1, "devices": [device_data(device)]},
+        row_ids=[device.id] if device.id is not None else [],
+        client_code=device.client_code or None,
+        reply="\n".join(lines),
     )
 
 
@@ -219,7 +246,15 @@ def _counts(counter: Counter[str]) -> str:
 
 
 def site_summary(datto: DattoSource, clients: ClientResolver, args: SiteSummaryArgs) -> ToolResult:
-    scope = resolve_scope(DATTO_SITE_SUMMARY, datto, clients, args.client_code)
+    client_code = (args.client_code or "").strip()
+    if not client_code and (args.hostname or "").strip():
+        lookup = find_device(datto, args.hostname)
+        if lookup.device is None:
+            return refuse(DATTO_SITE_SUMMARY, datto, lookup.message)
+        client_code = lookup.device.client_code
+    if not client_code:
+        return refuse(DATTO_SITE_SUMMARY, datto, "Which client's site? Give the client code or name, or 'all'.")
+    scope = resolve_scope(DATTO_SITE_SUMMARY, datto, clients, client_code)
     if isinstance(scope, ToolResult):
         return scope
     if scope.everyone:

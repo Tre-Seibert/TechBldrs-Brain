@@ -11,7 +11,7 @@ from typing import Any
 from app.knowledge.source import KnowledgeSource
 from app.sources.clients import ClientResolver
 from app.sources.datto.handlers.alerts import AlertsArgs, alerts
-from app.sources.datto.handlers.common import refuse
+from app.sources.datto.handlers.common import HOSTNAME_RE, refuse
 from app.sources.datto.handlers.devices import (
     GetDeviceArgs,
     ListDevicesArgs,
@@ -54,7 +54,17 @@ def handle(
         return refuse(name, datto, str(exc))
 
 
+def _hostname_as_client(raw_args: dict[str, Any]) -> dict[str, Any]:
+    """A hostname sent as the client ({"client_code": "BUCK-SRV01"}) and no hostname: it is the hostname. Client
+    codes and names have no dash-letters-number shape, so the meaning is not in doubt."""
+    code = str(raw_args.get("client_code") or "").strip()
+    if code and not str(raw_args.get("hostname") or "").strip() and HOSTNAME_RE.fullmatch(code):
+        return {**{key: value for key, value in raw_args.items() if key != "client_code"}, "hostname": code}
+    return raw_args
+
+
 def _run(datto: DattoSource, clients: ClientResolver, name: str, raw_args: dict[str, Any]) -> ToolResult | None:
+    raw_args = _hostname_as_client(raw_args)
     if name == DATTO_LIST_DEVICES:
         return list_devices(datto, clients, ListDevicesArgs.model_validate(raw_args))
     if name == DATTO_GET_DEVICE:

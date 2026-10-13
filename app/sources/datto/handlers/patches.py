@@ -1,4 +1,5 @@
-"""datto_patch_report: one client's devices by patch status with the worst named, or every client ranked."""
+"""datto_patch_report: one client's devices by patch status with the worst named, every client ranked, or one
+device's patch state when the model names a hostname."""
 
 from __future__ import annotations
 
@@ -10,11 +11,15 @@ from app.sources.clients import ClientResolver
 from app.sources.datto.handlers.common import (
     ALL_CLIENTS_NOTE,
     PATCH_WORDS,
+    ago,
     capped,
     devices_in,
+    find_device,
     needs_patches,
+    now_for,
     patch_text,
     plural,
+    refuse,
     resolve_scope,
 )
 from app.sources.datto.protocol import DattoSource
@@ -29,7 +34,9 @@ MAX_WORST = 10
 
 
 class PatchReportArgs(BaseModel):
-    client_code: str
+    client_code: str | None = None
+    # "Is BUCK-SRV01 fully patched?" -> hostname=BUCK-SRV01, with or without its client code: that one device.
+    hostname: str | None = None
 
 
 def _status(device: DattoDevice) -> str:
@@ -52,6 +59,10 @@ def _by_status(rows: list[DattoDevice]) -> str:
 
 
 def patch_report(datto: DattoSource, clients: ClientResolver, args: PatchReportArgs) -> ToolResult:
+    if (args.hostname or "").strip():
+        return _one_device(datto, args.hostname)
+    if not (args.client_code or "").strip():
+        return refuse(DATTO_PATCH_REPORT, datto, "Whose patching? Give a client code or name, 'all', or a device hostname.")
     scope = resolve_scope(DATTO_PATCH_REPORT, datto, clients, args.client_code)
     if isinstance(scope, ToolResult):
         return scope
@@ -80,6 +91,39 @@ def patch_report(datto: DattoSource, clients: ClientResolver, args: PatchReportA
         },
         row_ids=[row.id for row in worst[:MAX_WORST] if row.id is not None],
         client_code=scope.client_code,
+        reply="\n".join(lines),
+    )
+
+
+def _one_device(datto: DattoSource, hostname: str) -> ToolResult:
+    """One device's patch state: what datto_get_device says about its patches and reboot."""
+    lookup = find_device(datto, hostname)
+    if lookup.device is None:
+        return refuse(DATTO_PATCH_REPORT, datto, lookup.message)
+    device = lookup.device
+    now = now_for(datto)
+    installed = device.patch_management.patches_installed if device.patch_management else None
+    state = "online" if device.online else f"OFFLINE, last seen {ago(device.last_seen, now)}, so this is as of then"
+    lines = [
+        f"Patching for {device.hostname} in Datto RMM: {patch_text(device)}"
+        + (f" ({installed} installed)" if installed else "")
+        + ".",
+        f"Last reboot: {ago(device.last_reboot, now)}" + ("; a reboot is needed" if device.reboot_required else "") + ".",
+        f"Status: {state}.",
+    ]
+    return ToolResult(
+        tool=DATTO_PATCH_REPORT,
+        source=datto.source_name,
+        data={
+            "hostname": device.hostname,
+            "patch_status": _status(device),
+            "pending": _pending(device),
+            "installed": installed,
+            "reboot_required": device.reboot_required,
+            "online": device.online,
+        },
+        row_ids=[device.id] if device.id is not None else [],
+        client_code=device.client_code or None,
         reply="\n".join(lines),
     )
 

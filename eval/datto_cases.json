@@ -419,10 +419,20 @@
       ],
       "expect": [
         {
-          "tool": "datto_get_device",
-          "args": {
-            "hostname": "BUCK-SRV01"
-          }
+          "any": [
+            {
+              "tool": "datto_get_device",
+              "args": {
+                "hostname": "BUCK-SRV01"
+              }
+            },
+            {
+              "tool": "datto_patch_report",
+              "args": {
+                "hostname": "BUCK-SRV01"
+              }
+            }
+          ]
         }
       ],
       "must_contain": [

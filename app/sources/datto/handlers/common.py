@@ -44,6 +44,9 @@ AV_ISSUES = frozenset({"RunningAndNotUpToDate", "NotRunning", "NotDetected"})
 WORKSTATION_CATEGORIES = frozenset({"desktop", "laptop", "workstation"})
 
 _OS_BUILD_RE = re.compile(r"\s+\d+\.\d+\.\d+\s*$")
+# Hostnames the way TechBldrs names them: client code, a dash, letters, then a number (WDON-FD01, BUCK-SRV01,
+# WDON-IMG-01). Letters after the dash, so ticket labels (WDON-1842) don't match. Also Datto's routing pattern.
+HOSTNAME_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]{2,5}-[A-Za-z]{1,6}-?\d{1,4}\b")
 
 
 @dataclass(frozen=True)

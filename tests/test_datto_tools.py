@@ -286,6 +286,52 @@ class SummaryPatchSoftwareTests(DattoToolTestCase):
         self.assertIn("Which program?", result.reply)
 
 
+class ArgumentToleranceTests(DattoToolTestCase):
+    """Arguments a model naturally sends, used when their meaning is clear rather than ignored or rejected."""
+
+    def test_patch_report_for_one_hostname(self) -> None:
+        # Eval C3: "Is BUCK-SRV01 fully patched?" -> datto_patch_report(hostname=BUCK-SRV01)
+        get_device = self.run_tool("datto_get_device", hostname="BUCK-SRV01")
+        for arguments in ({"hostname": "BUCK-SRV01"}, {"client_code": "BUCK", "hostname": "buck-srv01"}, {"client_code": "BUCK-SRV01"}):
+            with self.subTest(arguments):
+                result = self.run_tool("datto_patch_report", **arguments)
+                self.assertTrue(result.ok)
+                self.assertTrue(result.reply.startswith("Patching for BUCK-SRV01 in Datto RMM: 12 approved patches pending (410 installed)."))
+                self.assertIn("a reboot is needed", result.reply)
+                self.assertIn("Patches: 12 approved patches pending (410 installed)", get_device.reply)  # the same facts
+                self.assertEqual(result.data["patch_status"], "ApprovedPending")
+                self.assertEqual(result.client_code, "BUCK")
+
+    def test_patch_report_for_an_offline_or_unknown_device(self) -> None:
+        offline = self.run_tool("datto_patch_report", hostname="WDON-IMG-01")
+        self.assertIn("Status: OFFLINE", offline.reply)
+        unknown = self.run_tool("datto_patch_report", hostname="BUCK-SRV09")
+        self.assertFalse(unknown.ok)
+        self.assertIn("no device named BUCK-SRV09. Close matches: BUCK-SRV01", unknown.reply)
+        self.assertIn("Whose patching?", self.run_tool("datto_patch_report").reply)
+
+    def test_patch_report_for_a_client_is_unchanged(self) -> None:
+        result = self.run_tool("datto_patch_report", client_code="BUCK")
+        self.assertTrue(result.reply.startswith("Patching at "))
+
+    def test_hostname_sent_as_client_code(self) -> None:
+        self.assertIn("Status: OFFLINE", self.run_tool("datto_get_device", client_code="WDON-IMG-01").reply)
+        self.assertIn("ticket WDON-1842", self.run_tool("datto_alerts", client_code="WDON-IMG-01").reply)
+        self.assertTrue(self.run_tool("datto_list_devices", client_code="NGMC-DC01").reply.startswith("NGMC-DC01 in Datto RMM"))
+        # A client code is still a client code.
+        self.assertTrue(self.run_tool("datto_get_device", client_code="WDON").reply.startswith("Which device?"))
+
+    def test_list_devices_with_a_hostname_shows_that_device(self) -> None:
+        result = self.run_tool("datto_list_devices", client_code="BUCK", hostname="BUCK-SRV01")
+        self.assertEqual(result.data["count"], 1)
+        self.assertIn("- BUCK-SRV01 — Server", result.reply)
+
+    def test_site_summary_from_a_hostname(self) -> None:
+        by_host = self.run_tool("datto_site_summary", hostname="BUCK-SRV01")
+        self.assertEqual(by_host.reply, self.run_tool("datto_site_summary", client_code="BUCK").reply)
+        self.assertIn("Which client's site?", self.run_tool("datto_site_summary").reply)
+
+
 class FailureTests(DattoToolTestCase):
     def test_datto_not_reachable_is_a_plain_reply(self) -> None:
         datto = StubDattoSource(now=lambda: NOW)
@@ -310,9 +356,12 @@ class FailureTests(DattoToolTestCase):
         self.assertEqual(result.reply, "Datto RMM is not set up in tb-brain: DATTO_API_KEY is empty.")
 
     def test_bad_arguments_are_reported(self) -> None:
-        result = self.run_tool("datto_get_device")
+        result = self.run_tool("datto_list_devices", client_code="WDON", offline_days="a while")
         self.assertFalse(result.ok)
         self.assertIn("Invalid arguments", result.error)
+        missing = self.run_tool("datto_get_device")  # no hostname: asked for, not a schema error
+        self.assertFalse(missing.ok)
+        self.assertEqual(missing.error, "Which device? Give its hostname, e.g. WDON-FD01.")
 
 
 class SchemaTests(unittest.TestCase):

@@ -103,8 +103,10 @@ _SITE_SUMMARY_SCHEMA: dict[str, Any] = {
 
 _PATCH_REPORT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "properties": {"client_code": {**_CLIENT, "description": "Client code or name, or 'all' to rank every client (slower)."}},
-    "required": ["client_code"],
+    "properties": {
+        "client_code": {**_CLIENT, "description": "Client code or name, or 'all' to rank every client (slower)."},
+        "hostname": {**_HOSTNAME, "description": "One device's patch status instead of a client's, e.g. BUCK-SRV01."},
+    },
 }
 
 _SOFTWARE_SCHEMA: dict[str, Any] = {
@@ -152,8 +154,9 @@ OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     function_tool(
         DATTO_PATCH_REPORT,
-        "Patch status from Datto RMM: devices by patch status with the worst ones named, for one client, or "
-        "client_code=all to rank every client worst first. 'Are WDON's machines patched?' -> client_code=WDON. "
+        "Patch status from Datto RMM: devices by patch status with the worst ones named, for one client, "
+        "client_code=all to rank every client worst first, or one device by hostname. 'Are WDON's machines "
+        "patched?' -> client_code=WDON. "
         "'Which clients are worst on patching?' -> client_code=all." + _READ_ONLY,
         _PATCH_REPORT_SCHEMA,
     ),
@@ -193,7 +196,7 @@ LEAN_OPENAI_TOOLS: list[dict[str, Any]] = [
     ),
     function_tool(
         DATTO_PATCH_REPORT,
-        "Patch status from Datto RMM for a client, or client_code=all to rank clients worst first.",
+        "Patch status from Datto RMM for a client, client_code=all to rank clients worst first, or one hostname.",
         _PATCH_REPORT_SCHEMA,
     ),
     function_tool(

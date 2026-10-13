@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
-
 from app.sources.base import SourceSpec
 from app.sources.datto.clients import datto_site_uid
 from app.sources.datto.factory import build_datto_source
+from app.sources.datto.handlers.common import HOSTNAME_RE
 from app.sources.datto.handlers.dispatch import handle
 from app.sources.datto.prompt import PROMPT_SECTION
 from app.sources.datto.protocol import DattoNotConfigured, DattoRequestError, DattoUnavailable
@@ -19,10 +18,6 @@ from app.sources.datto.tools import (
 )
 from app.sources.datto.wording import WORDING, WRITE_WORDS
 from app.sources.flow.tools import LIST_MACHINES
-
-# Hostnames the way TechBldrs names them: client code, a dash, letters, then a number (WDON-FD01, BUCK-SRV01,
-# WDON-IMG-01). Letters after the dash, so ticket labels (WDON-1842) don't match.
-HOSTNAME_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9]{2,5}-[A-Za-z]{1,6}-?\d{1,4}\b")
 
 DATTO = SourceSpec(
     name="datto",
