@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tests._isolation  # noqa: F401  (first: hermetic settings, no network)
+
 import importlib.util
 import sys
 import tempfile

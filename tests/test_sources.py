@@ -7,6 +7,8 @@ and it is enabled from env (FAKE_MODE) the way FLOW_MODE / DATTO_MODE work.
 
 from __future__ import annotations
 
+import tests._isolation  # noqa: F401  (first: hermetic settings, no network)
+
 import json
 import logging
 import os

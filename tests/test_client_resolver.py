@@ -6,6 +6,8 @@ WDLB Western Dental Lab (both), NRTH Northwind Traders (tenant only), BRCK Brick
 
 from __future__ import annotations
 
+import tests._isolation  # noqa: F401  (first: hermetic settings, no network)
+
 import asyncio
 import threading
 import time

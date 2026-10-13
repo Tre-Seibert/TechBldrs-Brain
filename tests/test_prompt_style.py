@@ -3,6 +3,8 @@ guidance lives in the tool descriptions, and the per-user / per-day lines come a
 
 from __future__ import annotations
 
+import tests._isolation  # noqa: F401  (first: hermetic settings, no network)
+
 import hashlib
 import importlib.util
 import json
