@@ -17,6 +17,7 @@ from app.agent.loop import (
     run_tool_loop,
     stream_final_message,
 )
+from app.agent.passthrough import open_webui_task, run_task_passthrough
 from app.config import Settings, get_settings
 from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
 from app.knowledge.factory import build_knowledge_source
@@ -223,15 +224,28 @@ async def chat_completions(
     x_brain_actor: str | None = Header(default=None),
     x_openwebui_user_jwt: str | None = Header(default=None, alias="X-OpenWebUI-User-Jwt"),
     x_openwebui_user_email: str | None = Header(default=None, alias="X-OpenWebUI-User-Email"),
+    x_openwebui_task: str | None = Header(default=None, alias="X-OpenWebUI-Task"),
 ):
     settings = _settings(request)
+    extra = body.model_dump(exclude={"messages", "tools", "stream", "model"}, exclude_none=True)
+    task = open_webui_task(body.messages, extra.get("metadata"), x_openwebui_task)
+    if task is not None:
+        # Open WebUI's title / tags / follow-ups: straight to the model, no tools and no Flow calls.
+        try:
+            payload = await run_task_passthrough(
+                settings=settings, task=task, messages=body.messages, model=body.model, extra_body=extra
+            )
+        except AgentError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if body.stream:
+            return StreamingResponse(stream_final_message(payload, no_tool=""), media_type="text/event-stream")
+        return JSONResponse(payload)
     resolved = _resolve_actor(
         request,
         x_brain_actor=x_brain_actor,
         x_openwebui_user_jwt=x_openwebui_user_jwt,
         x_openwebui_user_email=x_openwebui_user_email,
     )
-    extra = body.model_dump(exclude={"messages", "tools", "stream", "model"}, exclude_none=True)
     sources = _sources(request)
     no_tool = no_tool_message(sources)  # names the enabled sources
     with _actor_scope(resolved):

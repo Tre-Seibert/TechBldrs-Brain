@@ -208,9 +208,13 @@ What we learned running tb-brain on the 5060 Ti box (the repo there is a git clo
   Get-Process "ollama*", "llama-server" -ErrorAction SilentlyContinue | Stop-Process -Force
   ```
 
-- **In Open WebUI, set the Task Model to the plain Ollama model, not `tb-brain`.** The setting is under Admin
-  Panel → Settings → Interface. Otherwise every title, tag and follow-up suggestion runs the full tool loop
-  against Flow.
+- **Open WebUI's background tasks skip the tool loop.** Chat titles, tags, follow-up suggestions, search-query
+  generation and autocomplete sent to `tb-brain` go straight to `LLM_BASE_URL` with no tools, no system prompt
+  and no Flow calls (`app/agent/passthrough.py`; `x_tb_brain` says `"task_passthrough": true`). tb-brain spots
+  them by Open WebUI's task templates (a lone user message starting `### Task:` with a `<chat_history>` block).
+  To mark them explicitly, add the header `X-OpenWebUI-Task` with the value `{{TASK}}` to the tb-brain
+  connection in Admin Panel → Settings → Connections. Setting the Task Model (Admin Panel → Settings → Interface)
+  to a plain Ollama model also still works.
 - **Open Open WebUI at `http://localhost:3000`**, not `127.0.0.1` or the box's IP. Entra matches the redirect
   URI exactly, and it is registered for `localhost`.
 - **`scripts/hw_eval.ps1`** runs the A4 validation in one go: the Flow eval in both prompt styles at 8K and 16K
