@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.agent.routing import USE_SOURCE, Routing, route
+from app.agent.secrets import SECRET_REFUSAL, asks_for_secret
 from app.agent.system import lean_system_prompt, legacy_system_prompt, session_context_message, signed_in_prompt_line
 from app.agent.wording import expects_tool, wording_for
 from app.audit import log_tool_call
@@ -611,6 +612,11 @@ async def run_tool_loop(
     if ignored:
         _log.info("ignoring client tools: %s", ",".join(ignored))
     turn = chat_turn_from_messages(messages)
+    if asks_for_secret(turn.user_text):
+        # A password, key or other secret is never looked up, whatever the source: it comes from IT Glue.
+        payload = _assistant_payload(SECRET_REFUSAL, settings.llm_model.strip() or "tb-brain", no_tool=words.no_tool)
+        payload["x_tb_brain"] = _x_tb_brain({"router": None, "guard": "secret_request", "tool_calls": []}, routing)
+        return payload
     # The routers are Flow question shapes: a question that names another source's data goes to the model.
     flow_routers = not routing.names_another_source
     hit = _direct_answer_named(sources, turn, settings.disabled_router_set) if flow_routers else None

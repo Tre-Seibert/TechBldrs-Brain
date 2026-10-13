@@ -188,6 +188,8 @@ def _calls_summary(trace: dict | None) -> str:
     trace = trace or {}
     if trace.get("router"):
         return f"router:{trace['router']}"
+    if trace.get("guard"):
+        return f"guard:{trace['guard']}"
     parts = []
     for call in trace.get("tool_calls") or []:
         args = json.dumps(call.get("arguments") or {}, separators=(",", ":"))
