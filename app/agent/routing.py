@@ -3,7 +3,7 @@
 Required sources (Flow) and sources with no description, plus the shared tools (search_knowledge), are
 offered on every call. A routed source (SourceSpec.routed) is offered when:
 
-- keyword:   the user's latest message matches its keywords or patterns;
+- keyword:   the user's latest message matches its keywords (plural and -ing too) or patterns;
 - sticky:    an earlier user message matched them, or one of its tools was called earlier in the
              conversation, so "what about BUCK?" keeps the source the last question used;
 - requested: the model called use_source(name). That tool is offered only while an enabled source is
@@ -36,16 +36,31 @@ USE_SOURCE = "use_source"
 ALWAYS, KEYWORD, STICKY, REQUESTED, ROUTING_OFF = "always", "keyword", "sticky", "requested", "routing_off"
 
 
+def _word_forms(word: str) -> str:
+    """A keyword's last word, plural and -ing too: alert, alerts, alerting; patch, patches, patching; device,
+    devices; license, licensing; warranty, warranties. Not -ed, which is as often about something else ("alerted
+    the client", "licensed tickets"): a source lists the -ed forms it means ("patched", "rebooted"). Endings only,
+    so the word must still be whole: "alert" never matches "alertness", nor "PC" "PCI"."""
+    lower = word.lower()
+    if len(word) > 3 and lower.endswith("e") and not lower.endswith("ee"):
+        return re.escape(word[:-1]) + "(?:es?|ing)"
+    if len(word) > 3 and lower.endswith("y") and lower[-2] not in "aeiou":
+        return re.escape(word[:-1]) + "(?:y|ies)"
+    return re.escape(word) + "(?:e?s|ing)?"
+
+
 @functools.lru_cache(maxsize=64)
 def _keyword_re(keywords: tuple[str, ...]) -> re.Pattern[str] | None:
-    """One regex for a source's keywords: any case, whole words, spaces or hyphens between words, plural too."""
+    """One regex for a source's keywords: any case, whole words, spaces or hyphens between words, and the last
+    word plural or -ing too."""
     words = [word.strip() for word in keywords if word.strip()]
     if not words:
         return None
-    alternatives = "|".join(
-        r"[\s-]+".join(map(re.escape, re.split(r"[\s-]+", word))) for word in sorted(words, key=len, reverse=True)
-    )
-    return re.compile(rf"(?<!\w)(?:{alternatives})(?:e?s)?(?!\w)", re.IGNORECASE)
+    alternatives = []
+    for keyword in sorted(words, key=len, reverse=True):
+        parts = re.split(r"[\s-]+", keyword)
+        alternatives.append(r"[\s-]+".join([*map(re.escape, parts[:-1]), _word_forms(parts[-1])]))
+    return re.compile(rf"(?<!\w)(?:{'|'.join(alternatives)})(?!\w)", re.IGNORECASE)
 
 
 def matched_term(spec: SourceSpec, text: str) -> str | None:

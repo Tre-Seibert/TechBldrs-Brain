@@ -95,6 +95,42 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(question):
                 self.assertEqual(matched_term(DATTO, question), term)
 
+    def test_keywords_match_their_common_forms(self) -> None:
+        for question, term in (
+            ("Do we have tickets open for any of WDON's alerting machines?", "alerting"),  # eval G4
+            ("Which devices alerted overnight?", "devices"),
+            ("Any open alerts?", "alerts"),
+            ("missing patches at WDON", "patches"),
+            ("is NGMC patched", "patched"),
+            ("worst on patching", "patching"),
+            ("was it rebooted", "rebooted"),
+            ("is it rebooting again", "rebooting"),
+            ("nightly reboots", "reboots"),
+            ("it restarted twice", "restarted"),
+            ("list the servers", "servers"),
+            ("laptops at BUCK", "laptops"),
+            ("which PCs at NGMC", "PCs"),
+            ("check warranties for WDON", "warranties"),
+            ("serial numbers for BUCK", "serial numbers"),
+            ("operating systems at NGMC", "operating systems"),
+            ("which machines stopped checking in", "checking in"),
+        ):
+            with self.subTest(question):
+                self.assertEqual(matched_term(DATTO, question), term)
+
+    def test_keyword_forms_do_not_reach_unrelated_words(self) -> None:
+        for question in (
+            "Any tickets about alertness training?",
+            "PCI compliance tickets for WDON",
+            "Show me the patchwork ticket",
+            "serverless tickets",
+            "the Avenue office move",
+            "Has the printer been reinstalled?",
+            "Who alerted WDON about the outage?",  # -ed only where a source lists it
+        ):
+            with self.subTest(question):
+                self.assertIsNone(matched_term(DATTO, question))
+
     def test_flow_questions_do_not(self) -> None:
         for question in (
             "What are my open tickets?",

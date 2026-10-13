@@ -39,12 +39,15 @@ DATTO = SourceSpec(
         "Datto RMM: live device state per client site (online/offline, last seen, last user, OS, patches, "
         "antivirus, alerts, installed software, hardware, disk space)."
     ),
+    # Each matches its plural and -ing form too (devices, patches, patching, alerting, rebooting, warranties; see
+    # app/agent/routing.py). -ed forms are listed where they mean a device ("patched", "rebooted"), not for
+    # "alert", where "alerted the client" is a Flow question.
     keywords=(
         "Datto", "RMM", "device", "computer", "PC", "server", "workstation", "laptop", "desktop", "offline",
-        "online", "patch", "patched", "patching", "unpatched", "antivirus", "anti-virus", "AV", "alert", "reboot",
-        "rebooted", "restart", "installed", "installed software", "software", "disk space", "free space",
-        "serial number", "warranty", "last logged", "logged in", "checked in", "check in", "operating system",
-        "Windows 10", "Windows 11", "Windows Server",
+        "online", "patch", "patched", "unpatched", "antivirus", "anti-virus", "AV", "alert", "reboot", "rebooted",
+        "restart", "restarted", "installed", "installed software", "software", "disk space", "free space",
+        "serial number", "warranty", "last logged", "logged in", "checked in", "check in", "checking in",
+        "operating system", "Windows 10", "Windows 11", "Windows Server",
     ),
     patterns=(HOSTNAME_RE,),
     wording=WORDING,
