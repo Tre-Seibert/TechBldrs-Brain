@@ -95,8 +95,12 @@ class Settings(BaseSettings):
     datto_api_url: str = Field(default="")
     datto_api_key: SecretStr = Field(default=SecretStr(""))
     datto_api_secret: SecretStr = Field(default=SecretStr(""))
-    # Reserved for Microsoft 365 (app/sources/registry.py). off until that source exists.
+    # Microsoft 365 via Microsoft Graph (app/sources/m365/): off, stub (fixtures) or http (Graph, read-only).
     m365_mode: str = Field(default="off")
+    # tb-brain's one multi-tenant app registration (application permissions, consented per client tenant), from the
+    # runtime box's .env only. The secret is never logged. A certificate can replace the secret later.
+    m365_client_id: str = Field(default="")
+    m365_client_secret: SecretStr = Field(default=SecretStr(""))
 
     @field_validator("datto_mode")
     @classmethod
@@ -106,6 +110,16 @@ class Settings(BaseSettings):
         mode = (value or "off").strip().lower()
         if mode not in (*OFF_MODES, "stub", "http"):
             raise ValueError(f"unknown DATTO_MODE {value!r}; valid: off, stub, http")
+        return mode
+
+    @field_validator("m365_mode")
+    @classmethod
+    def _known_m365_mode(cls, value: str) -> str:
+        from app.sources.base import OFF_MODES
+
+        mode = (value or "off").strip().lower()
+        if mode not in (*OFF_MODES, "stub", "http"):
+            raise ValueError(f"unknown M365_MODE {value!r}; valid: off, stub, http")
         return mode
 
     # --- Knowledge (SOP/runbook search). Empty QDRANT_URL disables search_knowledge
@@ -138,6 +152,10 @@ class Settings(BaseSettings):
     @property
     def datto_mode_normalized(self) -> str:
         return self.datto_mode or "off"
+
+    @property
+    def m365_mode_normalized(self) -> str:
+        return self.m365_mode or "off"
 
 
 @lru_cache

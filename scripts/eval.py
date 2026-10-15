@@ -5,6 +5,7 @@ Run against a live tb-brain (FLOW_MODE=stub, so the expected answers hold):
     python scripts/eval.py run --label qwen2.5-routers-on
     python scripts/eval.py run --questions eval/flow_cases.json --label q4-flow
     python scripts/eval.py run --questions eval/datto_cases.json --label q4-datto   (also DATTO_MODE=stub)
+    python scripts/eval.py run --questions eval/m365_cases.json --label q4-m365     (also M365_MODE=stub, DATTO_MODE=stub)
     python scripts/eval.py run --label qwen3-routers-off --group longest_time
     python scripts/eval.py compare eval/results/A.json eval/results/B.json
 
@@ -202,9 +203,9 @@ def _reply_text(payload: dict) -> str:
     return str((choices[0].get("message") or {}).get("content") or "")
 
 
-def _uses_datto(cases: list[dict]) -> bool:
-    """True when a case expects a Datto tool or the Datto source (eval/datto_cases.json)."""
-    return any("datto" in json.dumps(case.get(key) or []) for case in cases for key in ("expect", "sources", "forbid_sources"))
+def _uses_source(cases: list[dict], name: str) -> bool:
+    """True when a case expects a tool or the source `name` (datto: eval/datto_cases.json, m365: eval/m365_cases.json)."""
+    return any(name in json.dumps(case.get(key) or []) for case in cases for key in ("expect", "sources", "forbid_sources"))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -224,12 +225,13 @@ def run(args: argparse.Namespace) -> int:
                 "expected answers assume the stub fixtures",
                 file=sys.stderr,
             )
-        if _uses_datto(cases) and (health.get("sources") or {}).get("datto") != "datto-stub":
-            print(
-                f"warning: these cases need DATTO_MODE=stub, but the server reports "
-                f"datto={(health.get('sources') or {}).get('datto')!r}",
-                file=sys.stderr,
-            )
+        for name, env in (("datto", "DATTO_MODE"), ("m365", "M365_MODE")):
+            if _uses_source(cases, name) and (health.get("sources") or {}).get(name) != f"{name}-stub":
+                print(
+                    f"warning: these cases need {env}=stub, but the server reports "
+                    f"{name}={(health.get('sources') or {}).get(name)!r}",
+                    file=sys.stderr,
+                )
         print(
             f"model={health.get('llm_model') or '(ollama default)'} "
             f"disabled_routers={health.get('disabled_routers')} prompt_style={health.get('prompt_style')} "

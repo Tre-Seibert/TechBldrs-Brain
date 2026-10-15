@@ -10,7 +10,6 @@ from __future__ import annotations
 import tests._isolation  # noqa: F401  (first: hermetic settings, no network)
 
 import json
-import logging
 import os
 import unittest
 from typing import Any, Protocol
@@ -136,11 +135,15 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(FlowNotConfigured):
             build_sources(Settings(flow_mode="off", _env_file=None))
 
-    def test_reserved_m365_mode_adds_nothing_and_says_so(self) -> None:
-        with self.assertLogs("tb_brain.sources", level=logging.WARNING) as logs:
-            sources = build_sources(Settings(m365_mode="http", _env_file=None))
-        self.assertEqual(sources.names, ("flow",))
-        self.assertTrue(any("M365_MODE" in line for line in logs.output))
+    def test_m365_mode_adds_m365_after_datto(self) -> None:
+        sources = build_sources(Settings(m365_mode="stub", _env_file=None))
+        self.assertEqual(sources.names, ("flow", "m365"))
+        self.assertEqual(sources.client("m365").source_name, "m365-stub")
+        both = build_sources(Settings(m365_mode="http", datto_mode="stub", _env_file=None))
+        self.assertEqual(both.names, ("flow", "datto", "m365"))
+        self.assertEqual(both.client("m365").source_name, "m365-http")
+        with self.assertRaises(ValueError):
+            Settings(m365_mode="graph", _env_file=None)
 
     def test_datto_mode_stub_adds_datto_after_flow(self) -> None:
         sources = build_sources(Settings(datto_mode="stub", _env_file=None))

@@ -1,7 +1,8 @@
 """Client resolver (app/sources/clients.py): code or name -> client code, tenant id, IT Glue org, Datto site.
 
-Runs against stub Flow. The fixture clients: WDON Western Dental and ACME Acme Labs (no tenant, no IT Glue),
-WDLB Western Dental Lab (both), NRTH Northwind Traders (tenant only), BRCK Brickell Law Group (IT Glue only).
+Runs against stub Flow. The fixture clients: ACME Acme Labs (no tenant, no IT Glue), WDON Western Dental, BUCK and
+NGMC (tenant only, the Microsoft 365 stub tenants), WDLB Western Dental Lab (both), NRTH Northwind Traders (tenant
+only), BRCK Brickell Law Group (IT Glue only).
 """
 
 from __future__ import annotations
@@ -175,7 +176,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(self.resolver.resolve("Northwind Traders").client.m365_tenant_id, "6a2e9b40-71c3-4d8e-8f20-5b1c0d9e7a63")
 
     def test_no_tenant(self) -> None:
-        for text, label in (("Western Dental", "Western Dental (WDON)"), ("BRCK", "Brickell Law Group (BRCK)")):
+        for text, label in (("Acme Labs", "Acme Labs (ACME)"), ("BRCK", "Brickell Law Group (BRCK)")):
             result = self.resolver.resolve(text, require=("m365_tenant_id",))
             self.assertIs(result.outcome, Outcome.NO_M365_TENANT, text)
             self.assertFalse(result.ok)
@@ -183,7 +184,7 @@ class ResolveTests(unittest.TestCase):
             self.assertIsNone(result.client.m365_tenant_id)
             self.assertIn(f"{label} has no Microsoft 365 tenant id on record in Flow", result.message)
         # Not required: the same client is simply found, with no tenant.
-        self.assertIs(self.resolver.resolve("WDON").outcome, Outcome.FOUND)
+        self.assertIs(self.resolver.resolve("ACME").outcome, Outcome.FOUND)
 
     def test_blank_tenant_counts_as_none(self) -> None:
         flow = StubFlowSource()

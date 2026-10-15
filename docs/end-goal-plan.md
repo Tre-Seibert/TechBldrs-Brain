@@ -115,13 +115,30 @@ Notes from building it:
 
 Questions: [eval/m365_questions_draft.md](../eval/m365_questions_draft.md).
 
-| Step | Work | Size |
-|---|---|---|
-| C0 | Multi-tenant app registration with the permission list below; consent per tenant **after** the list is final. Secret or certificate in the runtime box `.env`. | M (admin) |
-| C1 | Tools: `m365_users`, `m365_get_user`, `m365_mfa_report`, `m365_license_summary`, `m365_signins`, `m365_security`, `m365_policies`, `m365_devices`, `m365_mailboxes`, `m365_tenant`, `m365_audit`. All summaries, capped. | L |
-| C2 | Stub fixtures for 3 fake tenants (one with Business Premium, one Business Standard, one with report name concealment on). | M |
-| C3 | Eval cases from the questions draft, including cross-source with Flow and Datto. | M |
-| C4 | Later, optional: Graph search for mail that was never filed on a ticket (TechBldrs' own mailbox, not clients'). | M |
+| Step | Work | Size | Done |
+|---|---|---|---|
+| C0 | Multi-tenant app registration with the permission list below; consent per tenant **after** the list is final. Secret or certificate in the runtime box `.env`. | M (admin) | Open |
+| C1 | Tools: `m365_users`, `m365_get_user`, `m365_mfa_report`, `m365_license_summary`, `m365_signins`, `m365_security`, `m365_policies`, `m365_devices`, `m365_mailboxes`, `m365_tenant`, `m365_audit`. All summaries, capped. | L | Stub-tested; Graph adapter tested on mocked responses only |
+| C2 | Stub fixtures for 3 fake tenants (one with Business Premium, one Business Standard, one with report name concealment on). | M | WDON (Business Premium), BUCK (Business Standard, no P1), NGMC (E3 + P2, concealment on) |
+| C3 | Eval cases from the questions draft, including cross-source with Flow and Datto. | M | `eval/m365_cases.json`, 72 cases |
+| C4 | Later, optional: Graph search for mail that was never filed on a ticket (TechBldrs' own mailbox, not clients'). | M | |
+
+Built in the commit after `f3edf3d` (`M365_MODE=stub|http`, default off). Next: C0, then a read-only live check of
+each tool against 2-3 consented tenants, then the Microsoft 365 eval on the runtime box in both prompt styles.
+
+Notes from building it:
+
+- The adapter calls only the Graph paths in `ENDPOINTS` (app/sources/m365/http.py), each tied to a permission
+  below; a test fails on any other path, and `_get` refuses one at runtime. Mailbox usage uses the beta report
+  with `$format=application/json` (v1.0 redirects to a CSV on another host, which is never followed). Inbox rules are
+  read with `MailboxSettings.Read` at `/users/{id}/mailFolders/inbox/messageRules`, never the messages.
+- License refusals (Graph 400/403 with "premium license", "not licensed", "not applicable to target tenant" and
+  `Authentication_RequestFromNonPremiumTenantOrB2CTenant`) become "the tenant's license doesn't include X". The exact
+  error shapes for risky users, Intune and Defender without a license are from docs and forums: check them on the
+  first live calls. `mailboxSettings.userPurpose` and the beta report's field names likewise.
+- The tenant id comes from Flow's client record. When no client is named, a user's email domain (Flow's
+  `m365_default_domain`) or Flow contact finds it; several matching contacts are asked about.
+- Bare "tenant" routes to Microsoft 365, but "our tenant" (TechBldrs' own, Flow mail) does not.
 
 ### Microsoft Graph application permissions (all read-only)
 
@@ -201,7 +218,7 @@ Notes to verify before consenting:
 
 - [x] Phase A done, tests green (2026-10-13)
 - [ ] Datto working against the live API, read-only (built and stub-tested; needs B0 and a live check)
-- [ ] Microsoft 365 working on 2–3 real tenants (or stubs if consent is still pending)
+- [ ] Microsoft 365 working on 2–3 real tenants (or stubs if consent is still pending) (built and stub-tested; needs C0 and a live check)
 - [ ] 40+ multi-source eval cases with a 5060 Ti baseline run
 - [ ] Run-matrix, timing and concurrency scripts working
 - [ ] Acceptance criteria written down

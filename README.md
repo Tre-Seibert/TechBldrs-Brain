@@ -6,8 +6,9 @@ model does all of it, because client data includes PHI.
 
 Today those systems are **Flow** (tickets, time, ticket-attached mail, contacts, technicians, clients),
 **Datto RMM** (live device state per client site; `DATTO_MODE`, off by default, stub-tested, not yet run against
-the live API) and a knowledge search over IT Glue SOPs and past fix notes. Next comes each client's
-**Microsoft 365 tenant via GDAP** (Phase C), then more sources. The plan, the decisions behind it and the
+the live API), each client's **Microsoft 365 tenant** through Microsoft Graph (`M365_MODE`, off by default,
+stub-tested, no tenant consented yet) and a knowledge search over IT Glue SOPs and past fix notes. More sources
+come later. The plan, the decisions behind it and the
 "ready to buy the Mac Studio" checklist are in [docs/end-goal-plan.md](docs/end-goal-plan.md).
 
 It is not a vector dump of Flow. Structured data is reached through named tools, and counts, hours and dates
@@ -55,7 +56,7 @@ flowchart LR
   loop --> routing["Source routing"]
   routing --> flow["Flow tools"]
   routing -->|"DATTO_MODE"| datto["Datto RMM tools"]
-  routing -.->|"Phase C"| m365["Microsoft 365 tools (GDAP)"]
+  routing -->|"M365_MODE"| m365["Microsoft 365 tools (Graph)"]
   loop --> knowledge["search_knowledge"]
   flow -->|"FLOW_MODE=http"| flowapi["Flow /api/private/brain/*"]
   flow -->|"FLOW_MODE=stub"| fixtures["In-process fixtures"]
@@ -137,7 +138,7 @@ All settings come from env or `.env` (see [.env.example](.env.example)). The one
 |---|---|---|
 | `FLOW_MODE` | `stub` (default), `http` | Flow is always on. `stub` uses in-process fixtures; `http` calls Flow's read-only brain API with `FLOW_BASE_URL` and `FLOW_API_TOKEN`. |
 | `DATTO_MODE` | `off` (default), `stub`, `http` | Datto RMM. `stub` uses fixtures for sites WDON, BUCK and NGMC; `http` calls the Datto RMM API v2 at `DATTO_API_URL` with tb-brain's own read-only API user (`DATTO_API_KEY`, `DATTO_API_SECRET`, runtime box `.env` only, never logged). |
-| `M365_MODE` | `off` (default); `stub`, `http` from Phase C | Microsoft 365 via GDAP. Reserved: until the source exists, any other value logs a warning and stays off. |
+| `M365_MODE` | `off` (default), `stub`, `http` | Microsoft 365. `stub` uses fixture tenants for WDON, BUCK and NGMC; `http` calls Microsoft Graph app-only with tb-brain's one multi-tenant app (`M365_CLIENT_ID`, `M365_CLIENT_SECRET`, runtime box `.env` only, never logged), consented once per client tenant with the permissions in the plan. The tenant id comes from Flow's client record, never from the model. |
 | `PROMPT_STYLE` | `legacy` (default), `lean` | Full Flow prompt, or short rules plus per-source sections with a cache-friendly order. |
 | `SOURCE_ROUTING` | `on` (default), `off` | `on` offers each call only the sources it needs; `off` offers every enabled source every time. |
 | `DISABLED_ROUTERS` | comma list | Turns routers off so those questions go to the model: `merge_suggestion`, `person_mail`, `person_ticket`, `tickets_about`, `longest_time`. |
@@ -178,17 +179,20 @@ python -m unittest discover -s tests
 ```
 
 Tests are hermetic: `tests/_isolation.py` ignores `.env` and the environment, pins stub Flow, and refuses any
-network connection, so they never reach Flow, Datto, Ollama or Qdrant and write nothing outside a temp dir. The
-Datto HTTP adapter is tested only against mocked responses.
+network connection, so they never reach Flow, Datto, Microsoft Graph, Ollama or Qdrant and write nothing outside a
+temp dir. The Datto and Microsoft Graph HTTP adapters are tested only against mocked responses; a test fails if the
+Graph adapter references an endpoint outside its allowlist.
 
 ## Eval
 
 Run these against a running tb-brain with **`FLOW_MODE=stub`** (and **`DATTO_MODE=stub`** for the Datto
-cases). The cases include write requests, so never point them at real Flow or Datto.
+cases, **`M365_MODE=stub`** and `DATTO_MODE=stub` for the Microsoft 365 cases). The cases include write requests, so
+never point them at real Flow, Datto or Microsoft 365.
 
 ```powershell
 python scripts/eval.py run --questions eval/flow_cases.json --label flow-legacy   # 60 Flow cases, scored on tool calls
 python scripts/eval.py run --questions eval/datto_cases.json --label datto-legacy # 40 Datto + cross-source cases
+python scripts/eval.py run --questions eval/m365_cases.json --label m365-legacy   # 72 Microsoft 365 + cross-source cases
 python scripts/eval.py run --label routers                                         # router regression set
 python scripts/eval.py compare eval/results/A.json eval/results/B.json
 ```

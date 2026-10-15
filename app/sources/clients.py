@@ -23,7 +23,7 @@ from typing import Any
 
 from app.sources.cache import TtlCache
 from app.sources.flow.protocol import FlowRequestError, FlowSource
-from app.sources.flow.schemas import ClientDetail, ClientListItem, itglue_org_id
+from app.sources.flow.schemas import ClientDetail, ClientListItem, ContactRecord, itglue_org_id
 
 _log = logging.getLogger("tb_brain.clients")
 
@@ -172,6 +172,39 @@ class ClientResolver:
     async def aresolve(self, text: str | None, *, require: Iterable[str] = ()) -> ClientResolution:
         """resolve() off the event loop; Flow and the hooks are blocking HTTP."""
         return await asyncio.to_thread(self.resolve, text, require=tuple(require))
+
+    def every(self, *, require: Iterable[str] = ()) -> list[ResolvedClient]:
+        """Every client on Flow's roster that has the ids in `require`, by client code: an "all clients" question.
+        One client detail per client, cached like resolve()'s."""
+        required = tuple(require)
+        for field in required:
+            if field not in _REQUIREMENTS:
+                raise ValueError(f"unknown id {field!r}; can require: {', '.join(_REQUIREMENTS)}")
+        found = []
+        for row in sorted(self._roster(), key=lambda row: row.client_code.upper()):
+            client = self._client(row.client_code.upper(), required)
+            if client is not None and all(getattr(client, field) is not None for field in required):
+                found.append(client)
+        return found
+
+    def code_for_domain(self, domain: str | None) -> str | None:
+        """The one client whose Microsoft 365 domain in Flow is `domain` (an email address's part after the @)."""
+        wanted = (domain or "").strip().lower().lstrip("@")
+        if not wanted:
+            return None
+        hits = [
+            row.client_code.upper()
+            for row in self._roster()
+            if ((getattr(self._detail(row.client_code.upper()), "m365_default_domain", None) or "").strip().lower() == wanted)
+        ]
+        return hits[0] if len(hits) == 1 else None
+
+    def contacts(self, query: str) -> list[ContactRecord]:
+        """Flow contacts whose name or email matches `query`, for a tool that finds the client from a person. Cached."""
+        text = _clean(query)
+        if not text:
+            return []
+        return self._cached(("contacts", text.casefold()), lambda: list(self._flow.search_contact(query=text, limit=10)))
 
     def _match(self, query: str) -> tuple[str | None, tuple[ClientCandidate, ...]]:
         """The one client code `query` means, or None and the candidates to ask about (none when unknown)."""

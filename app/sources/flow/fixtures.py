@@ -664,8 +664,18 @@ MAIL_DETAIL_EXTRAS: dict[int, dict] = {
 }
 
 CLIENT_DETAIL_EXTRAS: dict[str, dict] = {
-    "WDON": {"contract_minutes": 600, "balance": 120, "account": "Managed Services"},
-    # Tenant id and IT Glue org: WDLB has both, NRTH only a tenant, BRCK only IT Glue, WDON/ACME neither.
+    # WDON, BUCK and NGMC carry the Microsoft 365 stub tenants' ids (app/sources/m365/fixtures.py). get_client_detail
+    # never shows a tenant id, so Flow's own replies are the same with or without them.
+    "WDON": {
+        "contract_minutes": 600,
+        "balance": 120,
+        "account": "Managed Services",
+        "m365_tenant_id": "3c1e8a52-6b0d-4f7e-9a21-5d84c0b7e301",
+    },
+    "BUCK": {"m365_tenant_id": "8f2a4d19-0c6e-4b3a-b7d5-1e9f6a2c4b02"},
+    "NGMC": {"m365_tenant_id": "d47b9e06-2a1f-4c8d-8e63-9b0a5f7c1d03"},
+    # Tenant id and IT Glue org: WDLB has both, NRTH only a tenant (no stub tenant: consent never given), BRCK only
+    # IT Glue, ACME neither.
     "WDLB": {
         "m365_tenant_id": "0f5d7c1e-58b0-4b1a-9c11-3a7e5d2f0b58",
         "itglue_url": "https://techbldrs.itglue.com/4815162",
