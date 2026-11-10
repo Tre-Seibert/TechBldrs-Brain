@@ -22,6 +22,7 @@ from app.config import Settings, get_settings
 from app.identity import ResolvedActor, current_actor_email, current_signed_in_email, resolve_actor
 from app.knowledge.factory import build_knowledge_source
 from app.knowledge.source import KnowledgeSource
+from app.mcp.server import MCP_ROUTES, endpoint_summary, mcp_runtime
 from app.sources.base import Sources
 from app.sources.flow.protocol import FlowNotConfigured
 from app.sources.registry import build_sources
@@ -69,6 +70,8 @@ def _configure_logging(settings: Settings) -> None:
     file_handler = logging.FileHandler(settings.audit_log_dir / "tb-brain.log", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root.addHandler(file_handler)
+    # The MCP SDK logs a line per session start and end at INFO; tb-brain logs each tool call itself.
+    logging.getLogger("mcp.server").setLevel(logging.WARNING)
     root._tb_brain_configured = True  # type: ignore[attr-defined]
 
 
@@ -88,7 +91,8 @@ async def lifespan(app: FastAPI):
         ",".join(app.state.sources.names),
         ",".join(_tool_names(app.state.sources)),
     )
-    yield
+    async with mcp_runtime(app):  # the MCP endpoints for Copilot Studio (app/mcp/)
+        yield
 
 
 app = FastAPI(
@@ -104,6 +108,8 @@ app = FastAPI(
     ),
     lifespan=lifespan,
 )
+# /mcp, /mcp/all and /mcp/<source>: Streamable HTTP MCP endpoints. Plain ASGI routes, authenticated per call.
+app.router.routes.extend(MCP_ROUTES)
 
 
 def _settings(request: Request) -> Settings:
@@ -199,6 +205,7 @@ def health(request: Request) -> dict[str, Any]:
         "knowledge_source": _knowledge(request).source_name,
         "tools": _tool_names(sources),
         "write_tools": list(sources.write_tool_names()),
+        "mcp": endpoint_summary(sources, settings),
     }
 
 

@@ -122,6 +122,40 @@ class Settings(BaseSettings):
             raise ValueError(f"unknown M365_MODE {value!r}; valid: off, stub, http")
         return mode
 
+    # --- MCP endpoint for Copilot Studio (app/mcp/). entra (default): every call carries an Entra access token for the
+    # signed-in technician, checked against the TechBldrs tenant, the app registration's audience and its scope.
+    # api_key: one shared MCP_API_KEY (scripts/mcp_smoke.py), no technician identity. off: no check; loopback only.
+    mcp_auth: str = Field(default="entra")
+    mcp_entra_tenant_id: str = Field(default="")
+    # The app registration's Application ID URI (api://<client id>) and/or its client id, comma-separated.
+    mcp_entra_audience: str = Field(default="")
+    mcp_entra_scope: str = Field(default="access_as_user")
+    mcp_api_key: SecretStr = Field(default=SecretStr(""))
+    # Which tool descriptions the MCP endpoint offers: one of PROMPT_STYLES (legacy is fuller, lean is shorter).
+    mcp_tool_style: str = Field(default="legacy")
+
+    @field_validator("mcp_auth")
+    @classmethod
+    def _known_mcp_auth(cls, value: str) -> str:
+        from app.mcp.auth import MODES
+
+        mode = (value or "entra").strip().lower()
+        if mode not in MODES:
+            raise ValueError(f"unknown MCP_AUTH {value!r}; valid: {', '.join(MODES)}")
+        return mode
+
+    @field_validator("mcp_tool_style")
+    @classmethod
+    def _known_mcp_tool_style(cls, value: str) -> str:
+        style = (value or "legacy").strip().lower()
+        if style not in PROMPT_STYLES:
+            raise ValueError(f"unknown MCP_TOOL_STYLE {value!r}; valid: {', '.join(PROMPT_STYLES)}")
+        return style
+
+    @property
+    def mcp_entra_audiences(self) -> tuple[str, ...]:
+        return tuple(part.strip() for part in self.mcp_entra_audience.split(",") if part.strip())
+
     # --- Knowledge (SOP/runbook search). Empty QDRANT_URL disables search_knowledge
     # gracefully -- see app/knowledge/source.py NullKnowledgeSource.
     qdrant_url: str = Field(default="")

@@ -1,0 +1,30 @@
+# tb-brain MCP/tool server for Copilot Studio, on the dev box as its own service (never touches ticketing.service).
+# Install: sudo cp deploy/tb-brain.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tb-brain
+# Logs:    journalctl -u tb-brain -f        Audit rows: /home/tbadmin/tb-brain-data/logs/tool_calls.jsonl
+[Unit]
+Description=tb-brain MCP/tool server for Copilot Studio (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tbadmin
+Group=tbadmin
+WorkingDirectory=/home/tbadmin/TechBldrs-Brain
+# Secrets live only in this file on the box (chmod 600), never in git.
+EnvironmentFile=/home/tbadmin/TechBldrs-Brain/.env
+# Loopback only: nginx (deploy/nginx-brain.techbldrs.dev.conf) is the public side.
+Environment=BRAIN_HOST=127.0.0.1
+Environment=BRAIN_PORT=8765
+Environment=BRAIN_DATA_DIR=/home/tbadmin/tb-brain-data
+ExecStart=/home/tbadmin/TechBldrs-Brain/venv/bin/python -m app
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+KillSignal=SIGTERM
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

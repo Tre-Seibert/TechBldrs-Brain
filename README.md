@@ -1,5 +1,13 @@
 # tb-brain
 
+> **2026-11: moving to a Microsoft Copilot Studio agent.** The local-LLM setup described below (Ollama, Open WebUI,
+> the tool loop, routers, prompt styles, and the eval harness that drives `/v1/chat/completions`) is **legacy**: it
+> stays in the tree until the Copilot Studio agent is in production, and the last local-LLM state is tagged
+> `local-llm-final`. The same read-only tools are served to Copilot Studio over MCP from `app/mcp/` (`/mcp`,
+> `/mcp/<source>`), authenticated with the technician's Entra sign-in. Plan and decisions:
+> [docs/copilot-studio-plan.md](docs/copilot-studio-plan.md). Deploying the MCP server on the dev box:
+> [deploy/README.md](deploy/README.md). Calling it without Copilot Studio: `python scripts/mcp_smoke.py --help`.
+
 TechBldrs' local MSP assistant. A tech asks any question about a client we manage; tb-brain works out which
 system holds the answer, calls read-only tools on that system, and answers only from what came back. A local
 model does all of it, because client data includes PHI.
