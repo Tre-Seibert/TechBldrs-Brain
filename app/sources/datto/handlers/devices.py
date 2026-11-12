@@ -72,6 +72,26 @@ class SiteSummaryArgs(BaseModel):
     hostname: str | None = None
 
 
+def _user_matches(device: DattoDevice, parts: list[str]) -> bool:
+    """Does this device belong to the searched user?
+
+    Checks last_logged_in_user (DOMAIN\\username), hostname, and for multi-word names
+    the first-initial+last pattern (kvolk matches KVolk or hostname kvolk04507).
+    """
+    login = (device.last_logged_in_user or "").lower()
+    host = device.hostname.lower()
+    if all(part in login for part in parts):
+        return True
+    if all(part in host for part in parts):
+        return True
+    if len(parts) >= 2:
+        initial_last = parts[0][0] + parts[-1]
+        login_user = login.rsplit("\\", 1)[-1]
+        if initial_last in login_user or initial_last in host:
+            return True
+    return False
+
+
 def _type_matches(device: DattoDevice, wanted: str) -> bool:
     category = device.category.lower()
     if wanted == "workstation":
@@ -108,7 +128,7 @@ def _filtered(rows: list[DattoDevice], args: ListDevicesArgs, now) -> tuple[list
         words.append("needing a reboot" if args.reboot_required else "not needing a reboot")
     if args.last_user:
         parts = [part for part in args.last_user.lower().replace(".", " ").split() if part]
-        rows = [row for row in rows if all(part in (row.last_logged_in_user or "").lower() for part in parts)]
+        rows = [row for row in rows if _user_matches(row, parts)]
         words.append(f"last used by {args.last_user.strip()}")
     return rows, words
 

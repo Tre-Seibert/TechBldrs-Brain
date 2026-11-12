@@ -17,7 +17,7 @@ from app.sources.datto.handlers.common import (
     refuse,
     resolve_scope,
 )
-from app.sources.datto.protocol import DattoSource
+from app.sources.datto.protocol import DattoRequestError, DattoSource
 from app.sources.datto.schemas import Software
 from app.sources.datto.tools import DATTO_DEVICE_SOFTWARE
 from app.tools.base import ToolResult
@@ -58,19 +58,23 @@ def device_software(datto: DattoSource, clients: ClientResolver, args: DeviceSof
         return scope
     rows = devices_in(datto, scope)
     searched = rows[:MAX_DEVICES_SEARCHED]
+    auditable = [d for d in searched if not d.device_class or d.device_class == "device"]
     found: list[tuple[str, list[Software]]] = []
-    for device in searched:
-        hits = _matches(datto.list_device_software(device_uid=device.uid), q)
+    for device in auditable:
+        try:
+            hits = _matches(datto.list_device_software(device_uid=device.uid), q)
+        except DattoRequestError:
+            continue
         if hits:
             found.append((device.hostname, hits))
-    without = [device.hostname for device in searched if device.hostname not in {host for host, _ in found}]
-    lines = [f"{q} is installed on {len(found)} of {plural(len(searched), 'device')} at {scope.label} (Datto RMM software audit)."]
+    without = [device.hostname for device in auditable if device.hostname not in {host for host, _ in found}]
+    lines = [f"{q} is installed on {len(found)} of {plural(len(auditable), 'device')} at {scope.label} (Datto RMM software audit)."]
     lines.append("")
     lines.extend(capped([f"- {host}: {'; '.join(_program(row) for row in hits)}" for host, hits in found]))
     if found and without:
         lines.extend(["", "Not found on: " + ", ".join(without[:20]) + (", ..." if len(without) > 20 else "")])
-    if len(rows) > len(searched):
-        lines.extend(["", f"Searched the first {len(searched)} of {len(rows)} devices."])
+    if len(rows) > len(auditable):
+        lines.extend(["", f"Searched {len(auditable)} of {len(rows)} devices (skipped {len(searched) - len(auditable)} non-computer devices)."])
     lines.extend(["", ALL_CLIENTS_NOTE if scope.everyone else "This reads each device's software audit, so it is slower."])
     return ToolResult(
         tool=DATTO_DEVICE_SOFTWARE,
@@ -78,7 +82,7 @@ def device_software(datto: DattoSource, clients: ClientResolver, args: DeviceSof
         data={
             "q": q,
             "found": [{"hostname": host, "software": [_program(row) for row in hits]} for host, hits in found],
-            "searched": len(searched),
+            "searched": len(auditable),
         },
         client_code=scope.client_code,
         reply="\n".join(lines).rstrip(),

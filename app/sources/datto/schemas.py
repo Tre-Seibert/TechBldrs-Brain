@@ -164,6 +164,13 @@ class Bios(_Datto):
     release_date: str | None = None
     sm_bios_version: str | None = None
 
+    @field_validator("release_date", mode="before")
+    @classmethod
+    def _coerce(cls, value: Any) -> str | None:
+        if value in (None, ""):
+            return None
+        return str(value)
+
 
 class LogicalDisk(_Datto):
     description: str | None = None
